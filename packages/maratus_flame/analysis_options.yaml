@@ -1,0 +1,28 @@
+include: package:flutter_lints/flutter.yaml
+
+analyzer:
+  language:
+    strict-casts: true
+    strict-inference: true
+    strict-raw-types: true
+
+  exclude:
+    - build/**
+
+linter:
+  rules:
+    # Catch unsafe operations at protocol and serialization boundaries.
+    avoid_dynamic_calls: true
+    only_throw_errors: true
+
+    # Make asynchronous work and resource cleanup explicit.
+    avoid_void_async: true
+    cancel_subscriptions: true
+    close_sinks: true
+    discarded_futures: true
+    unawaited_futures: true
+
+    # Keep the public package API documented and imports consistent.
+    comment_references: true
+    directives_ordering: true
+    public_member_api_docs: true
