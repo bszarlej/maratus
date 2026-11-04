@@ -1,0 +1,29 @@
+name: maratus_workspace
+publish_to: none
+
+# The minimum-SDK job in .github/workflows/ci.yaml exercises this bound.
+environment:
+  sdk: ^3.11.0
+
+workspace:
+  - packages/maratus
+
+dev_dependencies:
+  melos: ^8.10.0
+
+melos:
+  repository: https://github.com/bszarlej/maratus
+
+  scripts:
+    check-format:
+      description: Fail if any Dart file in the workspace is not formatted.
+      run: melos format --output=none --set-exit-if-changed
+
+    test:browser:
+      description: >-
+        Run the browser WebSocket tests against a native loopback host.
+        Requires Chrome; set CHROME_EXECUTABLE if it is not found.
+      exec:
+        command: dart run tool/test_web_socket_browser.dart
+      packageFilters:
+        scope: maratus
