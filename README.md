@@ -1,8 +1,14 @@
-# maratus
+<p align="center">
+  <picture>
+    <source media="(prefers-color-scheme: dark)" srcset="assets/maratus-lockup-on-dark.svg">
+    <source media="(prefers-color-scheme: light)" srcset="assets/maratus-lockup-on-light.svg">
+    <img src="assets/maratus-lockup-on-light.svg" alt="Maratus logo" width="380">
+  </picture>
+</p>
 
-Godot-inspired multiplayer for Dart and [Flame](https://flame-engine.org)
-games: host-authoritative sessions, typed RPCs, replicated spawning, selected
-property synchronization, and late joining over WebSockets.
+<p align="center">
+  Godot-inspired multiplayer for Dart-based games.
+</p>
 
 ## Packages
 

@@ -1,3 +1,9 @@
+<picture>
+  <source media="(prefers-color-scheme: dark)" srcset="../../assets/maratus-mark-on-dark.svg">
+  <source media="(prefers-color-scheme: light)" srcset="../../assets/maratus-mark-on-light.svg">
+  <img src="../../assets/maratus-mark-on-light.svg" alt="Maratus logo" width="80">
+</picture>
+
 # WebSocket chat example
 
 This example hosts or joins a session, shows its lifecycle events and peer ID,

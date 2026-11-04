@@ -1,3 +1,17 @@
+<p align="center">
+  <picture>
+    <source media="(prefers-color-scheme: dark)" srcset="https://raw.githubusercontent.com/bszarlej/maratus/master/assets/maratus-lockup-on-dark.svg">
+    <source media="(prefers-color-scheme: light)" srcset="https://raw.githubusercontent.com/bszarlej/maratus/master/assets/maratus-lockup-on-light.svg">
+    <img src="https://raw.githubusercontent.com/bszarlej/maratus/master/assets/maratus-lockup-on-light.svg" alt="Maratus logo" width="300">
+  </picture>
+</p>
+
+<p align="center">
+  Godot-inspired multiplayer for <a href="https://flame-engine.org">Flame</a> games.
+</p>
+
+---
+
 # maratus_flame
 
 [Flame](https://flame-engine.org) bindings for

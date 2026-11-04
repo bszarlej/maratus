@@ -1,4 +1,16 @@
-# maratus
+<p align="center">
+  <picture>
+    <source media="(prefers-color-scheme: dark)" srcset="https://raw.githubusercontent.com/bszarlej/maratus/master/assets/maratus-lockup-on-dark.svg">
+    <source media="(prefers-color-scheme: light)" srcset="https://raw.githubusercontent.com/bszarlej/maratus/master/assets/maratus-lockup-on-light.svg">
+    <img src="https://raw.githubusercontent.com/bszarlej/maratus/master/assets/maratus-lockup-on-light.svg" alt="Maratus logo" width="300">
+  </picture>
+</p>
+
+<p align="center">
+  Godot-inspired multiplayer for Dart-based games.
+</p>
+
+---
 
 Godot-inspired multiplayer for Dart games: host-authoritative sessions, typed
 RPCs, replicated spawning, selected property synchronization, and late joining
