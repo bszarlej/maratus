@@ -288,11 +288,14 @@ final class _StateReplicator {
         due[field] = bytes;
       }
     }
-    for (final message in _messages(entity, due)) {
+    for (final message in _messages(entity, due, sampledAt: now)) {
       if (!_isCurrent(synchronizer, lifetime)) return;
-      _retain(entity, {
-        for (final field in message.values.keys) field: due[field]!,
-      }, now);
+      _retain(
+        entity,
+        {for (final field in message.values.keys) field: due[field]!},
+        now,
+        sampledAt: now,
+      );
       if (session._isHost) {
         session._replicate(message, session._nextRevision());
       } else {
@@ -333,15 +336,22 @@ final class _StateReplicator {
       }
       if (_lifetime != lifetime) return;
     }
-    for (final accepted in _messages(entity, received)) {
+    for (final accepted in _messages(
+      entity,
+      received,
+      sampledAt: message.sampledAt,
+    )) {
       if (_lifetime != lifetime ||
           entity.state == EntityState.removed ||
           !identical(session.registry[entity.id], entity)) {
         return;
       }
-      _retain(entity, {
-        for (final field in accepted.values.keys) field: received[field]!,
-      }, session._clock.now);
+      _retain(
+        entity,
+        {for (final field in accepted.values.keys) field: received[field]!},
+        session._clock.now,
+        sampledAt: message.sampledAt,
+      );
       if (session._isHost) {
         session._replicate(accepted, session._nextRevision(), except: origin);
         if (_lifetime != lifetime) return;
@@ -360,7 +370,13 @@ final class _StateReplicator {
         for (final MapEntry(key: field, :value) in fields.entries)
           field: value.bytes,
       };
-      for (final message in _messages(entity, values)) {
+      // Each capture samples every property of the entity, and a field it
+      // did not send was unchanged, so all retained values were current at
+      // the latest sample.
+      final sampledAt = fields.values
+          .map((value) => value.sampledAt)
+          .reduce((a, b) => a > b ? a : b);
+      for (final message in _messages(entity, values, sampledAt: sampledAt)) {
         if (!session._send(remote, message, revision: session._revision)) {
           return false;
         }
@@ -430,21 +446,24 @@ final class _StateReplicator {
   void _retain(
     NetworkEntity entity,
     Map<FieldId, Uint8List> fields,
-    Duration at,
-  ) {
+    Duration at, {
+    required Duration sampledAt,
+  }) {
     if (fields.isEmpty) return;
     final values = _values.putIfAbsent(entity, () => {});
     for (final MapEntry(key: field, value: bytes) in fields.entries) {
-      values[field] = _FieldValue(bytes, at);
+      values[field] = _FieldValue(bytes, at, sampledAt);
     }
   }
 
-  /// Splits [fields] into state messages within the wire limits: one for
-  /// all of them when possible, otherwise one for each field.
+  /// Splits [fields] into state messages within the wire limits, stamped
+  /// with the authority's [sampledAt]: one for all of them when possible,
+  /// otherwise one for each field.
   List<StateMessage> _messages(
     NetworkEntity entity,
-    Map<FieldId, Uint8List> fields,
-  ) {
+    Map<FieldId, Uint8List> fields, {
+    required Duration sampledAt,
+  }) {
     if (fields.isEmpty) return const [];
     final lifetime = _lifetime;
     final values = <FieldId, Object?>{};
@@ -458,7 +477,11 @@ final class _StateReplicator {
       if (_lifetime != lifetime) return const [];
     }
     if (values.isEmpty) return const [];
-    final combined = StateMessage(entity: entity.id, values: values);
+    final combined = StateMessage(
+      entity: entity.id,
+      values: values,
+      sampledAt: sampledAt,
+    );
     try {
       _checkFits(combined);
       return [combined];
@@ -473,7 +496,11 @@ final class _StateReplicator {
     }
     final messages = <StateMessage>[];
     for (final MapEntry(key: field, :value) in values.entries) {
-      final single = StateMessage(entity: entity.id, values: {field: value});
+      final single = StateMessage(
+        entity: entity.id,
+        values: {field: value},
+        sampledAt: sampledAt,
+      );
       try {
         _checkFits(single);
         messages.add(single);
@@ -544,11 +571,14 @@ final class _StateReplicator {
 }
 
 final class _FieldValue {
-  const _FieldValue(this.bytes, this.time);
+  const _FieldValue(this.bytes, this.time, this.sampledAt);
 
   /// The canonical encoding of the value.
   final Uint8List bytes;
 
   /// When this peer sent or received the value.
   final Duration time;
+
+  /// When the entity's authority sampled the value, on its own clock.
+  final Duration sampledAt;
 }

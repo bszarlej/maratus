@@ -12,6 +12,8 @@ void main() {
         'synced': 'synced',
         'ready': 'ready',
         'goodbye': 'goodbye',
+        'ping': 'ping',
+        'pong': 'pong',
         'spawn': 'spawn',
         'despawn': 'despawn',
         'rpc': 'rpc',
@@ -37,7 +39,11 @@ void main() {
 
   test('state messages keep an unmodifiable copy of their values', () {
     final values = {const FieldId('player.health'): 75};
-    final message = StateMessage(entity: const EntityId(7), values: values);
+    final message = StateMessage(
+      entity: const EntityId(7),
+      values: values,
+      sampledAt: Duration.zero,
+    );
     values[const FieldId('player.health')] = 10;
 
     expect(message.values, {const FieldId('player.health'): 75});

@@ -17,10 +17,12 @@ const _client3 = PeerId(4);
 final _name = StateMessage(
   entity: const EntityId(7),
   values: const {FieldId('player.name'): 'Ada'},
+  sampledAt: Duration.zero,
 );
 final _health = StateMessage(
   entity: const EntityId(7),
   values: const {FieldId('player.health'): 50},
+  sampledAt: Duration.zero,
 );
 
 /// A random source whose [nextInt] returns scripted values in order.

@@ -22,14 +22,15 @@ import 'wire_codec.dart';
 /// - `r`: the [MessageEnvelope.revision].
 /// - `b`: the message body. Hello bodies hold the schema fingerprint `f`,
 ///   welcome bodies the client's peer ID `p` and the epoch `e`, and goodbye
-///   bodies the reason code `c`; synced and ready bodies are empty. The
-///   other bodies hold the entity ID `e`: spawn bodies add the spawn type `t`,
-///   construction data `d`, owner `o`, authority `a`, and optionally a parent
-///   entity `p`. RPC request bodies add the RPC `m`, its payload `p`, and
-///   optionally a target peer `t`. RPC deliveries require both sender `s` and
-///   target `t`; state bodies add an object `f` of field values. The session
-///   validates the origin of RPC deliveries and the consistency of spawn
-///   metadata.
+///   bodies the reason code `c`; synced and ready bodies are empty. Ping and
+///   pong bodies hold the ping's sequence `n`. The other bodies hold the
+///   entity ID `e`: spawn bodies add the spawn type `t`, construction data
+///   `d`, owner `o`, authority `a`, and optionally a parent entity `p`. RPC
+///   request bodies add the RPC `m`, its payload `p`, and optionally a target
+///   peer `t`. RPC deliveries require both sender `s` and target `t`; state
+///   bodies add the authority's sample time `t`, in microseconds, and an
+///   object `f` of field values. The session validates the origin of RPC
+///   deliveries and the consistency of spawn metadata.
 final class ProtocolCodec {
   /// Creates a codec for the messages of [schema].
   ProtocolCodec(
@@ -40,9 +41,9 @@ final class ProtocolCodec {
 
   /// The protocol version that this codec writes and accepts.
   ///
-  /// RPC routing and spawn metadata extend version 1; the schema fingerprint
-  /// includes RPC routing metadata so earlier schemas fail the session
-  /// handshake.
+  /// RPC routing, spawn metadata, pings, and state sample times extend
+  /// version 1; the schema fingerprint includes RPC routing metadata so
+  /// earlier schemas fail the session handshake.
   static const int version = 1;
 
   /// The registrations that message bodies are validated against.
@@ -168,6 +169,9 @@ final class ProtocolCodec {
         },
         SyncedMessage() || ReadyMessage() => const {},
         GoodbyeMessage(:final reason) => {'c': reason.code},
+        PingMessage(:final sequence) || PongMessage(:final sequence) => {
+          'n': _checkCounter(sequence, 'sequence'),
+        },
         SpawnMessage(
           :final entity,
           :final type,
@@ -210,8 +214,9 @@ final class ProtocolCodec {
             's': _peerCodec.encode(sender.value),
             't': _peerCodec.encode(target.value),
           },
-        StateMessage(:final entity, :final values) => {
+        StateMessage(:final entity, :final values, :final sampledAt) => {
           'e': _checkEntity(entity),
+          't': _checkCounter(sampledAt.inMicroseconds, 'sampledAt'),
           'f': _encodeFields(values),
         },
       };
@@ -259,6 +264,12 @@ final class ProtocolCodec {
           );
         }
         return GoodbyeMessage(reason);
+      case MessageKind.ping:
+        final body = WireObject(value, const {'n'});
+        return PingMessage(body.read('n', _counterCodec));
+      case MessageKind.pong:
+        final body = WireObject(value, const {'n'});
+        return PongMessage(body.read('n', _counterCodec));
       case MessageKind.spawn:
         final hasParent =
             value is Map<String, Object?> && value.containsKey('p');
@@ -313,9 +324,10 @@ final class ProtocolCodec {
           target: PeerId(body.read('t', _peerCodec)),
         );
       case MessageKind.state:
-        final body = WireObject(value, const {'e', 'f'});
+        final body = WireObject(value, const {'e', 't', 'f'});
         return StateMessage(
           entity: _readEntity(body),
+          sampledAt: Duration(microseconds: body.read('t', _counterCodec)),
           values: _within('f', () => _decodeFields(body['f'])),
         );
     }
