@@ -36,6 +36,8 @@ final class PeerDiagnostics {
     required this.lastReceivedAt,
     required this.sent,
     required this.received,
+    required this.heldState,
+    required this.coalescedStates,
   });
 
   /// The peer at the other end of the connection.
@@ -72,6 +74,15 @@ final class PeerDiagnostics {
 
   /// The messages received from the peer since it was accepted.
   final TrafficCounts received;
+
+  /// The state waiting for this congested connection to drain: one entry
+  /// per entity, and the encoded size of its values. See
+  /// [MultiplayerSession.stateBackpressure].
+  final QueueDepth heldState;
+
+  /// How many times newer state for an entity replaced held state that had
+  /// not been sent to this peer.
+  final int coalescedStates;
 }
 
 /// A snapshot of a session's resources and traffic.
@@ -95,6 +106,8 @@ final class SessionDiagnostics {
     required this.obsoleteMessages,
     required this.sent,
     required this.received,
+    required this.heldState,
+    required this.coalescedStates,
     required this.peers,
   });
 
@@ -143,6 +156,13 @@ final class SessionDiagnostics {
 
   /// The messages this session received, including malformed ones.
   final TrafficCounts received;
+
+  /// The state waiting for congested connections to drain, over all peers.
+  final QueueDepth heldState;
+
+  /// How many times newer state replaced held state that had not been sent,
+  /// over all peers.
+  final int coalescedStates;
 
   /// The peers this session exchanges messages with, in the order of
   /// [MultiplayerSession.peers].

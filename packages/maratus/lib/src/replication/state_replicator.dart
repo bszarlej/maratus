@@ -397,17 +397,18 @@ final class _StateReplicator {
     }
     for (final message in _messages(entity, due, sampledAt: now)) {
       if (!_isCurrent(synchronizer, lifetime)) return;
-      _retain(
-        entity,
-        {for (final field in message.values.keys) field: due[field]!},
-        now,
-        sampledAt: now,
-      );
+      final fields = {
+        for (final field in message.values.keys) field: due[field]!,
+      };
+      _retain(entity, fields, now, sampledAt: now);
       if (session._isHost) {
-        session._replicate(message, session._nextRevision());
+        session._replicateState(entity, message, fields);
       } else {
         final host = session._peers[PeerId.host];
-        if (host == null || !session._send(host, message)) return;
+        if (host == null ||
+            !session._sendState(host, entity, message, fields)) {
+          return;
+        }
       }
       if (session._peer == null) return;
     }
@@ -454,12 +455,10 @@ final class _StateReplicator {
         return;
       }
       final now = session._clock.now;
-      _retain(
-        entity,
-        {for (final field in accepted.values.keys) field: received[field]!},
-        now,
-        sampledAt: message.sampledAt,
-      );
+      final fields = {
+        for (final field in accepted.values.keys) field: received[field]!,
+      };
+      _retain(entity, fields, now, sampledAt: message.sampledAt);
       final synchronizer = _synchronizers[entity.id];
       if (synchronizer != null &&
           !synchronizer.isDisposed &&
@@ -475,7 +474,7 @@ final class _StateReplicator {
         }
       }
       if (session._isHost) {
-        session._replicate(accepted, session._nextRevision(), except: origin);
+        session._replicateState(entity, accepted, fields, except: origin);
         if (_lifetime != lifetime) return;
       }
     }

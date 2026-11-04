@@ -177,9 +177,7 @@ final class _SpawnReplicator {
         'must be a replicated entity of this session',
       );
     }
-    if (session._revision == IntCodec.maxSafe) {
-      throw StateError('No replication revisions are left in this session.');
-    }
+    session._checkRevisionsLeft();
     SpawnMessage record(EntityId entity) => SpawnMessage(
       entity: entity,
       type: type.id,
@@ -200,7 +198,7 @@ final class _SpawnReplicator {
       rethrow;
     }
     final spawned = _add(entity, type.id, parentRecord, bytes, onOwnerLeft);
-    session._replicate(_decode(bytes), session._nextRevision());
+    session._replicate(_decode(bytes));
     _announce(spawned);
     return entity;
   }
@@ -358,9 +356,11 @@ final class _SpawnReplicator {
       session._codec.decode(bytes).message as SpawnMessage;
 
   void _despawn(_SpawnRecord record) {
-    final revision = session._nextRevision();
+    session._checkRevisionsLeft();
+    // Removing the entities first drops their held state instead of
+    // sending it ahead of the despawn record.
     final removed = _remove(record);
-    session._replicate(DespawnMessage(entity: record.entity.id), revision);
+    session._replicate(DespawnMessage(entity: record.entity.id));
     _release(removed);
   }
 

@@ -112,15 +112,19 @@ final class MultiplayerSession {
   /// [random] chooses epochs. State messages that the session accepts are
   /// also passed to [onMessage]; RPCs use [bindRpc], spawned entities
   /// [bindSpawn], and synchronized properties [EntityAttachment.synchronize].
-  /// All [timeouts] must be positive, as must all [pendingRpcLimits] and a
-  /// [pingInterval], or an [ArgumentError] is thrown. An idle timeout also
-  /// requires a shorter [pingInterval].
+  /// All [timeouts] must be positive, as must all [pendingRpcLimits],
+  /// [stateBackpressure], and a [pingInterval], or an [ArgumentError] is
+  /// thrown. An idle timeout also requires a shorter [pingInterval].
   MultiplayerSession({
     required ProtocolSchema schema,
     MonotonicClock clock = const SystemClock(),
     this.timeouts = const SessionTimeouts(),
     this.pendingRpcLimits = const PendingRpcLimits(),
     this.pingInterval = const Duration(seconds: 1),
+    this.stateBackpressure = const QueueLimits(
+      maxMessages: 256,
+      maxBytes: 1024 * 1024,
+    ),
     Random? random,
     SessionMessageHandler? onMessage,
   }) : _schema = schema,
@@ -143,6 +147,13 @@ final class MultiplayerSession {
         ping,
         'pingInterval',
         'must be shorter than the idle timeout',
+      );
+    }
+    if (stateBackpressure.maxMessages <= 0 || stateBackpressure.maxBytes <= 0) {
+      throw ArgumentError.value(
+        stateBackpressure,
+        'stateBackpressure',
+        'limits must be positive',
       );
     }
     if (pendingRpcLimits.maxMessages <= 0 ||
@@ -180,6 +191,19 @@ final class MultiplayerSession {
   /// always answers the other side's pings.
   final Duration? pingInterval;
 
+  /// The outgoing queue depth at which a connection is congested, so that
+  /// state for it waits in the session instead of its transport.
+  ///
+  /// Synchronized state is replaceable: while a connection's
+  /// [PeerConnection.outgoing] queue reaches either limit, as when its peer
+  /// stops polling, newer state for an entity replaces state that has not
+  /// been sent, keeping one waiting entry per entity. Waiting state is sent
+  /// in order once the queue drains, and before any other message to that
+  /// peer, so state never overtakes spawning, despawning, or RPCs. Other
+  /// messages are not replaceable and still close a connection whose
+  /// transport queue overflows.
+  final QueueLimits stateBackpressure;
+
   /// The number of accepted local RPCs awaiting attachment readiness/update.
   int get pendingRpcCount => _attachments.pendingCount;
 
@@ -208,6 +232,7 @@ final class MultiplayerSession {
   var _updating = false;
   final _sent = _Traffic();
   final _received = _Traffic();
+  var _coalescedStates = 0;
 
   /// The state of this session.
   SessionState get state => _state;
@@ -286,6 +311,14 @@ final class MultiplayerSession {
     obsoleteMessages: _obsoleteMessages,
     sent: TrafficCounts._(_sent),
     received: TrafficCounts._(_received),
+    heldState: _peers.values.fold<QueueDepth>(
+      (messages: 0, bytes: 0),
+      (total, remote) => (
+        messages: total.messages + remote.held.length,
+        bytes: total.bytes + remote.heldBytes,
+      ),
+    ),
+    coalescedStates: _coalescedStates,
     peers: List.unmodifiable([
       for (final MapEntry(key: peer, value: remote) in _peers.entries)
         PeerDiagnostics._(
@@ -298,6 +331,8 @@ final class MultiplayerSession {
           lastReceivedAt: remote.lastReceivedAt,
           sent: TrafficCounts._(remote.sent),
           received: TrafficCounts._(remote.received),
+          heldState: (messages: remote.held.length, bytes: remote.heldBytes),
+          coalescedStates: remote.coalescedStates,
         ),
     ]),
   );
@@ -368,6 +403,8 @@ final class MultiplayerSession {
       if (_peer != peer) return;
       _install();
       if (_peer != peer) return;
+      _drainHeld();
+      if (_peer != peer) return;
       _ping();
       if (_peer != peer) return;
       _enforceDeadlines();
@@ -384,14 +421,16 @@ final class MultiplayerSession {
   /// [MultiplayerSynchronizer] samples at most once per interval of the
   /// session's clock, however often this runs, and only while its attachment
   /// is ready. A host sends each change to every joined client; a client
-  /// sends it to the host, which relays it. Failures are reported as
-  /// [PropertySyncFailed] events. Has no effect unless hosting or ready.
-  /// Throws a [StateError] if called recursively, during [update], or from an
-  /// RPC or spawn handler.
+  /// sends it to the host, which relays it. State for a congested peer waits,
+  /// replaced by newer values, as [stateBackpressure] describes. Failures
+  /// are reported as [PropertySyncFailed] events. Has no effect unless
+  /// hosting or ready. Throws a [StateError] if called recursively, during
+  /// [update], or from an RPC or spawn handler.
   void captureState() {
     _checkNotRunning();
     if (_state != SessionState.hosting && _state != SessionState.ready) return;
     _states.capture();
+    _drainHeld();
   }
 
   void _checkNotRunning() {
@@ -547,18 +586,136 @@ final class MultiplayerSession {
     return ++_revision;
   }
 
-  /// Sends a replication [message] at [revision] to every joined client
-  /// except [except], then removes the clients whose transports refused it.
+  /// Throws a [StateError] if no replication revision is left for another
+  /// change, before the change is made.
+  void _checkRevisionsLeft() {
+    if (_revision == IntCodec.maxSafe) {
+      throw StateError('No replication revisions are left in this session.');
+    }
+  }
+
+  /// Sends a spawn or despawn [message] with a new revision to every joined
+  /// client, then removes the clients whose transports refused it.
   ///
+  /// Each client's held state is sent first, so the message follows it. The
+  /// revision is taken afterward, so it exceeds the revisions of that state.
   /// Removal waits until every client has been offered the message, so the
   /// cleanup of a departure never interleaves with it.
-  void _replicate(ProtocolMessage message, int revision, {_Remote? except}) {
+  void _replicate(ProtocolMessage message) {
     final refused = <_Remote>[];
-    for (final remote in _peers.values.toList()) {
-      if (identical(remote, except)) continue;
+    final remotes = _peers.values.toList();
+    for (final remote in remotes) {
+      if (!_flush(remote, all: true)) refused.add(remote);
+    }
+    final revision = _nextRevision();
+    for (final remote in remotes) {
+      if (refused.contains(remote)) continue;
       if (!_transmit(remote, message, revision: revision)) refused.add(remote);
     }
     refused.forEach(_refused);
+  }
+
+  /// Sends a state [message] about [entity], whose fields encode as [fields],
+  /// to every joined client except [except], with a new revision.
+  ///
+  /// Clients with held state or a congested connection hold the message
+  /// instead; see [stateBackpressure].
+  void _replicateState(
+    NetworkEntity entity,
+    StateMessage message,
+    Map<FieldId, Uint8List> fields, {
+    _Remote? except,
+  }) {
+    final revision = _nextRevision();
+    final refused = <_Remote>[];
+    for (final remote in _peers.values.toList()) {
+      if (identical(remote, except)) continue;
+      if (remote.held.isNotEmpty || _congested(remote)) {
+        _hold(remote, entity, message, fields);
+      } else if (!_transmit(remote, message, revision: revision)) {
+        refused.add(remote);
+      }
+    }
+    refused.forEach(_refused);
+  }
+
+  /// Sends a state [message] about [entity] from a client to the host
+  /// [remote], or holds it if the connection is congested. Returns `false`
+  /// if the transport refused it, which removes [remote].
+  bool _sendState(
+    _Remote remote,
+    NetworkEntity entity,
+    StateMessage message,
+    Map<FieldId, Uint8List> fields,
+  ) {
+    if (remote.held.isNotEmpty || _congested(remote)) {
+      _hold(remote, entity, message, fields);
+      return true;
+    }
+    if (_transmit(remote, message)) return true;
+    _refused(remote);
+    return false;
+  }
+
+  /// Whether [remote]'s outgoing queue reached [stateBackpressure].
+  bool _congested(_Remote remote) =>
+      !stateBackpressure.accepts(remote.connection.outgoing, 0);
+
+  /// Holds state [message] for [remote], replacing the held values of the
+  /// same fields of [entity] and moving its entry behind the others.
+  void _hold(
+    _Remote remote,
+    NetworkEntity entity,
+    StateMessage message,
+    Map<FieldId, Uint8List> fields,
+  ) {
+    final previous = remote.held.remove(entity.id);
+    if (previous != null) {
+      remote.coalescedStates++;
+      _coalescedStates++;
+    }
+    remote.held[entity.id] = _HeldState(entity, {
+      ...?previous?.fields,
+      ...fields,
+    }, message.sampledAt);
+  }
+
+  /// Sends [remote]'s held state, oldest entry first: all of it, or as long
+  /// as its connection is not congested. A host gives each message a new
+  /// revision, which keeps its revisions increasing for that client.
+  ///
+  /// State for entities removed in the meantime is dropped. Returns `false`
+  /// if the transport refused a message; the caller then removes [remote]
+  /// with [_refused].
+  bool _flush(_Remote remote, {required bool all}) {
+    while (remote.held.isNotEmpty && (all || !_congested(remote))) {
+      final id = remote.held.keys.first;
+      final held = remote.held.remove(id)!;
+      final entity = held.entity;
+      if (!identical(registry[id], entity) ||
+          entity.state == EntityState.removed) {
+        continue;
+      }
+      for (final message in _states._messages(
+        entity,
+        held.fields,
+        sampledAt: held.sampledAt,
+      )) {
+        final revision = _isHost ? _nextRevision() : 0;
+        if (!_transmit(remote, message, revision: revision)) return false;
+      }
+    }
+    return true;
+  }
+
+  /// Sends the held state of every peer whose connection is no longer
+  /// congested.
+  void _drainHeld() {
+    for (final remote in _peers.values.toList()) {
+      if (remote.held.isEmpty || _flush(remote, all: false)) continue;
+      _refused(remote);
+      if (_peer == null) return;
+    }
   }
 
   /// Removes the client [peer], telling it that it was kicked.
@@ -598,6 +755,7 @@ final class MultiplayerSession {
     _obsoleteMessages = 0;
     _sent.clear();
     _received.clear();
+    _coalescedStates = 0;
     _rpcDispatcher.clear();
     _spawns.clear();
     _states.clear();
@@ -907,6 +1065,8 @@ final class MultiplayerSession {
     bool release = true,
   }) {
     if (_remotes[remote.connection] != remote) return;
+    // State held for a peer that is leaving is never sent.
+    remote.held.clear();
     final goodbye = notify ? _goodbyeFor(reason) : null;
     if (goodbye != null && !_send(remote, GoodbyeMessage(goodbye))) return;
     remote.connection.close();
@@ -943,8 +1103,12 @@ final class MultiplayerSession {
   }
 
   /// Sends [message] to [remote], removing it if the transport refuses.
+  ///
+  /// State held for [remote] is sent first, so the message follows it.
   bool _send(_Remote remote, ProtocolMessage message, {int revision = 0}) {
-    final accepted = _transmit(remote, message, revision: revision);
+    final accepted =
+        _flush(remote, all: true) &&
+        _transmit(remote, message, revision: revision);
     if (!accepted) _refused(remote);
     return accepted;
   }
@@ -1062,4 +1226,29 @@ final class _Remote {
   Duration? smoothedRoundTripTime;
   final sent = _Traffic();
   final received = _Traffic();
+
+  /// The state waiting for this connection to drain, by entity, in the
+  /// order to send it.
+  final held = <EntityId, _HeldState>{};
+  var coalescedStates = 0;
+
+  /// The encoded size of the held field values.
+  int get heldBytes => held.values.fold(
+    0,
+    (total, state) =>
+        total +
+        state.fields.values.fold(0, (fields, bytes) => fields + bytes.length),
+  );
+}
+
+/// State waiting to be sent to a congested connection: the latest values of
+/// some fields of [entity], as its authority sampled them at [sampledAt].
+final class _HeldState {
+  const _HeldState(this.entity, this.fields, this.sampledAt);
+
+  final NetworkEntity entity;
+
+  /// The canonical encodings of the field values.
+  final Map<FieldId, Uint8List> fields;
+  final Duration sampledAt;
 }

@@ -497,7 +497,9 @@ copied through serialization: changing a live vector cannot rewrite an earlier
 sample. Each changed field sends its complete value. Fields due together are
 combined when the message fits the wire limits, otherwise sent separately;
 cross-field atomicity is not guaranteed. A field too large for its own message
-produces a `PropertySyncFailed` event.
+produces a `PropertySyncFailed` event. While a peer's connection is congested,
+newer values replace those not yet sent to it; see
+[Transports](#transports).
 
 `synchronizer.snapshot(field)` returns a `SyncSnapshot<T>?` with a fresh value
 copy and its local send or receive time on the session clock. The authority's
@@ -677,6 +679,25 @@ at a fixed point in each update instead of in callbacks.
   are available as `incoming` and `outgoing`; a closed connection counts
   nothing.
 
+Sessions treat synchronized state as replaceable. A connection whose
+outgoing queue reaches `stateBackpressure` (by default 256 messages or 1 MiB,
+a quarter of the default transport limits) is congested, and state for it
+waits in the session instead of its transport:
+
+| Message | While its connection is congested | When its transport queue overflows |
+| ------- | --------------------------------- | ---------------------------------- |
+| State | Waits; newer values for the same entity replace the waiting ones, keeping one entry per entity. | Cannot happen: waiting state is bounded by the synchronized entities. |
+| Spawn, despawn, RPC, and handshake messages | Sent at once, after any state waiting for that peer. | The connection closes with `CloseReason.overflow`. |
+| Pings and pongs | Sent at once, ahead of waiting state. | The connection closes with `CloseReason.overflow`. |
+
+Waiting state is sent in order as the queue drains, during `update()` and
+`captureState()`, so a peer that resumes polling receives the latest values
+instead of a backlog. State never overtakes a later spawn, despawn, or RPC,
+and waiting state of a despawned entity is dropped. Revisions stay
+increasing for each client; a host numbers waiting state when it sends it.
+Diagnostics report each peer's waiting state and how often newer state
+replaced it.
+
 ### WebSocket connections
 
 Use the same registered schema on the host and clients. A native host starts
@@ -843,8 +864,8 @@ print('${diagnostics.received[MessageKind.state].messages} state messages');
 | Part | Contents |
 | ---- | -------- |
 | Resources | Live entities, replicated entities, attachments, synchronizers, RPC and spawn bindings, pending RPCs, baseline entities still loading, and connections still handshaking. |
-| Traffic | `sent` and `received` messages and bytes, in total and by `MessageKind`, including malformed input; stale and obsolete messages. |
-| `peers` | For each accepted peer: readiness, `incoming` and `outgoing` queue depths, the latest and smoothed round trip, when the session last heard from it, and the traffic exchanged with it. |
+| Traffic | `sent` and `received` messages and bytes, in total and by `MessageKind`, including malformed input; stale and obsolete messages; state waiting for congested connections, and how often newer state replaced it. |
+| `peers` | For each accepted peer: readiness, `incoming` and `outgoing` queue depths, the latest and smoothed round trip, when the session last heard from it, the traffic exchanged with it, and its waiting state. |
 
 Counts start over each time a session hosts or joins; spawn bindings, which
 survive restarts, are the exception. A round trip runs from sending a ping
