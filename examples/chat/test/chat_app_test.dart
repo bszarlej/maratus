@@ -4,6 +4,7 @@ import 'package:flutter/material.dart';
 import 'package:flutter_test/flutter_test.dart';
 import 'package:maratus_chat/chat_controller.dart';
 import 'package:maratus_chat/main.dart';
+import 'package:maratus_chat/network_lab.dart';
 import 'package:maratus_flame/maratus_flame.dart';
 
 import 'game_test_helpers.dart';
@@ -119,6 +120,58 @@ void main() {
       await tester.pump(const Duration(milliseconds: 16));
     }
     expect(find.textContaining('Status: hosting'), findsOneWidget);
+    expect(tester.takeException(), isNull);
+    await tester.pumpWidget(const SizedBox());
+  });
+
+  testWidgets('a simulation shows its scenarios, views, and diagnostics', (
+    tester,
+  ) async {
+    tester.view.physicalSize = const Size(900, 1000);
+    tester.view.devicePixelRatio = 1;
+    addTearDown(tester.view.resetPhysicalSize);
+    addTearDown(tester.view.resetDevicePixelRatio);
+    final controller = ChatController(
+      hostingSupported: true,
+      clock: ManualClock(),
+    );
+    addTearDown(controller.dispose);
+    await tester.pumpWidget(ChatApp(controller: controller));
+    expect(find.text(NetworkScenario.latencySpike.label), findsNothing);
+
+    await tester.tap(find.text('Simulate'));
+    await tester.pump();
+    await tester.pump();
+
+    expect(find.byKey(const Key('labHostGame')), findsOneWidget);
+    expect(find.byKey(const Key('labPeerGame')), findsOneWidget);
+    for (final scenario in NetworkScenario.values) {
+      expect(find.text(scenario.label), findsOneWidget);
+    }
+    expect(
+      tester
+          .widget<FilledButton>(find.widgetWithText(FilledButton, 'Join'))
+          .onPressed,
+      isNull,
+    );
+    expect(find.textContaining('Simulated host'), findsNothing);
+
+    await tester.tap(find.byKey(const Key('diagnosticsToggle')));
+    await tester.pump();
+    expect(find.textContaining('This participant'), findsOneWidget);
+    expect(find.textContaining('Simulated host'), findsOneWidget);
+    expect(find.textContaining('Simulated client'), findsOneWidget);
+
+    await tester.tap(find.byKey(const Key('smoothingToggle')));
+    await tester.pump();
+    expect(controller.smoothing, isFalse);
+
+    await tester.tap(find.text('Disconnect'));
+    await tester.pump();
+    await tester.pump();
+    expect(find.byKey(const Key('labHostGame')), findsNothing);
+    expect(find.text(NetworkScenario.latencySpike.label), findsNothing);
+    expect(controller.canStart, isTrue);
     expect(tester.takeException(), isNull);
     await tester.pumpWidget(const SizedBox());
   });

@@ -4,7 +4,10 @@ import 'package:flame/game.dart';
 import 'package:flutter/material.dart';
 
 import 'chat_controller.dart';
+import 'chat_game.dart';
 import 'chat_protocol.dart';
+import 'diagnostics_overlay.dart';
+import 'network_lab.dart';
 
 /// Runs the WebSocket host/join example.
 void main() => runApp(const ChatApp());
@@ -39,8 +42,12 @@ class _ChatPageState extends State<_ChatPage> {
   final _port = TextEditingController(text: '8080');
   final _url = TextEditingController(text: 'ws://localhost:8080/netcode');
   final _message = TextEditingController();
+  NetworkLab? _lab;
+  var _showDiagnostics = false;
+
   @override
   void dispose() {
+    _lab?.dispose();
     if (widget.controller == null) _controller.dispose();
     _port.dispose();
     _url.dispose();
@@ -48,8 +55,42 @@ class _ChatPageState extends State<_ChatPage> {
     super.dispose();
   }
 
+  bool get _canStart => _controller.canStart && _lab == null;
+
   void _send() {
     if (_controller.send(_message.text)) _message.clear();
+  }
+
+  /// Starts a simulated host and second client, and joins them.
+  Future<void> _simulate() async {
+    if (!_canStart) return;
+    final lab = NetworkLab(clock: _controller.clock);
+    setState(() => _lab = lab);
+    await lab.start();
+    if (mounted && identical(_lab, lab)) _rejoin();
+  }
+
+  void _rejoin() {
+    final lab = _lab;
+    if (lab == null) return;
+    _controller.joinPeer(
+      lab.connect(),
+      description: 'Joining the simulated host',
+    );
+  }
+
+  void _setSmoothing(bool value) {
+    _controller.smoothing = value;
+    _lab?.peer.smoothing = value;
+  }
+
+  void _disconnect() {
+    _controller.disconnect();
+    final lab = _lab;
+    if (lab == null) return;
+    setState(() => _lab = null);
+    // Let the lab's game widgets leave the tree before closing their games.
+    WidgetsBinding.instance.addPostFrameCallback((_) => lab.dispose());
   }
 
   @override
@@ -80,7 +121,7 @@ class _ChatPageState extends State<_ChatPage> {
                           width: 100,
                           child: TextField(
                             controller: _port,
-                            enabled: _controller.canStart,
+                            enabled: _canStart,
                             keyboardType: TextInputType.number,
                             decoration: const InputDecoration(
                               labelText: 'Port',
@@ -89,7 +130,7 @@ class _ChatPageState extends State<_ChatPage> {
                         ),
                         const SizedBox(width: 12),
                         FilledButton(
-                          onPressed: _controller.canStart
+                          onPressed: _canStart
                               ? () => unawaited(_controller.host(_port.text))
                               : null,
                           child: const Text('Host'),
@@ -106,7 +147,7 @@ class _ChatPageState extends State<_ChatPage> {
                       Expanded(
                         child: TextField(
                           controller: _url,
-                          enabled: _controller.canStart,
+                          enabled: _canStart,
                           decoration: const InputDecoration(
                             labelText: 'Host URL',
                           ),
@@ -115,34 +156,96 @@ class _ChatPageState extends State<_ChatPage> {
                       ),
                       const SizedBox(width: 12),
                       FilledButton(
-                        onPressed: _controller.canStart
+                        onPressed: _canStart
                             ? () => _controller.join(_url.text)
                             : null,
                         child: const Text('Join'),
                       ),
+                      const SizedBox(width: 8),
+                      OutlinedButton(
+                        onPressed: _canStart
+                            ? () => unawaited(_simulate())
+                            : null,
+                        child: const Text('Simulate'),
+                      ),
                     ],
                   ),
-                  Align(
-                    alignment: Alignment.centerRight,
-                    child: TextButton(
-                      onPressed: _controller.canStart
-                          ? null
-                          : _controller.disconnect,
-                      child: const Text('Disconnect'),
-                    ),
+                  const SizedBox(height: 8),
+                  Wrap(
+                    alignment: WrapAlignment.end,
+                    crossAxisAlignment: WrapCrossAlignment.center,
+                    spacing: 8,
+                    runSpacing: 4,
+                    children: [
+                      _Toggle(
+                        key: const Key('smoothingToggle'),
+                        label: 'Smoothing',
+                        value: _controller.smoothing,
+                        onChanged: _setSmoothing,
+                      ),
+                      _Toggle(
+                        key: const Key('diagnosticsToggle'),
+                        label: 'Diagnostics',
+                        value: _showDiagnostics,
+                        onChanged: (value) =>
+                            setState(() => _showDiagnostics = value),
+                      ),
+                      TextButton(
+                        onPressed: _canStart ? null : _disconnect,
+                        style: TextButton.styleFrom(
+                          visualDensity: VisualDensity.compact,
+                          tapTargetSize: MaterialTapTargetSize.shrinkWrap,
+                        ),
+                        child: const Text('Disconnect'),
+                      ),
+                    ],
                   ),
                   const Divider(),
-                  SizedBox(
+                  _GamePanel(
+                    key: const Key('chatGame'),
+                    game: _controller.game,
                     height: 160,
-                    child: ClipRRect(
-                      borderRadius: BorderRadius.circular(12),
-                      child: GameWidget(
-                        key: const Key('chatGame'),
-                        game: _controller.game,
-                        autofocus: false,
-                      ),
-                    ),
+                    title: 'This participant',
+                    showDiagnostics: _showDiagnostics,
                   ),
+                  if (_lab case final lab?) ...[
+                    const SizedBox(height: 8),
+                    Wrap(
+                      spacing: 8,
+                      runSpacing: 4,
+                      children: [
+                        for (final scenario in NetworkScenario.values)
+                          OutlinedButton(
+                            onPressed: () => lab.run(scenario, rejoin: _rejoin),
+                            child: Text(scenario.label),
+                          ),
+                      ],
+                    ),
+                    const SizedBox(height: 8),
+                    Row(
+                      children: [
+                        Expanded(
+                          child: _GamePanel(
+                            key: const Key('labHostGame'),
+                            game: lab.host.game,
+                            height: 120,
+                            title: 'Simulated host',
+                            showDiagnostics: _showDiagnostics,
+                          ),
+                        ),
+                        const SizedBox(width: 8),
+                        Expanded(
+                          child: _GamePanel(
+                            key: const Key('labPeerGame'),
+                            game: lab.peer.game,
+                            height: 120,
+                            title: 'Simulated client',
+                            showDiagnostics: _showDiagnostics,
+                          ),
+                        ),
+                      ],
+                    ),
+                  ],
                   const SizedBox(height: 12),
                   Expanded(
                     child: _controller.activity.isEmpty
@@ -207,5 +310,59 @@ class _ChatPageState extends State<_ChatPage> {
         ),
       ),
     ),
+  );
+}
+
+/// A game canvas with its diagnostics shown over it when requested.
+class _GamePanel extends StatelessWidget {
+  const _GamePanel({
+    required super.key,
+    required this.game,
+    required this.height,
+    required this.title,
+    required this.showDiagnostics,
+  });
+
+  final ChatGame game;
+  final double height;
+  final String title;
+  final bool showDiagnostics;
+
+  @override
+  Widget build(BuildContext context) => SizedBox(
+    height: height,
+    child: ClipRRect(
+      borderRadius: BorderRadius.circular(12),
+      child: Stack(
+        fit: StackFit.expand,
+        children: [
+          GameWidget(game: game, autofocus: false),
+          if (showDiagnostics) DiagnosticsOverlay(game: game, title: title),
+        ],
+      ),
+    ),
+  );
+}
+
+/// A compact chip that toggles one of the example's options.
+class _Toggle extends StatelessWidget {
+  const _Toggle({
+    required super.key,
+    required this.label,
+    required this.value,
+    required this.onChanged,
+  });
+
+  final String label;
+  final bool value;
+  final ValueChanged<bool> onChanged;
+
+  @override
+  Widget build(BuildContext context) => FilterChip(
+    label: Text(label),
+    selected: value,
+    onSelected: onChanged,
+    visualDensity: VisualDensity.compact,
+    materialTapTargetSize: MaterialTapTargetSize.shrinkWrap,
   );
 }

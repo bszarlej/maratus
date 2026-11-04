@@ -42,8 +42,10 @@ integration.
 
 [`examples/chat`](examples/chat) is a Flutter app that hosts or joins a session
 over WebSockets, exchanges typed chat RPCs, and gives every participant a
-replicated avatar with host-simulated, synchronized movement. Windows can host
-or join, and browsers join a native host.
+replicated avatar with host-simulated movement that clients smooth. Windows
+can host or join, and browsers join a native host. A simulated network inside
+the app reproduces latency spikes, stalls, and dropped connections, with a
+diagnostics overlay to inspect them.
 
 ## Compatibility
 
