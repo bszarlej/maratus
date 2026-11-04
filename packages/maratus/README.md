@@ -668,10 +668,14 @@ at a fixed point in each update instead of in callbacks.
   `false`. Closing a peer closes all of its connections and discards its
   pending events.
 - **Queue limits.** Each connection limits how many messages, and how many
-  bytes, can wait to be polled and wait to be delivered (`QueueLimits`). A
-  reliable connection cannot drop a message, so when a message does not fit,
-  the connection closes with `CloseReason.overflow`. The current queue sizes
-  are available as `incoming` and `outgoing`.
+  bytes, it has received but not polled, and has sent but the remote peer
+  has not polled yet (`QueueLimits`). A sent message counts until the
+  receiver polls it and an acknowledgement returns, so a peer that stops
+  updating fills the queues of the peers that send to it. A reliable
+  connection cannot drop a message, so when a message does not fit, the
+  connection closes with `CloseReason.overflow`. The current queue sizes
+  are available as `incoming` and `outgoing`; a closed connection counts
+  nothing.
 
 ### WebSocket connections
 
@@ -904,7 +908,9 @@ client.link.disconnect(); // A network failure.
 ```
 
 In-memory links deliver reliably and in order. They do not simulate loss or
-reordering.
+reordering. As with WebSockets, a sent message counts as outgoing until the
+receiver polls it and the acknowledgement crosses the link, so a test
+simulates a stalled peer by not updating its session.
 
 ## License
 

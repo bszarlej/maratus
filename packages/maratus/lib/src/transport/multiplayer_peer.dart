@@ -45,7 +45,12 @@ abstract interface class PeerConnection {
   /// [MultiplayerPeer.poll] yet.
   QueueDepth get incoming;
 
-  /// The messages sent on this connection that have not been delivered yet.
+  /// The messages sent on this connection that the remote peer has not
+  /// consumed yet.
+  ///
+  /// The provided transports count a message until the remote peer polls
+  /// it and their acknowledgement arrives, so a remote peer that stops
+  /// polling fills this queue. A closed connection counts nothing.
   QueueDepth get outgoing;
 
   /// Sends [message] to the remote peer.

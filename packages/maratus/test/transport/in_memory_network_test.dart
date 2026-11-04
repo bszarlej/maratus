@@ -502,7 +502,8 @@ void main() {
         ..close();
       expect(pair.atClient.isOpen, isFalse);
       expect(pair.atClient.closeReason, CloseReason.local);
-      expect(pair.atClient.outgoing, (messages: 2, bytes: 2));
+      // A closed end is never told what the receiver polls.
+      expect(pair.atClient.outgoing, _empty);
       expect(pair.atHost.isOpen, isTrue);
 
       clock.advance(_ms * 10);
@@ -718,13 +719,61 @@ void main() {
       expect(pair.atHost.incoming, _empty);
 
       clock.advance(_ms * 10);
-      expect(pair.atClient.outgoing, _empty);
+      expect(pair.atClient.outgoing, (messages: 2, bytes: 3));
       expect(pair.atHost.incoming, (messages: 2, bytes: 3));
 
       host.poll();
       expect(pair.atHost.incoming, (messages: 1, bytes: 1));
       host.poll();
       expect(pair.atHost.incoming, _empty);
+      // The sender counts each message until the receiver's
+      // acknowledgement crosses the link.
+      expect(pair.atClient.outgoing, (messages: 2, bytes: 3));
+      clock.advance(_ms * 9);
+      expect(pair.atClient.outgoing, (messages: 2, bytes: 3));
+      clock.advance(_ms);
+      expect(pair.atClient.outgoing, _empty);
+    });
+
+    test('count each message until its own acknowledgement arrives', () {
+      final network = InMemoryNetwork(clock: clock);
+      final host = network.host();
+      final pair = _connect(clock, network, host, latency: _ms * 10);
+      pair.atClient
+        ..send(_bytes([1, 2]))
+        ..send(_bytes([3]));
+      clock.advance(_ms * 10);
+
+      host.poll();
+      clock.advance(_ms * 5);
+      host.poll();
+      clock.advance(_ms * 5);
+      expect(pair.atClient.outgoing, (messages: 1, bytes: 1));
+      clock.advance(_ms * 5);
+      expect(pair.atClient.outgoing, _empty);
+    });
+
+    test('fill the sender when its receiver stops polling', () {
+      final network = InMemoryNetwork(clock: clock);
+      final host = network.host();
+      final pair = _connect(
+        clock,
+        network,
+        host,
+        outgoingLimits: const QueueLimits(maxMessages: 3),
+      );
+
+      for (var i = 0; i < 3; i++) {
+        expect(pair.atClient.send(_bytes([i])), isTrue);
+        clock.advance(_ms * 10);
+      }
+      expect(pair.atHost.incoming.messages, 3);
+      expect(pair.atClient.send(_bytes([3])), isFalse);
+
+      expect(pair.atClient.closeReason, CloseReason.overflow);
+      expect(_drain(pair.client), [
+        _isClosed(pair.atClient, CloseReason.overflow),
+      ]);
     });
 
     test('close a connection whose outgoing queue is full', () {
@@ -804,7 +853,7 @@ void main() {
       expect(pair.atHost.closeReason, CloseReason.overflow);
     });
 
-    test('free space as messages are delivered and polled', () {
+    test('free space as messages are polled and acknowledged', () {
       final network = InMemoryNetwork(clock: clock);
       final host = network.host(
         incomingLimits: const QueueLimits(maxMessages: 1),
@@ -822,9 +871,30 @@ void main() {
         expect(_drain(host), [
           _isMessage(pair.atHost, [i]),
         ]);
+        // The acknowledgement makes room for the next message.
+        clock.advance(Duration.zero);
       }
       expect(pair.atHost.isOpen, isTrue);
       expect(pair.atClient.isOpen, isTrue);
+    });
+
+    test('never acknowledge discarded messages', () {
+      final network = InMemoryNetwork(clock: clock);
+      final host = network.host();
+      final pair = _connect(clock, network, host, latency: _ms * 10);
+      pair.atClient.send(_bytes([1]));
+      clock.advance(_ms * 10);
+
+      pair.atHost.close();
+      clock.advance(_ms * 5);
+      expect(pair.atClient.isOpen, isTrue);
+      expect(pair.atClient.outgoing, (messages: 1, bytes: 1));
+      clock.advance(_ms * 5);
+
+      expect(pair.atClient.closeReason, CloseReason.remote);
+      expect(pair.atClient.outgoing, _empty);
+      expect(network.links, isEmpty);
+      expect(clock.pendingTimerCount, 0);
     });
   });
 

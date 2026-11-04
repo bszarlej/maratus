@@ -16,6 +16,10 @@ import 'multiplayer_peer.dart';
 /// events.
 ///
 /// Delivery is reliable and ordered. Loss and reordering are not simulated.
+/// As over WebSockets, a sent message counts in its connection's
+/// [PeerConnection.outgoing] queue until the receiver polls it and an
+/// acknowledgement crosses the link back, so a receiver that stops polling
+/// fills its sender's queue.
 final class InMemoryNetwork {
   /// Creates a network timed by [clock], whose links have [latency] unless
   /// [connect] is given another.
@@ -94,8 +98,8 @@ sealed class InMemoryPeer implements MultiplayerPeer {
   /// polled.
   final QueueLimits incomingLimits;
 
-  /// The limits on each connection's sent messages that have not been
-  /// delivered.
+  /// The limits on each connection's sent messages that the receiver has not
+  /// polled and acknowledged.
   final QueueLimits outgoingLimits;
 
   final _events = Queue<PeerEvent>();
@@ -209,6 +213,11 @@ final class InMemoryConnection implements PeerConnection {
   var _incomingMessages = 0;
   var _incomingBytes = 0;
 
+  /// The sizes of the sent messages that the receiver has not acknowledged,
+  /// oldest first.
+  final _unacknowledged = Queue<int>();
+  var _outgoingBytes = 0;
+
   @override
   bool get isOpen => _state == _State.open;
 
@@ -220,7 +229,8 @@ final class InMemoryConnection implements PeerConnection {
       (messages: _incomingMessages, bytes: _incomingBytes);
 
   @override
-  QueueDepth get outgoing => (messages: _outbox.messages, bytes: _outbox.bytes);
+  QueueDepth get outgoing =>
+      (messages: _unacknowledged.length, bytes: _outgoingBytes);
 
   @override
   bool send(
@@ -239,6 +249,8 @@ final class InMemoryConnection implements PeerConnection {
       _closeLocally(CloseReason.overflow);
       return false;
     }
+    _unacknowledged.add(message.length);
+    _outgoingBytes += message.length;
     _outbox.send(_Message(Uint8List.fromList(message)));
     return true;
   }
@@ -263,9 +275,26 @@ final class InMemoryConnection implements PeerConnection {
     _peer._report(MessageReceived(this, message));
   }
 
+  /// Called when a received message of [size] bytes is polled, or
+  /// discarded.
   void _taken(int size) {
     _incomingMessages--;
     _incomingBytes -= size;
+    // Tell the sender it no longer needs to count a polled message. A
+    // closed end has nobody to tell.
+    if (isOpen) _outbox.send(_Signal.acknowledge);
+  }
+
+  /// Called when the receiver acknowledges the oldest sent message.
+  void _acknowledged() {
+    if (_unacknowledged.isEmpty) return;
+    _outgoingBytes -= _unacknowledged.removeFirst();
+  }
+
+  /// Stops counting sent messages, which a closed end is never told about.
+  void _forgetOutgoing() {
+    _unacknowledged.clear();
+    _outgoingBytes = 0;
   }
 
   /// Closes this end for a reason on this side: [close], or an overflow.
@@ -276,6 +305,7 @@ final class InMemoryConnection implements PeerConnection {
     if (_state == _State.closed) return;
     _state = _State.closed;
     _closeReason = reason;
+    _forgetOutgoing();
     _peer._discard(
       (event) => event is MessageReceived && event.connection == this,
     );
@@ -294,6 +324,7 @@ final class InMemoryConnection implements PeerConnection {
     if (_state == _State.closed) return;
     _state = _State.closed;
     _closeReason = reason;
+    _forgetOutgoing();
     _peer._report(ConnectionClosed(this, reason));
     _peer._removed(this);
     link._release();
@@ -386,6 +417,8 @@ final class InMemoryLink {
         _client._open();
       case _Signal.refuse:
         _client._closeRemotely(CloseReason.connectFailed);
+      case _Signal.acknowledge:
+        end?._acknowledged();
     }
   }
 
@@ -448,6 +481,9 @@ enum _Signal implements _Packet {
 
   /// Tells the other end that this end closed.
   close,
+
+  /// Tells the other end that this end polled the oldest message it sent.
+  acknowledge,
 }
 
 /// One direction of a link, which delivers packets in the order they were
@@ -460,12 +496,6 @@ final class _Pipe {
   final _queue = Queue<({Duration due, _Packet packet})>();
   Timer? _timer;
 
-  /// The number of messages in transit.
-  var messages = 0;
-
-  /// The total size of the messages in transit.
-  var bytes = 0;
-
   MonotonicClock get _clock => _link._network.clock;
 
   void send(_Packet packet) {
@@ -474,22 +504,13 @@ final class _Pipe {
     // A packet never overtakes one sent before it.
     if (_queue.isNotEmpty && _queue.last.due > due) due = _queue.last.due;
     _queue.add((due: due, packet: packet));
-    if (packet is _Message) {
-      messages++;
-      bytes += packet.bytes.length;
-    }
     _timer ??= _clock.schedule(_queue.first.due - now, _deliver);
   }
 
   void _deliver() {
     _timer = null;
     while (_queue.isNotEmpty && _queue.first.due <= _clock.now) {
-      final packet = _queue.removeFirst().packet;
-      if (packet is _Message) {
-        messages--;
-        bytes -= packet.bytes.length;
-      }
-      _arrive(packet);
+      _arrive(_queue.removeFirst().packet);
     }
     if (_queue.isNotEmpty) {
       _timer ??= _clock.schedule(_queue.first.due - _clock.now, _deliver);
@@ -499,8 +520,6 @@ final class _Pipe {
   /// Drops everything in transit.
   void clear() {
     _queue.clear();
-    messages = 0;
-    bytes = 0;
     _timer?.cancel();
     _timer = null;
   }
