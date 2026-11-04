@@ -192,6 +192,9 @@ final class _Harness {
   /// The state messages each session accepted: senders and field IDs.
   final observed = <MultiplayerSession, List<(PeerId, List<String>)>>{};
 
+  /// The sample times of the state messages each session accepted.
+  final stamps = <MultiplayerSession, List<Duration>>{};
+
   MultiplayerSession _session() {
     late final MultiplayerSession session;
     session = MultiplayerSession(
@@ -203,6 +206,7 @@ final class _Harness {
           sender,
           [for (final field in message.values.keys) field.value],
         ));
+        stamps.putIfAbsent(session, () => []).add(message.sampledAt);
       },
     );
     addTearDown(session.close);
@@ -340,6 +344,7 @@ final class _RawHostHarness {
 StateMessage _health(int entity, int value) => StateMessage(
   entity: EntityId(entity),
   values: {const FieldId('test.health'): value},
+  sampledAt: Duration.zero,
 );
 
 void main() {
@@ -479,6 +484,72 @@ void main() {
         harness.host.captureState();
         expect(harness.host.revision, samples, reason: '${harness.clock.now}');
       }
+    });
+  });
+
+  group('sample times', () {
+    test('state carries the time its authority sampled it', () {
+      final harness = _Harness();
+      final client = harness.join();
+      harness.run();
+      final [onHost, onClient] = harness.register(1);
+      final writer = _Model(harness.host, onHost, harness.schema)..health = 1;
+      _Model(client, onClient, harness.schema);
+
+      harness.clock.advance(_ms * 70);
+      harness.host.captureState();
+      // Delivering a sample later does not change its time.
+      harness.clock.advance(_ms * 15);
+      harness.run();
+      writer.health = 2;
+      harness.tick();
+
+      expect(harness.stamps[client], [_ms * 70, _ms * 135]);
+    });
+
+    test("relayed state keeps its client authority's time", () {
+      final harness = _Harness();
+      final first = harness.join();
+      final second = harness.join();
+      harness.run();
+      final [onHost, onFirst, onSecond] = harness.register(
+        1,
+        owner: _client1,
+        authority: _client1,
+      );
+      _Model(harness.host, onHost, harness.schema);
+      _Model(first, onFirst, harness.schema).health = 4;
+      _Model(second, onSecond, harness.schema);
+
+      harness.clock.advance(_ms * 20);
+      first.captureState();
+      harness.clock.advance(_ms * 30);
+      harness.run();
+
+      expect(harness.stamps[harness.host], [_ms * 20]);
+      expect(harness.stamps[second], [_ms * 20]);
+    });
+
+    test("a baseline carries its entity's latest sample time", () {
+      final harness = _Harness();
+      final [entity] = harness.register(1);
+      final writer = _Model(harness.host, entity, harness.schema)..health = 1;
+      harness.host.captureState();
+      writer.name = 'Ada';
+      harness.clock.advance(_ms * 80);
+      harness.host.captureState();
+
+      final joiner = harness.join();
+      joiner.registry.register(
+        const EntityId(1),
+        owner: PeerId.host,
+        authority: PeerId.host,
+      );
+      harness.run();
+
+      expect(joiner.state, SessionState.ready);
+      expect(harness.observed[joiner], [_stateFrom(PeerId.host, _fields)]);
+      expect(harness.stamps[joiner], [_ms * 80]);
     });
   });
 

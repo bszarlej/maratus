@@ -116,6 +116,8 @@ void main() {
     final client = controller(canHost: false);
     await host.host('8080');
     client.join('ws://localhost:8080/netcode');
+    // Show received offsets as they arrive, without interpolation.
+    client.smoothing = false;
     await pump();
     final previous = host.game.avatars.first.verticalOffset;
 
@@ -157,6 +159,44 @@ void main() {
       [for (final avatar in client.game.avatars) avatar.verticalOffset],
       [for (final avatar in host.game.avatars) avatar.verticalOffset],
     );
+  });
+
+  test('clients smooth avatar movement between samples', () async {
+    final host = controller();
+    final client = controller(canHost: false);
+    await host.host('8080');
+    client.join('ws://localhost:8080/netcode');
+    await pump();
+
+    /// Runs [count] 10 ms frames and counts those in which the client's
+    /// view of the host's avatar moved.
+    int movingFrames(int count) {
+      var moved = 0;
+      var previous = client.game.avatars.first.position.y;
+      for (var i = 0; i < count; i++) {
+        clock.advance(const Duration(milliseconds: 10));
+        host.game.update(0.01);
+        client.game.update(0.01);
+        final y = client.game.avatars.first.position.y;
+        if (y != previous) moved++;
+        previous = y;
+      }
+      return moved;
+    }
+
+    movingFrames(30);
+    // The host samples every 50 ms: smoothed positions move every frame,
+    // received ones only when a sample arrives.
+    expect(movingFrames(20), greaterThanOrEqualTo(18));
+    expect(
+      client.game.avatars.first.smoothingState,
+      InterpolationState.interpolating,
+    );
+    expect(host.game.avatars.first.smoothingState, isNull);
+
+    client.smoothing = false;
+    expect(movingFrames(20), lessThanOrEqualTo(5));
+    expect(client.game.avatars.first.smoothingState, isNull);
   });
 
   test(

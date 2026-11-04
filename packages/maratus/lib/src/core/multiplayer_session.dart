@@ -20,15 +20,20 @@ import 'session_events.dart';
 
 part 'rpc_dispatcher.dart';
 part 'entity_attachment.dart';
+part 'session_diagnostics.dart';
+part '../replication/interpolation.dart';
 part '../replication/spawn_replicator.dart';
 part '../replication/state_replicator.dart';
 
-/// How long a session waits for each stage of joining.
+/// How long a session waits for each stage of joining, and optionally for
+/// an accepted peer that has gone quiet.
 final class SessionTimeouts {
-  /// Creates timeouts for the [handshake] and the [bootstrap].
+  /// Creates timeouts for the [handshake], the [bootstrap], and an optional
+  /// [idle] connection.
   const SessionTimeouts({
     this.handshake = const Duration(seconds: 10),
     this.bootstrap = const Duration(seconds: 30),
+    this.idle,
   });
 
   /// How long a client may take from starting to join until the host
@@ -40,6 +45,17 @@ final class SessionTimeouts {
   /// the host's baseline and install its entities, for example while their
   /// components load.
   final Duration bootstrap;
+
+  /// How long a session waits for any message from an accepted peer before
+  /// dropping it with [DisconnectReason.timeout], or `null`, the default,
+  /// to wait as long as its transport stays open.
+  ///
+  /// Each peer pings the other at its [MultiplayerSession.pingInterval], so
+  /// an updating peer is never idle. This detects a peer that stopped
+  /// updating, or whose connection broke without closing. A host that
+  /// pauses for longer loses its clients. Requires a ping interval shorter
+  /// than this timeout.
+  final Duration? idle;
 }
 
 /// Observes a state message after the session accepted it, with its sender.
@@ -71,6 +87,12 @@ typedef SessionMessageHandler =
 /// same host, gets a new peer ID and generation, and starts from an empty
 /// [registry].
 ///
+/// Once a connection is accepted, each side pings the other at
+/// [pingInterval] to measure the round trip, which [diagnostics] reports
+/// with the session's traffic, queues, and resources. With
+/// [SessionTimeouts.idle], a peer that sends nothing for that long is
+/// dropped.
+///
 /// Replicated changes are ordered by a single [revision] that the host
 /// advances. The host welcomes a client with the revision of its baseline,
 /// and the client applies later changes only in increasing revision order.
@@ -90,13 +112,19 @@ final class MultiplayerSession {
   /// [random] chooses epochs. State messages that the session accepts are
   /// also passed to [onMessage]; RPCs use [bindRpc], spawned entities
   /// [bindSpawn], and synchronized properties [EntityAttachment.synchronize].
-  /// Both [timeouts] must be positive, as must all [pendingRpcLimits], or an
-  /// [ArgumentError] is thrown.
+  /// All [timeouts] must be positive, as must all [pendingRpcLimits],
+  /// [stateBackpressure], and a [pingInterval], or an [ArgumentError] is
+  /// thrown. An idle timeout also requires a shorter [pingInterval].
   MultiplayerSession({
     required ProtocolSchema schema,
     MonotonicClock clock = const SystemClock(),
     this.timeouts = const SessionTimeouts(),
     this.pendingRpcLimits = const PendingRpcLimits(),
+    this.pingInterval = const Duration(seconds: 1),
+    this.stateBackpressure = const QueueLimits(
+      maxMessages: 256,
+      maxBytes: 1024 * 1024,
+    ),
     Random? random,
     SessionMessageHandler? onMessage,
   }) : _schema = schema,
@@ -104,9 +132,29 @@ final class MultiplayerSession {
        _clock = clock,
        _random = random ?? Random(),
        _onMessage = onMessage {
+    final idle = timeouts.idle;
     if (timeouts.handshake <= Duration.zero ||
-        timeouts.bootstrap <= Duration.zero) {
+        timeouts.bootstrap <= Duration.zero ||
+        (idle != null && idle <= Duration.zero)) {
       throw ArgumentError.value(timeouts, 'timeouts', 'must be positive');
+    }
+    final ping = pingInterval;
+    if (ping != null && ping <= Duration.zero) {
+      throw ArgumentError.value(ping, 'pingInterval', 'must be positive');
+    }
+    if (idle != null && (ping == null || ping >= idle)) {
+      throw ArgumentError.value(
+        ping,
+        'pingInterval',
+        'must be shorter than the idle timeout',
+      );
+    }
+    if (stateBackpressure.maxMessages <= 0 || stateBackpressure.maxBytes <= 0) {
+      throw ArgumentError.value(
+        stateBackpressure,
+        'stateBackpressure',
+        'limits must be positive',
+      );
     }
     if (pendingRpcLimits.maxMessages <= 0 ||
         pendingRpcLimits.maxBytes <= 0 ||
@@ -135,6 +183,27 @@ final class MultiplayerSession {
   /// Bounds local RPCs waiting for an attached entity's update boundary.
   final PendingRpcLimits pendingRpcLimits;
 
+  /// How often this session pings each accepted peer to measure the round
+  /// trip, or `null` to send no pings.
+  ///
+  /// The first ping follows one interval after the peer is accepted, and a
+  /// session waits for each answer before sending the next ping. A session
+  /// always answers the other side's pings.
+  final Duration? pingInterval;
+
+  /// The outgoing queue depth at which a connection is congested, so that
+  /// state for it waits in the session instead of its transport.
+  ///
+  /// Synchronized state is replaceable: while a connection's
+  /// [PeerConnection.outgoing] queue reaches either limit, as when its peer
+  /// stops polling, newer state for an entity replaces state that has not
+  /// been sent, keeping one waiting entry per entity. Waiting state is sent
+  /// in order once the queue drains, and before any other message to that
+  /// peer, so state never overtakes spawning, despawning, or RPCs. Other
+  /// messages are not replaceable and still close a connection whose
+  /// transport queue overflows.
+  final QueueLimits stateBackpressure;
+
   /// The number of accepted local RPCs awaiting attachment readiness/update.
   int get pendingRpcCount => _attachments.pendingCount;
 
@@ -161,6 +230,9 @@ final class MultiplayerSession {
   var _staleMessages = 0;
   var _obsoleteMessages = 0;
   var _updating = false;
+  final _sent = _Traffic();
+  final _received = _Traffic();
+  var _coalescedStates = 0;
 
   /// The state of this session.
   SessionState get state => _state;
@@ -212,6 +284,59 @@ final class MultiplayerSession {
   /// count is zero, so it can serve as loading progress.
   int get pendingBaselineCount => _spawns.pendingBaselineCount;
 
+  /// A new snapshot of this session's resources, traffic, and peer
+  /// connections, including their queues and round trips.
+  SessionDiagnostics get diagnostics => SessionDiagnostics._(
+    entities: registry.entities.length,
+    replicatedEntities: _spawns._records.length,
+    attachments: _attachments._attached.values
+        .where((attachment) => !attachment.isDisposed)
+        .length,
+    synchronizers: _states._synchronizers.values
+        .where((synchronizer) => !synchronizer.isDisposed)
+        .length,
+    rpcBindings: _rpcDispatcher._bindings.values
+        .where((binding) => !binding.isDisposed)
+        .length,
+    spawnBindings: _spawns._bindings.values
+        .where((binding) => !binding.isDisposed)
+        .length,
+    pendingRpcs: (
+      messages: _attachments.pendingCount,
+      bytes: _attachments.pendingBytes,
+    ),
+    pendingBaselineEntities: _spawns.pendingBaselineCount,
+    pendingConnections: _remotes.length - _peers.length,
+    staleMessages: _staleMessages,
+    obsoleteMessages: _obsoleteMessages,
+    sent: TrafficCounts._(_sent),
+    received: TrafficCounts._(_received),
+    heldState: _peers.values.fold<QueueDepth>(
+      (messages: 0, bytes: 0),
+      (total, remote) => (
+        messages: total.messages + remote.held.length,
+        bytes: total.bytes + remote.heldBytes,
+      ),
+    ),
+    coalescedStates: _coalescedStates,
+    peers: List.unmodifiable([
+      for (final MapEntry(key: peer, value: remote) in _peers.entries)
+        PeerDiagnostics._(
+          peer: peer,
+          isReady: remote.state == _RemoteState.ready,
+          incoming: remote.connection.incoming,
+          outgoing: remote.connection.outgoing,
+          roundTripTime: remote.roundTripTime,
+          smoothedRoundTripTime: remote.smoothedRoundTripTime,
+          lastReceivedAt: remote.lastReceivedAt,
+          sent: TrafficCounts._(remote.sent),
+          received: TrafficCounts._(remote.received),
+          heldState: (messages: remote.held.length, bytes: remote.heldBytes),
+          coalescedStates: remote.coalescedStates,
+        ),
+    ]),
+  );
+
   /// Starts hosting a new session on [peer], with a new [epoch].
   ///
   /// The session takes over [peer] and closes it when it disconnects.
@@ -252,9 +377,10 @@ final class MultiplayerSession {
   /// are handled. Ready synchronizers then receive the latest values of the
   /// entities this peer does not write, before queued RPCs for attached
   /// entities run. A joining client then reports ready if every entity of
-  /// its baseline is ready. Deadlines are checked last, at this update
-  /// boundary, so a queued reply or a completed installation takes
-  /// precedence even when this method runs after the deadline.
+  /// its baseline is ready, and pings that are due are sent. Deadlines are
+  /// checked last, at this update boundary, so a queued reply or a
+  /// completed installation takes precedence even when this method runs
+  /// after the deadline.
   /// Has no effect while the session is disconnected.
   /// Throws a [StateError] if called recursively, during [captureState], or
   /// from an RPC or spawn handler, including a handler invoked by a local
@@ -277,6 +403,10 @@ final class MultiplayerSession {
       if (_peer != peer) return;
       _install();
       if (_peer != peer) return;
+      _drainHeld();
+      if (_peer != peer) return;
+      _ping();
+      if (_peer != peer) return;
       _enforceDeadlines();
     } finally {
       _updating = false;
@@ -291,14 +421,16 @@ final class MultiplayerSession {
   /// [MultiplayerSynchronizer] samples at most once per interval of the
   /// session's clock, however often this runs, and only while its attachment
   /// is ready. A host sends each change to every joined client; a client
-  /// sends it to the host, which relays it. Failures are reported as
-  /// [PropertySyncFailed] events. Has no effect unless hosting or ready.
-  /// Throws a [StateError] if called recursively, during [update], or from an
-  /// RPC or spawn handler.
+  /// sends it to the host, which relays it. State for a congested peer waits,
+  /// replaced by newer values, as [stateBackpressure] describes. Failures
+  /// are reported as [PropertySyncFailed] events. Has no effect unless
+  /// hosting or ready. Throws a [StateError] if called recursively, during
+  /// [update], or from an RPC or spawn handler.
   void captureState() {
     _checkNotRunning();
     if (_state != SessionState.hosting && _state != SessionState.ready) return;
     _states.capture();
+    _drainHeld();
   }
 
   void _checkNotRunning() {
@@ -454,18 +586,136 @@ final class MultiplayerSession {
     return ++_revision;
   }
 
-  /// Sends a replication [message] at [revision] to every joined client
-  /// except [except], then removes the clients whose transports refused it.
+  /// Throws a [StateError] if no replication revision is left for another
+  /// change, before the change is made.
+  void _checkRevisionsLeft() {
+    if (_revision == IntCodec.maxSafe) {
+      throw StateError('No replication revisions are left in this session.');
+    }
+  }
+
+  /// Sends a spawn or despawn [message] with a new revision to every joined
+  /// client, then removes the clients whose transports refused it.
   ///
+  /// Each client's held state is sent first, so the message follows it. The
+  /// revision is taken afterward, so it exceeds the revisions of that state.
   /// Removal waits until every client has been offered the message, so the
   /// cleanup of a departure never interleaves with it.
-  void _replicate(ProtocolMessage message, int revision, {_Remote? except}) {
+  void _replicate(ProtocolMessage message) {
     final refused = <_Remote>[];
-    for (final remote in _peers.values.toList()) {
-      if (identical(remote, except)) continue;
+    final remotes = _peers.values.toList();
+    for (final remote in remotes) {
+      if (!_flush(remote, all: true)) refused.add(remote);
+    }
+    final revision = _nextRevision();
+    for (final remote in remotes) {
+      if (refused.contains(remote)) continue;
       if (!_transmit(remote, message, revision: revision)) refused.add(remote);
     }
     refused.forEach(_refused);
+  }
+
+  /// Sends a state [message] about [entity], whose fields encode as [fields],
+  /// to every joined client except [except], with a new revision.
+  ///
+  /// Clients with held state or a congested connection hold the message
+  /// instead; see [stateBackpressure].
+  void _replicateState(
+    NetworkEntity entity,
+    StateMessage message,
+    Map<FieldId, Uint8List> fields, {
+    _Remote? except,
+  }) {
+    final revision = _nextRevision();
+    final refused = <_Remote>[];
+    for (final remote in _peers.values.toList()) {
+      if (identical(remote, except)) continue;
+      if (remote.held.isNotEmpty || _congested(remote)) {
+        _hold(remote, entity, message, fields);
+      } else if (!_transmit(remote, message, revision: revision)) {
+        refused.add(remote);
+      }
+    }
+    refused.forEach(_refused);
+  }
+
+  /// Sends a state [message] about [entity] from a client to the host
+  /// [remote], or holds it if the connection is congested. Returns `false`
+  /// if the transport refused it, which removes [remote].
+  bool _sendState(
+    _Remote remote,
+    NetworkEntity entity,
+    StateMessage message,
+    Map<FieldId, Uint8List> fields,
+  ) {
+    if (remote.held.isNotEmpty || _congested(remote)) {
+      _hold(remote, entity, message, fields);
+      return true;
+    }
+    if (_transmit(remote, message)) return true;
+    _refused(remote);
+    return false;
+  }
+
+  /// Whether [remote]'s outgoing queue reached [stateBackpressure].
+  bool _congested(_Remote remote) =>
+      !stateBackpressure.accepts(remote.connection.outgoing, 0);
+
+  /// Holds state [message] for [remote], replacing the held values of the
+  /// same fields of [entity] and moving its entry behind the others.
+  void _hold(
+    _Remote remote,
+    NetworkEntity entity,
+    StateMessage message,
+    Map<FieldId, Uint8List> fields,
+  ) {
+    final previous = remote.held.remove(entity.id);
+    if (previous != null) {
+      remote.coalescedStates++;
+      _coalescedStates++;
+    }
+    remote.held[entity.id] = _HeldState(entity, {
+      ...?previous?.fields,
+      ...fields,
+    }, message.sampledAt);
+  }
+
+  /// Sends [remote]'s held state, oldest entry first: all of it, or as long
+  /// as its connection is not congested. A host gives each message a new
+  /// revision, which keeps its revisions increasing for that client.
+  ///
+  /// State for entities removed in the meantime is dropped. Returns `false`
+  /// if the transport refused a message; the caller then removes [remote]
+  /// with [_refused].
+  bool _flush(_Remote remote, {required bool all}) {
+    while (remote.held.isNotEmpty && (all || !_congested(remote))) {
+      final id = remote.held.keys.first;
+      final held = remote.held.remove(id)!;
+      final entity = held.entity;
+      if (!identical(registry[id], entity) ||
+          entity.state == EntityState.removed) {
+        continue;
+      }
+      for (final message in _states._messages(
+        entity,
+        held.fields,
+        sampledAt: held.sampledAt,
+      )) {
+        final revision = _isHost ? _nextRevision() : 0;
+        if (!_transmit(remote, message, revision: revision)) return false;
+      }
+    }
+    return true;
+  }
+
+  /// Sends the held state of every peer whose connection is no longer
+  /// congested.
+  void _drainHeld() {
+    for (final remote in _peers.values.toList()) {
+      if (remote.held.isEmpty || _flush(remote, all: false)) continue;
+      _refused(remote);
+      if (_peer == null) return;
+    }
   }
 
   /// Removes the client [peer], telling it that it was kicked.
@@ -503,6 +753,9 @@ final class MultiplayerSession {
     _nextGeneration = 1;
     _staleMessages = 0;
     _obsoleteMessages = 0;
+    _sent.clear();
+    _received.clear();
+    _coalescedStates = 0;
     _rpcDispatcher.clear();
     _spawns.clear();
     _states.clear();
@@ -548,6 +801,7 @@ final class MultiplayerSession {
     try {
       envelope = _codec.decode(bytes);
     } on ProtocolException catch (error) {
+      _count(remote.received, _received, null, bytes.length);
       _drop(
         remote,
         error.code == ProtocolErrorCode.unsupportedVersion
@@ -557,6 +811,7 @@ final class MultiplayerSession {
       );
       return;
     }
+    _count(remote.received, _received, envelope.message.kind, bytes.length);
     // A welcome assigns the connection's generation, which every other
     // message must carry.
     final assigning =
@@ -567,6 +822,7 @@ final class MultiplayerSession {
       _staleMessages++;
       return;
     }
+    if (remote.peer != null) remote.lastReceivedAt = _clock.now;
     if (_isHost) {
       _receiveFromClient(remote, envelope);
     } else {
@@ -578,6 +834,10 @@ final class MultiplayerSession {
     switch ((remote.state, envelope.message)) {
       case (_, GoodbyeMessage(:final reason)):
         _drop(remote, _goodbyeReason(reason));
+      case (!= _RemoteState.handshaking, PingMessage(:final sequence)):
+        _answer(remote, sequence);
+      case (!= _RemoteState.handshaking, PongMessage(:final sequence)):
+        _pong(remote, sequence);
       case (_RemoteState.handshaking, HelloMessage(:final fingerprint)):
         if (fingerprint == _schema.fingerprint) {
           _welcome(remote);
@@ -610,6 +870,7 @@ final class MultiplayerSession {
       ..baseline = _revision
       ..state = _RemoteState.synchronizing
       ..deadline = _clock.now + timeouts.bootstrap;
+    _accepted(remote);
     _peers[peer] = remote;
     _emit(PeerJoined(peer));
     // The baseline holds the live entities, then their latest values.
@@ -629,6 +890,10 @@ final class MultiplayerSession {
     switch ((remote.state, envelope.message)) {
       case (_, GoodbyeMessage(:final reason)):
         _drop(remote, _goodbyeReason(reason));
+      case (!= _RemoteState.handshaking, PingMessage(:final sequence)):
+        _answer(remote, sequence);
+      case (!= _RemoteState.handshaking, PongMessage(:final sequence)):
+        _pong(remote, sequence);
       case (_RemoteState.handshaking, WelcomeMessage(:final peer, :final epoch))
           when envelope.generation > 0:
         remote
@@ -636,6 +901,7 @@ final class MultiplayerSession {
           ..generation = envelope.generation
           ..state = _RemoteState.synchronizing
           ..deadline = _clock.now + timeouts.bootstrap;
+        _accepted(remote);
         _peers[PeerId.host] = remote;
         _localPeer = peer;
         _epoch = epoch;
@@ -708,6 +974,60 @@ final class MultiplayerSession {
     _setState(SessionState.ready);
   }
 
+  /// Starts measuring round trips and idle time for [remote], which was
+  /// just accepted.
+  void _accepted(_Remote remote) {
+    final now = _clock.now;
+    remote.lastReceivedAt = now;
+    if (pingInterval case final interval?) remote.nextPingAt = now + interval;
+  }
+
+  /// Sends a ping to each accepted peer that is due one and has answered
+  /// the previous ping.
+  ///
+  /// Pings and their answers carry no game state, so a refused one leaves
+  /// the connection to its transport: a refusing transport reports the
+  /// connection closed, after any queued messages that say why.
+  void _ping() {
+    final now = _clock.now;
+    for (final remote in _peers.values.toList()) {
+      final due = remote.nextPingAt;
+      if (due == null || remote.pingSentAt != null || now < due) continue;
+      final sequence = remote.nextPingSequence++;
+      if (!_transmit(remote, PingMessage(sequence))) continue;
+      remote
+        ..pingSequence = sequence
+        ..pingSentAt = now;
+    }
+  }
+
+  /// Answers the ping with [sequence] that [remote] sent.
+  ///
+  /// As with [_ping], a refusal is left to the transport, so a goodbye
+  /// queued after the ping still gives the reason for closing.
+  void _answer(_Remote remote, int sequence) =>
+      _transmit(remote, PongMessage(sequence));
+
+  /// Records the round trip of the ping that [remote] answered with
+  /// [sequence], which must be the outstanding one.
+  void _pong(_Remote remote, int sequence) {
+    final sentAt = remote.pingSentAt;
+    if (sentAt == null || sequence != remote.pingSequence) {
+      _drop(remote, DisconnectReason.protocolViolation, notify: true);
+      return;
+    }
+    final roundTrip = _clock.now - sentAt;
+    final smoothed = remote.smoothedRoundTripTime;
+    remote
+      ..pingSentAt = null
+      ..pingSequence = null
+      ..roundTripTime = roundTrip
+      ..smoothedRoundTripTime = smoothed == null
+          ? roundTrip
+          : smoothed + (roundTrip - smoothed) ~/ 8
+      ..nextPingAt = pingInterval == null ? null : sentAt + pingInterval!;
+  }
+
   void _enforceDeadlines() {
     final now = _clock.now;
     if (!_isHost && _remotes.isEmpty) {
@@ -718,9 +1038,14 @@ final class MultiplayerSession {
       }
       return;
     }
+    final idle = timeouts.idle;
     for (final remote in _remotes.values.toList()) {
       final deadline = remote.deadline;
-      if (deadline != null && now >= deadline) {
+      final lastReceivedAt = remote.lastReceivedAt;
+      if ((deadline != null && now >= deadline) ||
+          (idle != null &&
+              lastReceivedAt != null &&
+              now - lastReceivedAt >= idle)) {
         _drop(remote, DisconnectReason.timeout, notify: true);
         if (_peer == null) return;
       }
@@ -740,6 +1065,8 @@ final class MultiplayerSession {
     bool release = true,
   }) {
     if (_remotes[remote.connection] != remote) return;
+    // State held for a peer that is leaving is never sent.
+    remote.held.clear();
     final goodbye = notify ? _goodbyeFor(reason) : null;
     if (goodbye != null && !_send(remote, GoodbyeMessage(goodbye))) return;
     remote.connection.close();
@@ -776,24 +1103,41 @@ final class MultiplayerSession {
   }
 
   /// Sends [message] to [remote], removing it if the transport refuses.
+  ///
+  /// State held for [remote] is sent first, so the message follows it.
   bool _send(_Remote remote, ProtocolMessage message, {int revision = 0}) {
-    final accepted = _transmit(remote, message, revision: revision);
+    final accepted =
+        _flush(remote, all: true) &&
+        _transmit(remote, message, revision: revision);
     if (!accepted) _refused(remote);
     return accepted;
   }
 
   /// Offers [message] to [remote]'s transport, returning whether it was
   /// accepted. A caller must remove a refusing [remote] with [_refused].
-  bool _transmit(_Remote remote, ProtocolMessage message, {int revision = 0}) =>
-      remote.connection.send(
-        _codec.encode(
-          MessageEnvelope(
-            message,
-            generation: remote.generation,
-            revision: revision,
-          ),
-        ),
-      );
+  bool _transmit(_Remote remote, ProtocolMessage message, {int revision = 0}) {
+    final bytes = _codec.encode(
+      MessageEnvelope(
+        message,
+        generation: remote.generation,
+        revision: revision,
+      ),
+    );
+    if (!remote.connection.send(bytes)) return false;
+    _count(remote.sent, _sent, message.kind, bytes.length);
+    return true;
+  }
+
+  /// Counts a message of [kind] and [size] bytes for a peer and the session.
+  static void _count(
+    _Traffic peer,
+    _Traffic session,
+    MessageKind? kind,
+    int size,
+  ) {
+    peer.add(kind, size);
+    session.add(kind, size);
+  }
 
   /// Removes [remote] after its transport refused a message.
   void _refused(_Remote remote) {
@@ -867,4 +1211,44 @@ final class _Remote {
   var baseline = 0;
   var state = _RemoteState.handshaking;
   Duration? deadline;
+
+  /// When this side last handled a message from the remote, once accepted.
+  Duration? lastReceivedAt;
+
+  /// When the next ping is due, once accepted and if pings are enabled.
+  Duration? nextPingAt;
+  var nextPingSequence = 0;
+
+  /// The sequence and send time of the ping awaiting its pong, if any.
+  int? pingSequence;
+  Duration? pingSentAt;
+  Duration? roundTripTime;
+  Duration? smoothedRoundTripTime;
+  final sent = _Traffic();
+  final received = _Traffic();
+
+  /// The state waiting for this connection to drain, by entity, in the
+  /// order to send it.
+  final held = <EntityId, _HeldState>{};
+  var coalescedStates = 0;
+
+  /// The encoded size of the held field values.
+  int get heldBytes => held.values.fold(
+    0,
+    (total, state) =>
+        total +
+        state.fields.values.fold(0, (fields, bytes) => fields + bytes.length),
+  );
+}
+
+/// State waiting to be sent to a congested connection: the latest values of
+/// some fields of [entity], as its authority sampled them at [sampledAt].
+final class _HeldState {
+  const _HeldState(this.entity, this.fields, this.sampledAt);
+
+  final NetworkEntity entity;
+
+  /// The canonical encodings of the field values.
+  final Map<FieldId, Uint8List> fields;
+  final Duration sampledAt;
 }

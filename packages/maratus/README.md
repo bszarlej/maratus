@@ -235,7 +235,15 @@ and enforce `SessionTimeouts`. The defaults allow 10 seconds for connecting
 and handshaking, and 30 seconds for the bootstrap, which includes loading the
 components of the baseline; both durations must be positive. Queued events
 and a joining client's completed installation are processed before timeouts
-are checked, so they take precedence even after a deadline. In tests, advance
+are checked, so they take precedence even after a deadline.
+
+Once a connection is accepted, each side pings the other every
+`pingInterval` (one second by default, `null` for none) to measure the round
+trip; see [Diagnostics](#diagnostics). An accepted peer stays connected for
+as long as its transport is open, even if it stops updating. Set
+`SessionTimeouts.idle` to drop a peer that sends nothing, not even pings, for
+that long, with `DisconnectReason.timeout`. It requires a shorter ping
+interval, and a host that pauses for longer loses its clients. In tests, advance
 the same `ManualClock` used by the network and sessions; in an application,
 call `update()` in the game loop. Starting, closing, and kicking a peer take
 effect when those methods are called.
@@ -489,15 +497,16 @@ copied through serialization: changing a live vector cannot rewrite an earlier
 sample. Each changed field sends its complete value. Fields due together are
 combined when the message fits the wire limits, otherwise sent separately;
 cross-field atomicity is not guaranteed. A field too large for its own message
-produces a `PropertySyncFailed` event.
+produces a `PropertySyncFailed` event. While a peer's connection is congested,
+newer values replace those not yet sent to it; see
+[Transports](#transports).
 
 `synchronizer.snapshot(field)` returns a `SyncSnapshot<T>?` with a fresh value
 copy and its local send or receive time on the session clock. The authority's
 snapshot is its last sampled value sent; a receiver's is its latest accepted
 value. Setters receive separate copies, so presentation changes do not alter
 the retained authoritative state. Omit a property's setter when presentation
-code will read snapshots itself. Interpolation remains application code;
-built-in visual smoothing is planned for a later milestone.
+code will read snapshots or [interpolated values](#interpolation) itself.
 
 The host validates every client write against the entity's fixed authority
 and relays accepted state to the other clients. Clients apply state only from
@@ -526,6 +535,55 @@ peer after starting its session and before processing incoming state.
 Call `session.update()` before gameplay, then `session.captureState()`
 afterward. In Flame, `MultiplayerScope` from `maratus_flame` performs both
 steps automatically.
+
+#### Interpolation
+
+Peers other than an entity's authority receive its synchronized values a few
+times per second. Give a property an `interpolator` to present smoothed
+values between those samples. Setters and snapshots still receive each
+authoritative value as it arrives:
+
+```dart
+final synchronizer = attachment.synchronize([
+  xField.property(
+    get: () => x,
+    interpolator: const DoubleInterpolator(teleportDistance: 200),
+  ),
+]);
+
+// Each frame, on the other peers:
+if (synchronizer.interpolated(xField) case final shown?) {
+  displayedX = shown.value;
+}
+```
+
+State messages carry the time their authority sampled the values, and the
+host relays that time unchanged. Each receiving synchronizer places samples
+on the authority's timeline. It estimates the offset between that clock and
+its own from the fastest recent delivery, so bursts of late messages and the
+receiver's frame timing do not distort motion. `interpolated(field)` presents
+the value that timeline reached `interpolationDelay` behind the newest
+sample, by default twice the synchronizer's interval. Its
+`InterpolationState` tells how:
+
+| State | Shown |
+| ----- | ----- |
+| `interpolating` | A blend of the samples on both sides of the presentation time. |
+| `holding` | The nearest sample, when none lies beyond the presentation time: the first while samples start to arrive, or the newest when the next is late, a buffer underrun. Values are never extrapolated. |
+| `snapped` | The earlier sample, when the interpolator's `isTeleport` reports a discontinuity such as a respawn. The value jumps when the presentation time reaches the next sample. |
+
+After a pause in sampling longer than two intervals, such as an unchanged
+`onChange` field, the earlier value holds until one interval before the next
+sample, so movement resumes at its sampled pace. Presentation time never
+moves backwards: when latency rises it pauses until the delay covers the new
+transit time, and after a stall it catches up with the newest samples.
+`interpolated()` returns `null` on the entity's authority, which presents its
+own state, and before any value arrives; each value is a copy the caller may
+change.
+
+`DoubleInterpolator` blends numbers. Implement `Interpolator<T>` for other
+types, or use `Vector2Interpolator` from `maratus_flame`. Interpolation only
+changes what is displayed: it does not predict or reconcile gameplay.
 
 ### Late joining
 
@@ -612,10 +670,33 @@ at a fixed point in each update instead of in callbacks.
   `false`. Closing a peer closes all of its connections and discards its
   pending events.
 - **Queue limits.** Each connection limits how many messages, and how many
-  bytes, can wait to be polled and wait to be delivered (`QueueLimits`). A
-  reliable connection cannot drop a message, so when a message does not fit,
-  the connection closes with `CloseReason.overflow`. The current queue sizes
-  are available as `incoming` and `outgoing`.
+  bytes, it has received but not polled, and has sent but the remote peer
+  has not polled yet (`QueueLimits`). A sent message counts until the
+  receiver polls it and an acknowledgement returns, so a peer that stops
+  updating fills the queues of the peers that send to it. A reliable
+  connection cannot drop a message, so when a message does not fit, the
+  connection closes with `CloseReason.overflow`. The current queue sizes
+  are available as `incoming` and `outgoing`; a closed connection counts
+  nothing.
+
+Sessions treat synchronized state as replaceable. A connection whose
+outgoing queue reaches `stateBackpressure` (by default 256 messages or 1 MiB,
+a quarter of the default transport limits) is congested, and state for it
+waits in the session instead of its transport:
+
+| Message | While its connection is congested | When its transport queue overflows |
+| ------- | --------------------------------- | ---------------------------------- |
+| State | Waits; newer values for the same entity replace the waiting ones, keeping one entry per entity. | Cannot happen: waiting state is bounded by the synchronized entities. |
+| Spawn, despawn, RPC, and handshake messages | Sent at once, after any state waiting for that peer. | The connection closes with `CloseReason.overflow`. |
+| Pings and pongs | Sent at once, ahead of waiting state. | The connection closes with `CloseReason.overflow`. |
+
+Waiting state is sent in order as the queue drains, during `update()` and
+`captureState()`, so a peer that resumes polling receives the latest values
+instead of a backlog. State never overtakes a later spawn, despawn, or RPC,
+and waiting state of a despawned entity is dropped. Revisions stay
+increasing for each client; a host numbers waiting state when it sends it.
+Diagnostics report each peer's waiting state and how often newer state
+replaced it.
 
 ### WebSocket connections
 
@@ -683,7 +764,7 @@ the transport's event queue. After `session.update()`, inspect
 | Reason | Typical cause |
 | ------ | ------------- |
 | `transportError` | Refused connection, opening deadline, wrong endpoint path or subprotocol, TLS/browser rejection, lost connection, malformed transport frame, or queue overflow. |
-| `timeout` | The session's own connecting, handshake, or bootstrap deadline expired, for example while the baseline's components were still loading. |
+| `timeout` | The session's own connecting, handshake, or bootstrap deadline expired, for example while the baseline's components were still loading, or an idle timeout found a peer silent. |
 | `bootstrapFailed` | A spawn handler, such as a spawner's factory, failed for an entity of the joining client's baseline. |
 | `schemaMismatch` / `versionMismatch` | The peers registered different definitions or use incompatible protocol versions. |
 | `protocolViolation` | A received session message failed protocol validation. |
@@ -725,10 +806,10 @@ server {
 }
 ```
 
-Forward the WebSocket upgrade headers and preserve the endpoint path. Set the
-proxy's idle timeout to suit your application's expected quiet periods; the
-adapter does not send periodic keepalive messages. An idle connection can
-therefore close when that timeout expires. See nginx's
+Forward the WebSocket upgrade headers and preserve the endpoint path. The
+adapter itself sends no keepalive messages, but sessions ping each other
+every second by default, so a proxy's idle timeout only closes connections
+whose sessions have stopped updating or disabled pings. See nginx's
 [WebSocket proxying](https://nginx.org/en/docs/http/websocket.html) and
 [HTTPS configuration](https://nginx.org/en/docs/http/configuring_https_servers.html)
 documentation.
@@ -765,6 +846,34 @@ layers can buffer socket data, and an oversized WebSocket frame may be assembled
 before the adapter can reject it. The session's protocol limits still apply
 after transport framing is removed.
 
+### Diagnostics
+
+`session.diagnostics` takes a snapshot of a session's resources and
+traffic, for example to show network conditions in a game, or to check in
+tests that repeated sessions release everything they used:
+
+```dart
+final diagnostics = session.diagnostics;
+for (final peer in diagnostics.peers) {
+  print('${peer.peer.value}: ${peer.roundTripTime?.inMilliseconds} ms, '
+      '${peer.outgoing.messages} queued');
+}
+print('${diagnostics.received[MessageKind.state].messages} state messages');
+```
+
+| Part | Contents |
+| ---- | -------- |
+| Resources | Live entities, replicated entities, attachments, synchronizers, RPC and spawn bindings, pending RPCs, baseline entities still loading, and connections still handshaking. |
+| Traffic | `sent` and `received` messages and bytes, in total and by `MessageKind`, including malformed input; stale and obsolete messages; state waiting for congested connections, and how often newer state replaced it. |
+| `peers` | For each accepted peer: readiness, `incoming` and `outgoing` queue depths, the latest and smoothed round trip, when the session last heard from it, the traffic exchanged with it, and its waiting state. |
+
+Counts start over each time a session hosts or joins; spawn bindings, which
+survive restarts, are the exception. A round trip runs from sending a ping
+until handling its answer, so it includes the time each side takes to reach
+its next `update()`. The smoothed round trip weighs each new one by an
+eighth. A session waits for each answer before pinging again, and answers
+the other side's pings even with its own pings disabled.
+
 ## Platform support
 
 | Platform | WebSocket host | WebSocket client |
@@ -789,8 +898,8 @@ conditional imports. Browser builds do not import the native implementation.
   ID, so an application that wants a player to keep their entities must
   transfer them itself.
 - Authority is fixed. Authority transfer, client-side prediction,
-  reconciliation, and rollback are not provided. Interpolation is application
-  code; snapshots keep presentation separate from authoritative state.
+  reconciliation, and rollback are not provided. Optional interpolation
+  smooths presentation only and never extrapolates.
 - No interest management or state compression: every client receives every
   replicated entity.
 - Sessions are intended for small player counts, such as 2-4 players. No
@@ -820,7 +929,9 @@ client.link.disconnect(); // A network failure.
 ```
 
 In-memory links deliver reliably and in order. They do not simulate loss or
-reordering.
+reordering. As with WebSockets, a sent message counts as outgoing until the
+receiver polls it and the acknowledgement crosses the link, so a test
+simulates a stalled peer by not updating its session.
 
 ## License
 

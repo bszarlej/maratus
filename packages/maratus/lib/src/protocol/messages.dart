@@ -17,6 +17,12 @@ enum MessageKind {
   /// A [GoodbyeMessage].
   goodbye('goodbye'),
 
+  /// A [PingMessage].
+  ping('ping'),
+
+  /// A [PongMessage].
+  pong('pong'),
+
   /// A [SpawnMessage].
   spawn('spawn'),
 
@@ -164,6 +170,34 @@ enum GoodbyeReason {
   final String code;
 }
 
+/// Asks the other side of an accepted connection to answer with a
+/// [PongMessage], so the sender can measure the round trip.
+///
+/// The receiver answers while it handles the ping, so the round trip
+/// includes the time until the receiver's next update.
+final class PingMessage extends ProtocolMessage {
+  /// Creates a ping that the answering pong identifies by [sequence].
+  const PingMessage(this.sequence);
+
+  /// Identifies this ping among the pings sent on its connection.
+  final int sequence;
+
+  @override
+  MessageKind get kind => MessageKind.ping;
+}
+
+/// Answers a [PingMessage].
+final class PongMessage extends ProtocolMessage {
+  /// Creates the answer to the ping with [sequence].
+  const PongMessage(this.sequence);
+
+  /// The sequence of the ping that this pong answers.
+  final int sequence;
+
+  @override
+  MessageKind get kind => MessageKind.pong;
+}
+
 /// Creates a replicated entity of a registered spawn type.
 ///
 /// Only the host sends spawn records. It allocates the entity ID and chooses
@@ -283,9 +317,13 @@ final class RpcDeliveryMessage extends ProtocolMessage {
 
 /// Carries new values of an entity's synchronized fields.
 final class StateMessage extends ProtocolMessage {
-  /// Creates a message that sets the [values] of fields of [entity].
-  StateMessage({required this.entity, required Map<FieldId, Object?> values})
-    : values = Map<FieldId, Object?>.unmodifiable(values);
+  /// Creates a message that sets the [values] of fields of [entity], as the
+  /// entity's authority sampled them at [sampledAt].
+  StateMessage({
+    required this.entity,
+    required Map<FieldId, Object?> values,
+    required this.sampledAt,
+  }) : values = Map<FieldId, Object?>.unmodifiable(values);
 
   /// The entity whose fields changed.
   final EntityId entity;
@@ -293,6 +331,16 @@ final class StateMessage extends ProtocolMessage {
   /// The new field values, each encoded with the codec registered for its
   /// field.
   final Map<FieldId, Object?> values;
+
+  /// When the entity's authority sampled [values], on the authority's
+  /// session clock.
+  ///
+  /// The host relays state with its authority's time. Peers' clocks are not
+  /// synchronized, so a time is only comparable with other times from the
+  /// same authority, for example to interpolate values at the pace they
+  /// were sampled. The protocol layer validates a non-negative whole number
+  /// of microseconds.
+  final Duration sampledAt;
 
   @override
   MessageKind get kind => MessageKind.state;

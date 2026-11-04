@@ -11,8 +11,10 @@ and exchanges typed string RPCs through a mounted Flame component with every
 ready participant. The host also spawns a replicated avatar for each
 participant, so every canvas shows the same row of avatars. A host running
 the Flame app animates those avatars and synchronizes their vertical offsets
-to clients. Windows can host or join; browsers join a native host. A small
-command-line host also works on native Dart without a desktop build.
+to clients, which smooth them between samples. Windows can host or join;
+browsers join a native host. A small command-line host also works on native
+Dart without a desktop build, and a simulated network inside the app
+reproduces latency, stalls, and dropped connections.
 
 The example is part of the repository's workspace. Resolve dependencies from
 the repository root or from this directory:
@@ -73,6 +75,25 @@ the runner with `flutter create --platforms=macos .` or
 An HTTPS-served browser app needs a `wss://` endpoint, typically provided by a
 TLS reverse proxy in front of the native host.
 
+## Simulated network
+
+Select Simulate, on any platform, to run a host and a second client inside the
+app, joined by in-memory links with 30 ms of latency. This participant joins
+over its own link, and two small canvases show the simulated host and client.
+Each scenario button reproduces one condition:
+
+| Scenario | What happens | What to watch |
+| -------- | ------------ | ------------- |
+| Latency spike | This participant's link slows to 300 ms for three seconds. | The round trip grows past 600 ms; avatars hold, then move smoothly again, further behind. |
+| Host stall | The simulated host stops updating for two seconds. | Avatars hold their last values instead of extrapolating, then resume. |
+| Client stall | The simulated client stops updating for four seconds. | On the host, that client's queue stops at the state threshold, and its avatar state is held and coalesced instead of queued. |
+| Drop and rejoin | This participant's link fails, and it joins again a second later. | It leaves with `transportError`, then rejoins with a new peer ID and avatar. |
+
+Turn on Diagnostics to show each session's peers, round trips, queue depths,
+traffic rates, entity count, held and coalesced state, and how avatars are
+smoothed. Turn Smoothing off to show offsets as they arrive, in 50 ms steps.
+Disconnect ends the simulation.
+
 ## How it works
 
 `lib/chat_protocol.dart` is shared by the UI and command-line host. Each peer
@@ -111,12 +132,22 @@ participant shares.
 
 `ChatProtocol` registers `example.avatar.offset` as a bounded double field.
 Each `AvatarComponent` binds its `verticalOffset` through
-`attachment.synchronize()` in `onNetworkAttach()`. Only the host advances the
-animation during gameplay. The synchronizer samples changed offsets at the
-default 50-millisecond interval using the session clock; clients apply received
-offsets before their gameplay update. The canvas adds the offset to each
-avatar's row position. Rendering does not interpolate between samples.
-Joining clients receive retained offsets, which apply once their avatars mount.
+`attachment.synchronize()` in `onNetworkAttach()`, with a
+`DoubleInterpolator`. Only the host advances the animation during gameplay.
+The synchronizer samples changed offsets at the default 50-millisecond
+interval using the session clock; clients apply received offsets before their
+gameplay update. With smoothing on, each client shows the interpolated offset,
+100 milliseconds behind the host's samples; `verticalOffset` keeps the latest
+authoritative value either way. Joining clients receive retained offsets,
+which apply once their avatars mount.
+
+`lib/network_monitor.dart` turns `session.diagnostics` into the overlay's
+lines twice a second, with rates between snapshots, and
+`lib/network_lab.dart` runs the simulated network. Its participants are
+ordinary `ChatController`s, and its scenarios are timers on the shared clock.
+The lab host holds state for a congested connection after 32 unacknowledged
+messages instead of the default 256, so a stalled client shows held state
+within a second.
 
 Disconnecting disposes the scope immediately, removes its component and bindings,
 and closes the session. A new connection creates a fresh scope and component;
@@ -133,6 +164,10 @@ flutter build web
 
 The controller tests use in-memory transports, a controlled clock, and explicitly
 mounted Flame games. They check deferred host-local delivery, removal,
-rejoining, matching avatars for early and late joiners, and synchronized avatar
-offsets. Widget tests exercise the actual GameWidget, browser joining, message
-controls, and a narrow layout without a live server.
+rejoining, matching avatars for early and late joiners, and synchronized and
+smoothed avatar offsets. The network lab tests run every scenario on a
+controlled clock. They check the round trip, holding and catching up, bounded
+host queues while a client stalls, and resource counts back at their baseline
+after five dropped and rejoined connections. Widget tests exercise the actual
+GameWidget, browser joining, message controls, the simulation controls, and a
+narrow layout without a live server.

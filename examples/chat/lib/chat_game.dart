@@ -3,26 +3,42 @@ import 'dart:math' as math;
 
 import 'package:flame/components.dart';
 import 'package:flame/game.dart';
+import 'package:flutter/foundation.dart';
 import 'package:flutter/painting.dart';
 import 'package:maratus_flame/maratus_flame.dart';
 
 import 'chat_protocol.dart';
+import 'network_monitor.dart';
 
 /// The example's Flame tree, updated and rendered by its GameWidget.
 final class ChatGame extends FlameGame {
   /// Reports session events after the scope and its gameplay have updated.
+  ///
+  /// [clock] times the [diagnostics] summary.
   ChatGame({
     required void Function() onFrame,
     required void Function() onRemoved,
+    MonotonicClock clock = const SystemClock(),
   }) : _onFrame = onFrame,
-       _onRemoved = onRemoved;
+       _onRemoved = onRemoved,
+       _clock = clock;
 
   final void Function() _onFrame;
   final void Function() _onRemoved;
+  final MonotonicClock _clock;
   MultiplayerScope? _scope;
   ChatNetworkComponent? _chat;
   MultiplayerSpawner? _spawner;
+  NetworkMonitor? _monitor;
   var _disposed = false;
+
+  /// Whether avatars that other participants move show interpolated offsets
+  /// rather than the latest ones received.
+  var smoothing = true;
+
+  /// Lines summarizing the session's network diagnostics, refreshed twice a
+  /// second while a session is installed.
+  final diagnostics = ValueNotifier<List<String>>(const []);
 
   /// The current static networked component, including while it loads.
   ChatNetworkComponent? get chatComponent => _chat;
@@ -68,6 +84,7 @@ final class ChatGame extends FlameGame {
       session: session,
       children: [component, spawner],
     );
+    _monitor = NetworkMonitor(session, clock: _clock);
     unawaited(Future<void>.sync(() => add(scope)));
   }
 
@@ -77,6 +94,8 @@ final class ChatGame extends FlameGame {
     _scope = null;
     _chat = null;
     _spawner = null;
+    _monitor = null;
+    if (!_disposed) diagnostics.value = const [];
     if (scope == null) return;
     scope.dispose();
     scope.removeFromParent();
@@ -93,9 +112,13 @@ final class ChatGame extends FlameGame {
     for (var i = 0; i < row.length; i++) {
       row[i].position.setValues(
         14 + i * 76.0,
-        size.y - 34 + row[i].verticalOffset,
+        size.y - 34 + row[i].shownOffset(smoothing: smoothing),
       );
     }
+    final lines = _monitor?.sample([
+      for (final avatar in row) avatar.smoothingState,
+    ]);
+    if (lines != null) diagnostics.value = lines;
     _onFrame();
   }
 
@@ -125,8 +148,9 @@ final class ChatGame extends FlameGame {
   @override
   void dispose() {
     if (_disposed) return;
-    _disposed = true;
     clearSession();
+    _disposed = true;
+    diagnostics.dispose();
     super.dispose();
   }
 }
@@ -244,7 +268,8 @@ final class ChatNetworkComponent extends Component with NetworkedComponent {
 ///
 /// Its owner comes from the replicated entity and its color from the
 /// construction data the host chose. The host simulates vertical movement;
-/// clients display the offset received through property synchronization.
+/// clients receive the offset through property synchronization, and show it
+/// interpolated between samples while smoothing is on.
 final class AvatarComponent extends PositionComponent with NetworkedComponent {
   /// Creates the avatar of a spawned entity; [isLocal] marks this
   /// participant's own avatar.
@@ -276,11 +301,27 @@ final class AvatarComponent extends PositionComponent with NetworkedComponent {
   final bool isLocal;
 
   final SyncField<double> _offsetField;
+  MultiplayerSynchronizer? _synchronizer;
+  InterpolatedValue<double>? _shown;
   var _elapsed = 0.0;
   var _verticalOffset = 0.0;
 
   /// The latest host-simulated movement offset, received directly on clients.
   double get verticalOffset => _verticalOffset;
+
+  /// How the offset shown last was smoothed, or `null` if it was not: on
+  /// the host, which simulates it, or with smoothing off.
+  InterpolationState? get smoothingState => _shown?.state;
+
+  /// The offset to show: interpolated between received samples when
+  /// [smoothing] is on and another peer simulates the avatar, and the latest
+  /// [verticalOffset] otherwise.
+  double shownOffset({required bool smoothing}) {
+    _shown = smoothing && isNetworkReady
+        ? _synchronizer?.interpolated(_offsetField)
+        : null;
+    return _shown?.value ?? _verticalOffset;
+  }
 
   /// The participant that controls this avatar.
   PeerId get owner => networkEntity.owner;
@@ -290,10 +331,11 @@ final class AvatarComponent extends PositionComponent with NetworkedComponent {
 
   @override
   void onNetworkAttach(EntityAttachment attachment) {
-    attachment.synchronize([
+    _synchronizer = attachment.synchronize([
       _offsetField.property(
         get: () => _verticalOffset,
         set: (value) => _verticalOffset = value,
+        interpolator: const DoubleInterpolator(),
       ),
     ]);
   }

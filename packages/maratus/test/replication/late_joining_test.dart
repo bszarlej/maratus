@@ -263,6 +263,7 @@ SpawnMessage _avatar(int entity, String name) => SpawnMessage(
 StateMessage _health(int entity, int value) => StateMessage(
   entity: EntityId(entity),
   values: {const FieldId('test.health'): value},
+  sampledAt: Duration.zero,
 );
 
 void main() {

@@ -20,13 +20,15 @@ enum SyncMode {
 final class SyncProperty<T> {
   /// Describes how [field] is read with [get] and written with [set].
   ///
-  /// Without [set], received values are only kept as snapshots, for code that
-  /// reads them itself, for example to smooth them before display.
+  /// Without [set], received values are only kept for code that reads them
+  /// itself: as snapshots, and with an [interpolator], as values smoothed
+  /// for display by [MultiplayerSynchronizer.interpolated].
   const SyncProperty(
     this.field, {
     required this.get,
     this.set,
     this.mode = SyncMode.onChange,
+    this.interpolator,
   });
 
   /// The registered field that this property replicates.
@@ -45,6 +47,13 @@ final class SyncProperty<T> {
   /// When the authority sends this property.
   final SyncMode mode;
 
+  /// Blends received values for [MultiplayerSynchronizer.interpolated], or
+  /// `null` if this property is not interpolated.
+  ///
+  /// Interpolation only affects presentation: [set] and snapshots still
+  /// receive every authoritative value as it arrives.
+  final Interpolator<T>? interpolator;
+
   // Callers hold properties as SyncProperty<Object?>, where reading [set]
   // directly would fail Dart's covariance check. These members read the
   // fields with the actual type argument.
@@ -53,6 +62,14 @@ final class SyncProperty<T> {
   bool get _hasSetter => set != null;
 
   void _set(Object? value) => set?.call(value as T);
+
+  bool get _interpolates => interpolator != null;
+
+  Object? _lerp(Object? from, Object? to, double t) =>
+      interpolator!.lerp(from as T, to as T, t);
+
+  bool _isTeleport(Object? from, Object? to) =>
+      interpolator!.isTeleport(from as T, to as T);
 }
 
 /// Creates [SyncProperty] descriptors whose value type comes from their
@@ -63,12 +80,20 @@ final class SyncProperty<T> {
 /// so typed getters and setters do not match without an explicit type
 /// argument.
 extension SyncFieldProperty<T> on SyncField<T> {
-  /// Describes how this field is read with [get] and written with [set].
+  /// Describes how this field is read with [get] and written with [set],
+  /// and optionally smoothed for display with [interpolator].
   SyncProperty<T> property({
     required T Function() get,
     void Function(T value)? set,
     SyncMode mode = SyncMode.onChange,
-  }) => SyncProperty(this, get: get, set: set, mode: mode);
+    Interpolator<T>? interpolator,
+  }) => SyncProperty(
+    this,
+    get: get,
+    set: set,
+    mode: mode,
+    interpolator: interpolator,
+  );
 }
 
 /// The latest authoritative value of a synchronized field on this peer.
@@ -93,17 +118,31 @@ final class SyncSnapshot<T> {
 /// setters while the attachment is ready, so a component that becomes ready
 /// later still receives the current values. Applying received values never
 /// sends anything, so it cannot cause a replication feedback loop.
+///
+/// Properties with a [SyncProperty.interpolator] also keep their recent
+/// samples, so [interpolated] can present smoothed values between them.
 final class MultiplayerSynchronizer {
   MultiplayerSynchronizer._(
     this._replicator,
     this._attachment,
     this.properties,
     this.interval,
-  );
+    this.interpolationDelay,
+  ) {
+    for (final property in properties) {
+      if (!property._interpolates) continue;
+      _interpolators[property.field.id] = property;
+      _samples[property.field.id] = _Samples();
+    }
+    if (_samples.isNotEmpty) _timeline = _Timeline(interpolationDelay);
+  }
 
   final _StateReplicator _replicator;
   final EntityAttachment _attachment;
   final _applied = <FieldId, Uint8List>{};
+  final _interpolators = <FieldId, SyncProperty<Object?>>{};
+  final _samples = <FieldId, _Samples>{};
+  _Timeline? _timeline;
   Duration? _due;
   var _disposed = false;
 
@@ -112,6 +151,14 @@ final class MultiplayerSynchronizer {
 
   /// The minimum time between two samples on the authority.
   final Duration interval;
+
+  /// How far [interpolated] values trail the newest sample, after the
+  /// estimated transit time.
+  ///
+  /// A delay of a few sample intervals leaves a newer sample to blend
+  /// toward even when one arrives late; a shorter one shows changes sooner
+  /// and holds values more often.
+  final Duration interpolationDelay;
 
   /// The entity whose properties this synchronizer replicates.
   NetworkEntity get entity => _attachment.entity;
@@ -127,6 +174,25 @@ final class MultiplayerSynchronizer {
   /// Throws an [ArgumentError] for a foreign [field] handle.
   SyncSnapshot<T>? snapshot<T>(SyncField<T> field) =>
       _replicator._snapshot(entity, field);
+
+  /// The value of [field] to present now, smoothed by its property's
+  /// [SyncProperty.interpolator].
+  ///
+  /// Received samples are placed on a timeline that follows the times the
+  /// authority sampled them, so bursts and frame jitter in their arrival do
+  /// not distort motion. The value presented is the one that timeline
+  /// reached [interpolationDelay] behind the newest sample. Between two
+  /// samples it is blended; with no newer sample yet it holds the newest,
+  /// without extrapolating; a teleport shows as a jump. The presentation
+  /// time never moves backwards. See [InterpolationState].
+  ///
+  /// Returns `null` on the entity's authority, which presents its own
+  /// state, before any value of [field] was received, and once this
+  /// synchronizer is disposed. The value is a copy that the caller may
+  /// change. Throws an [ArgumentError] for a foreign [field] handle, or a
+  /// field without an interpolator in this synchronizer.
+  InterpolatedValue<T>? interpolated<T>(SyncField<T> field) =>
+      _replicator._interpolated(this, field);
 
   /// Stops sampling and applying values. Repeated disposal has no effect.
   void dispose() {
@@ -170,12 +236,21 @@ final class _StateReplicator {
     EntityAttachment attachment,
     List<SyncProperty<Object?>> properties,
     Duration interval,
+    Duration? interpolationDelay,
   ) {
     if (!session._attachments._isLive(attachment)) {
       throw StateError('This entity attachment is no longer live.');
     }
     if (interval <= Duration.zero) {
       throw ArgumentError.value(interval, 'interval', 'must be positive');
+    }
+    final delay = interpolationDelay ?? interval * 2;
+    if (delay <= Duration.zero) {
+      throw ArgumentError.value(
+        interpolationDelay,
+        'interpolationDelay',
+        'must be positive',
+      );
     }
     if (properties.isEmpty) {
       throw ArgumentError.value(properties, 'properties', 'must not be empty');
@@ -208,10 +283,42 @@ final class _StateReplicator {
       attachment,
       List.unmodifiable(properties),
       interval,
+      delay,
     );
     _synchronizers[entity.id] = synchronizer;
     attachment._synchronizer = synchronizer;
+    // Start presentation from the values received before this binding.
+    final retained = _values[entity];
+    if (retained != null && entity.authority != session._localPeer) {
+      for (final MapEntry(key: field, :value) in retained.entries) {
+        _buffer(synchronizer, field, value.bytes, value.time, value.sampledAt);
+      }
+    }
     return synchronizer;
+  }
+
+  /// Adds a received value of [field] to [synchronizer]'s presentation, if
+  /// it interpolates the field. The value arrived [at] this peer's time.
+  void _buffer(
+    MultiplayerSynchronizer synchronizer,
+    FieldId field,
+    Uint8List bytes,
+    Duration at,
+    Duration sampledAt,
+  ) {
+    final samples = synchronizer._samples[field];
+    if (samples == null) return;
+    final Object? value;
+    try {
+      value = _decode(field, bytes);
+    } on Object {
+      // Received values were decoded before they were accepted, so only a
+      // codec that cannot repeat its round trip fails here. Applying the
+      // value reports that failure.
+      return;
+    }
+    synchronizer._timeline!.observe(at, sampledAt);
+    samples.add(sampledAt, bytes, value);
   }
 
   void _unbind(MultiplayerSynchronizer synchronizer) {
@@ -288,16 +395,20 @@ final class _StateReplicator {
         due[field] = bytes;
       }
     }
-    for (final message in _messages(entity, due)) {
+    for (final message in _messages(entity, due, sampledAt: now)) {
       if (!_isCurrent(synchronizer, lifetime)) return;
-      _retain(entity, {
+      final fields = {
         for (final field in message.values.keys) field: due[field]!,
-      }, now);
+      };
+      _retain(entity, fields, now, sampledAt: now);
       if (session._isHost) {
-        session._replicate(message, session._nextRevision());
+        session._replicateState(entity, message, fields);
       } else {
         final host = session._peers[PeerId.host];
-        if (host == null || !session._send(host, message)) return;
+        if (host == null ||
+            !session._sendState(host, entity, message, fields)) {
+          return;
+        }
       }
       if (session._peer == null) return;
     }
@@ -333,17 +444,37 @@ final class _StateReplicator {
       }
       if (_lifetime != lifetime) return;
     }
-    for (final accepted in _messages(entity, received)) {
+    for (final accepted in _messages(
+      entity,
+      received,
+      sampledAt: message.sampledAt,
+    )) {
       if (_lifetime != lifetime ||
           entity.state == EntityState.removed ||
           !identical(session.registry[entity.id], entity)) {
         return;
       }
-      _retain(entity, {
+      final now = session._clock.now;
+      final fields = {
         for (final field in accepted.values.keys) field: received[field]!,
-      }, session._clock.now);
+      };
+      _retain(entity, fields, now, sampledAt: message.sampledAt);
+      final synchronizer = _synchronizers[entity.id];
+      if (synchronizer != null &&
+          !synchronizer.isDisposed &&
+          identical(synchronizer.entity, entity)) {
+        for (final field in accepted.values.keys) {
+          _buffer(
+            synchronizer,
+            field,
+            received[field]!,
+            now,
+            message.sampledAt,
+          );
+        }
+      }
       if (session._isHost) {
-        session._replicate(accepted, session._nextRevision(), except: origin);
+        session._replicateState(entity, accepted, fields, except: origin);
         if (_lifetime != lifetime) return;
       }
     }
@@ -360,7 +491,13 @@ final class _StateReplicator {
         for (final MapEntry(key: field, :value) in fields.entries)
           field: value.bytes,
       };
-      for (final message in _messages(entity, values)) {
+      // Each capture samples every property of the entity, and a field it
+      // did not send was unchanged, so all retained values were current at
+      // the latest sample.
+      final sampledAt = fields.values
+          .map((value) => value.sampledAt)
+          .reduce((a, b) => a > b ? a : b);
+      for (final message in _messages(entity, values, sampledAt: sampledAt)) {
         if (!session._send(remote, message, revision: session._revision)) {
           return false;
         }
@@ -427,24 +564,62 @@ final class _StateReplicator {
     return SyncSnapshot._(_decode(field.id, value.bytes) as T, value.time);
   }
 
+  InterpolatedValue<T>? _interpolated<T>(
+    MultiplayerSynchronizer synchronizer,
+    SyncField<T> field,
+  ) {
+    if (!identical(session._schema.fieldDefinition(field.id), field)) {
+      throw ArgumentError.value(
+        field,
+        'field',
+        'must belong to the session schema',
+      );
+    }
+    final property = synchronizer._interpolators[field.id];
+    final samples = synchronizer._samples[field.id];
+    if (property == null || samples == null) {
+      throw ArgumentError.value(
+        field.id.value,
+        'field',
+        'is not interpolated by this synchronizer',
+      );
+    }
+    if (synchronizer.isDisposed ||
+        synchronizer.entity.authority == session._localPeer ||
+        samples.isEmpty) {
+      return null;
+    }
+    final time = synchronizer._timeline!.presentationAt(session._clock.now);
+    if (time == null) return null;
+    return samples.evaluate<T>(
+      time,
+      interval: synchronizer.interval,
+      property: property,
+      copy: (bytes) => _decode(field.id, bytes) as T,
+    );
+  }
+
   void _retain(
     NetworkEntity entity,
     Map<FieldId, Uint8List> fields,
-    Duration at,
-  ) {
+    Duration at, {
+    required Duration sampledAt,
+  }) {
     if (fields.isEmpty) return;
     final values = _values.putIfAbsent(entity, () => {});
     for (final MapEntry(key: field, value: bytes) in fields.entries) {
-      values[field] = _FieldValue(bytes, at);
+      values[field] = _FieldValue(bytes, at, sampledAt);
     }
   }
 
-  /// Splits [fields] into state messages within the wire limits: one for
-  /// all of them when possible, otherwise one for each field.
+  /// Splits [fields] into state messages within the wire limits, stamped
+  /// with the authority's [sampledAt]: one for all of them when possible,
+  /// otherwise one for each field.
   List<StateMessage> _messages(
     NetworkEntity entity,
-    Map<FieldId, Uint8List> fields,
-  ) {
+    Map<FieldId, Uint8List> fields, {
+    required Duration sampledAt,
+  }) {
     if (fields.isEmpty) return const [];
     final lifetime = _lifetime;
     final values = <FieldId, Object?>{};
@@ -458,7 +633,11 @@ final class _StateReplicator {
       if (_lifetime != lifetime) return const [];
     }
     if (values.isEmpty) return const [];
-    final combined = StateMessage(entity: entity.id, values: values);
+    final combined = StateMessage(
+      entity: entity.id,
+      values: values,
+      sampledAt: sampledAt,
+    );
     try {
       _checkFits(combined);
       return [combined];
@@ -473,7 +652,11 @@ final class _StateReplicator {
     }
     final messages = <StateMessage>[];
     for (final MapEntry(key: field, :value) in values.entries) {
-      final single = StateMessage(entity: entity.id, values: {field: value});
+      final single = StateMessage(
+        entity: entity.id,
+        values: {field: value},
+        sampledAt: sampledAt,
+      );
       try {
         _checkFits(single);
         messages.add(single);
@@ -544,11 +727,14 @@ final class _StateReplicator {
 }
 
 final class _FieldValue {
-  const _FieldValue(this.bytes, this.time);
+  const _FieldValue(this.bytes, this.time, this.sampledAt);
 
   /// The canonical encoding of the value.
   final Uint8List bytes;
 
   /// When this peer sent or received the value.
   final Duration time;
+
+  /// When the entity's authority sampled the value, on its own clock.
+  final Duration sampledAt;
 }

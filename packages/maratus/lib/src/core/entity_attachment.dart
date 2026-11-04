@@ -73,14 +73,25 @@ final class EntityAttachment {
   /// this attachment disposes the synchronizer; the values stay with the
   /// entity, so a replacement attachment receives them again.
   ///
+  /// Properties with an interpolator present smoothed values through
+  /// [MultiplayerSynchronizer.interpolated], [interpolationDelay] behind the
+  /// newest sample; it defaults to twice [interval].
+  ///
   /// Throws an [ArgumentError] if [properties] is empty, binds a field twice,
-  /// or uses a field handle of another schema, or if [interval] is not
-  /// positive. Throws a [StateError] if this attachment is no longer live or
-  /// its entity already has a live synchronizer.
+  /// or uses a field handle of another schema, or if [interval] or
+  /// [interpolationDelay] is not positive. Throws a [StateError] if this
+  /// attachment is no longer live or its entity already has a live
+  /// synchronizer.
   MultiplayerSynchronizer synchronize(
     List<SyncProperty<Object?>> properties, {
     Duration interval = const Duration(milliseconds: 50),
-  }) => _manager.session._states.synchronize(this, properties, interval);
+    Duration? interpolationDelay,
+  }) => _manager.session._states.synchronize(
+    this,
+    properties,
+    interval,
+    interpolationDelay,
+  );
 
   /// Discards this attachment's pending calls and disposes all its handlers
   /// and its synchronizer.

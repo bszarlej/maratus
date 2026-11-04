@@ -21,6 +21,8 @@ const _fixtures = {
   'synced': '{"v":1,"k":"synced","g":5,"r":12,"b":{}}',
   'ready': '{"v":1,"k":"ready","g":5,"r":12,"b":{}}',
   'goodbye': '{"v":1,"k":"goodbye","g":5,"r":0,"b":{"c":"kicked"}}',
+  'ping': '{"v":1,"k":"ping","g":5,"r":0,"b":{"n":3}}',
+  'pong': '{"v":1,"k":"pong","g":5,"r":0,"b":{"n":3}}',
   'spawn':
       '{"v":1,"k":"spawn","g":0,"r":0,'
       '"b":{"e":7,"t":"player","d":"Ada","o":2,"a":1}}',
@@ -39,7 +41,7 @@ const _fixtures = {
       '"b":{"e":7,"m":"player.move","p":{"x":0.5,"y":-0.25},"s":2,"t":3}}',
   'state':
       '{"v":1,"k":"state","g":3,"r":42,'
-      '"b":{"e":7,"f":{"player.health":75,"player.name":"Ada"}}}',
+      '"b":{"e":7,"t":1500000,"f":{"player.health":75,"player.name":"Ada"}}}',
 };
 
 /// The envelopes that [_fixtures] encode.
@@ -56,6 +58,8 @@ final _envelopes = {
     GoodbyeMessage(GoodbyeReason.kicked),
     generation: 5,
   ),
+  'ping': const MessageEnvelope(PingMessage(3), generation: 5),
+  'pong': const MessageEnvelope(PongMessage(3), generation: 5),
   'spawn': const MessageEnvelope(
     SpawnMessage(
       entity: EntityId(7),
@@ -111,6 +115,7 @@ final _envelopes = {
         FieldId('player.health'): 75,
         FieldId('player.name'): 'Ada',
       },
+      sampledAt: const Duration(milliseconds: 1500),
     ),
     generation: 3,
     revision: 42,
@@ -337,10 +342,55 @@ final _invalidInputs = <_InvalidInput>[
   ),
   _invalid(
     'an unknown field',
-    '{"v":1,"k":"state","g":0,"r":0,"b":{"e":7,"f":{"player.mana":1}}}',
+    '{"v":1,"k":"state","g":0,"r":0,"b":{"e":7,"t":0,"f":{"player.mana":1}}}',
     ProtocolErrorCode.unknownIdentifier,
     path: ['b', 'f', 'player.mana'],
   ),
+  _invalid(
+    'a state without a sample time',
+    '{"v":1,"k":"state","g":0,"r":0,"b":{"e":7,"f":{"player.health":1}}}',
+    ProtocolErrorCode.invalidValue,
+    path: ['b'],
+  ),
+  for (final (description, time) in [
+    ('null', 'null'),
+    ('negative', '-1'),
+    ('fractional', '0.5'),
+    ('string', '"0"'),
+    ('web-unsafe', '9007199254740992'),
+  ])
+    _invalid(
+      'a $description sample time',
+      '{"v":1,"k":"state","g":0,"r":0,'
+          '"b":{"e":7,"t":$time,"f":{"player.health":1}}}',
+      ProtocolErrorCode.invalidValue,
+      path: ['b', 't'],
+    ),
+  for (final kind in ['ping', 'pong']) ...[
+    _invalid(
+      'a $kind without a sequence',
+      '{"v":1,"k":"$kind","g":5,"r":0,"b":{}}',
+      ProtocolErrorCode.invalidValue,
+      path: ['b'],
+    ),
+    _invalid(
+      'a $kind with an unexpected key',
+      '{"v":1,"k":"$kind","g":5,"r":0,"b":{"n":3,"t":1}}',
+      ProtocolErrorCode.invalidValue,
+      path: ['b'],
+    ),
+    for (final (description, sequence) in [
+      ('negative', '-1'),
+      ('fractional', '1.5'),
+      ('string', '"3"'),
+    ])
+      _invalid(
+        'a $description $kind sequence',
+        '{"v":1,"k":"$kind","g":5,"r":0,"b":{"n":$sequence}}',
+        ProtocolErrorCode.invalidValue,
+        path: ['b', 'n'],
+      ),
+  ],
   _invalid(
     'an overlong RPC identifier',
     '{"v":1,"k":"rpc","g":0,"r":0,"b":{"e":7,"m":"${'a' * 65}","p":null}}',
@@ -349,7 +399,7 @@ final _invalidInputs = <_InvalidInput>[
   ),
   _invalid(
     'an overlong field identifier',
-    '{"v":1,"k":"state","g":0,"r":0,"b":{"e":7,"f":{"${'a' * 65}":1}}}',
+    '{"v":1,"k":"state","g":0,"r":0,"b":{"e":7,"t":0,"f":{"${'a' * 65}":1}}}',
     ProtocolErrorCode.limitExceeded,
     path: ['b', 'f'],
   ),
@@ -390,19 +440,20 @@ final _invalidInputs = <_InvalidInput>[
   ),
   _invalid(
     'a field value out of range',
-    '{"v":1,"k":"state","g":0,"r":0,"b":{"e":7,"f":{"player.health":101}}}',
+    '{"v":1,"k":"state","g":0,"r":0,'
+        '"b":{"e":7,"t":0,"f":{"player.health":101}}}',
     ProtocolErrorCode.invalidValue,
     path: ['b', 'f', 'player.health'],
   ),
   _invalid(
     'empty field values',
-    '{"v":1,"k":"state","g":0,"r":0,"b":{"e":7,"f":{}}}',
+    '{"v":1,"k":"state","g":0,"r":0,"b":{"e":7,"t":0,"f":{}}}',
     ProtocolErrorCode.invalidValue,
     path: ['b', 'f'],
   ),
   _invalid(
     'field values that are not an object',
-    '{"v":1,"k":"state","g":0,"r":0,"b":{"e":7,"f":[]}}',
+    '{"v":1,"k":"state","g":0,"r":0,"b":{"e":7,"t":0,"f":[]}}',
     ProtocolErrorCode.invalidValue,
     path: ['b', 'f'],
   ),
@@ -623,11 +674,31 @@ void main() {
       expect(envelope.revision, 42);
       expect(
         envelope.message,
-        isA<StateMessage>().having((m) => m.values, 'values', {
-          const FieldId('player.health'): 75,
-          const FieldId('player.name'): 'Ada',
-        }),
+        isA<StateMessage>()
+            .having((m) => m.values, 'values', {
+              const FieldId('player.health'): 75,
+              const FieldId('player.name'): 'Ada',
+            })
+            .having(
+              (m) => m.sampledAt,
+              'sampledAt',
+              const Duration(milliseconds: 1500),
+            ),
       );
+    });
+
+    test('decodes ping sequences, including the largest safe one', () {
+      for (final sequence in [0, 3, IntCodec.maxSafe]) {
+        final ping = codec.decode(
+          codec.encode(MessageEnvelope(PingMessage(sequence))),
+        );
+        final pong = codec.decode(
+          codec.encode(MessageEnvelope(PongMessage(sequence))),
+        );
+
+        expect((ping.message as PingMessage).sequence, sequence);
+        expect((pong.message as PongMessage).sequence, sequence);
+      }
     });
 
     for (final input in _invalidInputs) {
@@ -776,6 +847,7 @@ void main() {
         StateMessage(
           entity: const EntityId(7),
           values: const {FieldId('player.mana'): 1},
+          sampledAt: Duration.zero,
         ),
       );
     });
@@ -808,12 +880,38 @@ void main() {
         StateMessage(
           entity: const EntityId(7),
           values: const {FieldId('player.health'): 101},
+          sampledAt: Duration.zero,
         ),
       );
     });
 
     test('state messages without field values', () {
-      expectRejected(StateMessage(entity: const EntityId(7), values: const {}));
+      expectRejected(
+        StateMessage(
+          entity: const EntityId(7),
+          values: const {},
+          sampledAt: Duration.zero,
+        ),
+      );
+    });
+
+    test('invalid sample times and ping sequences', () {
+      for (final sampledAt in [
+        const Duration(microseconds: -1),
+        const Duration(microseconds: IntCodec.maxSafe + 1),
+      ]) {
+        expectRejected(
+          StateMessage(
+            entity: const EntityId(7),
+            values: const {FieldId('player.health'): 1},
+            sampledAt: sampledAt,
+          ),
+        );
+      }
+      for (final sequence in [-1, IntCodec.maxSafe + 1]) {
+        expectRejected(PingMessage(sequence));
+        expectRejected(PongMessage(sequence));
+      }
     });
 
     test('invalid handshake values', () {
