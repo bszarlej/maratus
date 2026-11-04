@@ -1,0 +1,122 @@
+name: CI
+
+on:
+  push:
+    branches: [master]
+  pull_request:
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+concurrency:
+  group: ci-${{ github.ref }}
+  cancel-in-progress: true
+
+jobs:
+  check:
+    name: Flutter ${{ matrix.flutter }} (${{ matrix.name }})
+    runs-on: ubuntu-latest
+    timeout-minutes: 20
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          # Lower bounds declared by the packages, resolved with the lowest
+          # allowed dependency versions.
+          - name: minimum
+            flutter: 3.41.0
+            resolve: downgrade
+            current: false
+          # Current stable line used for development. Formatting is checked
+          # here only, because formatter output can change between SDKs.
+          - name: current
+            flutter: 3.47.x
+            resolve: get
+            current: true
+    steps:
+      - uses: actions/checkout@v7
+
+      - uses: subosito/flutter-action@v2
+        with:
+          channel: stable
+          flutter-version: ${{ matrix.flutter }}
+          cache: true
+
+      - name: Resolve workspace dependencies
+        run: flutter pub ${{ matrix.resolve }}
+
+      - name: Check formatting
+        if: matrix.current
+        run: dart run melos run check-format
+
+      - name: Analyze
+        run: dart run melos analyze --fatal-infos
+
+      - name: Test
+        run: dart run melos test
+
+      - name: Test browser connections to native host
+        if: matrix.current
+        run: dart run melos run test:browser --no-select
+
+      - name: Build web example
+        if: matrix.current
+        working-directory: examples/chat
+        run: flutter build web --no-pub
+
+  # The core package promises to run without Flutter. Resolve and test it
+  # alone with the plain Dart SDK, outside the workspace that contains the
+  # Flutter packages.
+  dart-only:
+    name: maratus on Dart ${{ matrix.sdk }}
+    runs-on: ubuntu-latest
+    timeout-minutes: 15
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - sdk: 3.11.0
+            resolve: downgrade
+          - sdk: stable
+            resolve: get
+    steps:
+      - uses: actions/checkout@v7
+
+      - uses: dart-lang/setup-dart@v1
+        with:
+          sdk: ${{ matrix.sdk }}
+
+      - name: Copy the package out of the workspace
+        run: |
+          cp -r packages/maratus "$RUNNER_TEMP/maratus"
+          sed -i '/^resolution: workspace$/d' "$RUNNER_TEMP/maratus/pubspec.yaml"
+
+      - name: Resolve dependencies
+        working-directory: ${{ runner.temp }}/maratus
+        run: dart pub ${{ matrix.resolve }}
+
+      - name: Analyze
+        working-directory: ${{ runner.temp }}/maratus
+        run: dart analyze --fatal-infos
+
+      - name: Test
+        working-directory: ${{ runner.temp }}/maratus
+        run: dart test
+
+  windows-example:
+    name: Windows example
+    runs-on: windows-latest
+    timeout-minutes: 20
+    steps:
+      - uses: actions/checkout@v7
+      - uses: subosito/flutter-action@v2
+        with:
+          channel: stable
+          flutter-version: 3.47.x
+          cache: true
+      - name: Resolve workspace dependencies
+        run: flutter pub get
+      - name: Build Windows example
+        working-directory: examples/chat
+        run: flutter build windows --no-pub
