@@ -23,7 +23,7 @@ jobs:
       matrix:
         include:
           # Lower bounds declared by the packages, resolved with the lowest
-          # allowed dependency versions.
+          # allowed direct dependency versions.
           - name: minimum
             flutter: 3.41.0
             resolve: downgrade
@@ -44,7 +44,14 @@ jobs:
           cache: true
 
       - name: Resolve workspace dependencies
-        run: flutter pub ${{ matrix.resolve }}
+        run: flutter pub get
+
+      # Start with compatible transitive tools, then exercise our own lower
+      # bounds. A full downgrade selects obsolete test-runner dependencies.
+      # Keep this list in sync with the workspace's hosted direct dependencies.
+      - name: Downgrade direct dependencies
+        if: matrix.resolve == 'downgrade'
+        run: flutter pub downgrade crypto web flame flame_test flutter_lints lints melos test
 
       - name: Check formatting
         if: matrix.current
@@ -94,7 +101,14 @@ jobs:
 
       - name: Resolve dependencies
         working-directory: ${{ runner.temp }}/maratus
-        run: dart pub ${{ matrix.resolve }}
+        run: dart pub get
+
+      # As above, retain compatible transitive test tools while testing the
+      # hosted direct dependency bounds declared by packages/maratus/pubspec.yaml.
+      - name: Downgrade direct dependencies
+        if: matrix.resolve == 'downgrade'
+        working-directory: ${{ runner.temp }}/maratus
+        run: dart pub downgrade crypto web lints test
 
       - name: Analyze
         working-directory: ${{ runner.temp }}/maratus

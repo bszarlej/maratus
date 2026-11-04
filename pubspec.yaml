@@ -19,7 +19,7 @@ melos:
   scripts:
     check-format:
       description: Fail if any Dart file in the workspace is not formatted.
-      run: melos format --output=none --set-exit-if-changed
+      run: dart run melos format --output=none --set-exit-if-changed
 
     test:browser:
       description: >-
