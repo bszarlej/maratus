@@ -235,7 +235,15 @@ and enforce `SessionTimeouts`. The defaults allow 10 seconds for connecting
 and handshaking, and 30 seconds for the bootstrap, which includes loading the
 components of the baseline; both durations must be positive. Queued events
 and a joining client's completed installation are processed before timeouts
-are checked, so they take precedence even after a deadline. In tests, advance
+are checked, so they take precedence even after a deadline.
+
+Once a connection is accepted, each side pings the other every
+`pingInterval` (one second by default, `null` for none) to measure the round
+trip; see [Diagnostics](#diagnostics). An accepted peer stays connected for
+as long as its transport is open, even if it stops updating. Set
+`SessionTimeouts.idle` to drop a peer that sends nothing, not even pings, for
+that long, with `DisconnectReason.timeout`. It requires a shorter ping
+interval, and a host that pauses for longer loses its clients. In tests, advance
 the same `ManualClock` used by the network and sessions; in an application,
 call `update()` in the game loop. Starting, closing, and kicking a peer take
 effect when those methods are called.
@@ -683,7 +691,7 @@ the transport's event queue. After `session.update()`, inspect
 | Reason | Typical cause |
 | ------ | ------------- |
 | `transportError` | Refused connection, opening deadline, wrong endpoint path or subprotocol, TLS/browser rejection, lost connection, malformed transport frame, or queue overflow. |
-| `timeout` | The session's own connecting, handshake, or bootstrap deadline expired, for example while the baseline's components were still loading. |
+| `timeout` | The session's own connecting, handshake, or bootstrap deadline expired, for example while the baseline's components were still loading, or an idle timeout found a peer silent. |
 | `bootstrapFailed` | A spawn handler, such as a spawner's factory, failed for an entity of the joining client's baseline. |
 | `schemaMismatch` / `versionMismatch` | The peers registered different definitions or use incompatible protocol versions. |
 | `protocolViolation` | A received session message failed protocol validation. |
@@ -725,10 +733,10 @@ server {
 }
 ```
 
-Forward the WebSocket upgrade headers and preserve the endpoint path. Set the
-proxy's idle timeout to suit your application's expected quiet periods; the
-adapter does not send periodic keepalive messages. An idle connection can
-therefore close when that timeout expires. See nginx's
+Forward the WebSocket upgrade headers and preserve the endpoint path. The
+adapter itself sends no keepalive messages, but sessions ping each other
+every second by default, so a proxy's idle timeout only closes connections
+whose sessions have stopped updating or disabled pings. See nginx's
 [WebSocket proxying](https://nginx.org/en/docs/http/websocket.html) and
 [HTTPS configuration](https://nginx.org/en/docs/http/configuring_https_servers.html)
 documentation.
@@ -764,6 +772,34 @@ every allocation made by the operating system, Dart SDK, or browser: these
 layers can buffer socket data, and an oversized WebSocket frame may be assembled
 before the adapter can reject it. The session's protocol limits still apply
 after transport framing is removed.
+
+### Diagnostics
+
+`session.diagnostics` takes a snapshot of a session's resources and
+traffic, for example to show network conditions in a game, or to check in
+tests that repeated sessions release everything they used:
+
+```dart
+final diagnostics = session.diagnostics;
+for (final peer in diagnostics.peers) {
+  print('${peer.peer.value}: ${peer.roundTripTime?.inMilliseconds} ms, '
+      '${peer.outgoing.messages} queued');
+}
+print('${diagnostics.received[MessageKind.state].messages} state messages');
+```
+
+| Part | Contents |
+| ---- | -------- |
+| Resources | Live entities, replicated entities, attachments, synchronizers, RPC and spawn bindings, pending RPCs, baseline entities still loading, and connections still handshaking. |
+| Traffic | `sent` and `received` messages and bytes, in total and by `MessageKind`, including malformed input; stale and obsolete messages. |
+| `peers` | For each accepted peer: readiness, `incoming` and `outgoing` queue depths, the latest and smoothed round trip, when the session last heard from it, and the traffic exchanged with it. |
+
+Counts start over each time a session hosts or joins; spawn bindings, which
+survive restarts, are the exception. A round trip runs from sending a ping
+until handling its answer, so it includes the time each side takes to reach
+its next `update()`. The smoothed round trip weighs each new one by an
+eighth. A session waits for each answer before pinging again, and answers
+the other side's pings even with its own pings disabled.
 
 ## Platform support
 

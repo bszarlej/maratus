@@ -169,9 +169,11 @@ no timers or stream subscriptions.
 Pausing the Flame engine stops polling, gameplay, and capture together. Socket
 queues remain bounded and may close an overflowing connection. A client that
 keeps updating while a host is paused can time out while joining. Established
-sessions currently have **no heartbeat or idle timeout**; a ready client stays
-connected until its transport closes. On resume, queued replies take precedence
-over joining deadlines, while expired pending component RPCs are rejected.
+sessions ping each other to measure round trips, but by default a ready
+client stays connected until its transport closes, even while its host is
+paused. With `SessionTimeouts.idle`, a peer that pauses for longer than that
+timeout is dropped. On resume, queued replies take precedence over joining
+deadlines, while expired pending component RPCs are rejected.
 
 A component that finishes loading after its scope was disposed mounts without
 an attachment.
