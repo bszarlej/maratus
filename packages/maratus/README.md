@@ -504,8 +504,7 @@ copy and its local send or receive time on the session clock. The authority's
 snapshot is its last sampled value sent; a receiver's is its latest accepted
 value. Setters receive separate copies, so presentation changes do not alter
 the retained authoritative state. Omit a property's setter when presentation
-code will read snapshots itself. Interpolation remains application code;
-built-in visual smoothing is planned for a later milestone.
+code will read snapshots or [interpolated values](#interpolation) itself.
 
 The host validates every client write against the entity's fixed authority
 and relays accepted state to the other clients. Clients apply state only from
@@ -534,6 +533,55 @@ peer after starting its session and before processing incoming state.
 Call `session.update()` before gameplay, then `session.captureState()`
 afterward. In Flame, `MultiplayerScope` from `maratus_flame` performs both
 steps automatically.
+
+#### Interpolation
+
+Peers other than an entity's authority receive its synchronized values a few
+times per second. Give a property an `interpolator` to present smoothed
+values between those samples. Setters and snapshots still receive each
+authoritative value as it arrives:
+
+```dart
+final synchronizer = attachment.synchronize([
+  xField.property(
+    get: () => x,
+    interpolator: const DoubleInterpolator(teleportDistance: 200),
+  ),
+]);
+
+// Each frame, on the other peers:
+if (synchronizer.interpolated(xField) case final shown?) {
+  displayedX = shown.value;
+}
+```
+
+State messages carry the time their authority sampled the values, and the
+host relays that time unchanged. Each receiving synchronizer places samples
+on the authority's timeline. It estimates the offset between that clock and
+its own from the fastest recent delivery, so bursts of late messages and the
+receiver's frame timing do not distort motion. `interpolated(field)` presents
+the value that timeline reached `interpolationDelay` behind the newest
+sample, by default twice the synchronizer's interval. Its
+`InterpolationState` tells how:
+
+| State | Shown |
+| ----- | ----- |
+| `interpolating` | A blend of the samples on both sides of the presentation time. |
+| `holding` | The nearest sample, when none lies beyond the presentation time: the first while samples start to arrive, or the newest when the next is late, a buffer underrun. Values are never extrapolated. |
+| `snapped` | The earlier sample, when the interpolator's `isTeleport` reports a discontinuity such as a respawn. The value jumps when the presentation time reaches the next sample. |
+
+After a pause in sampling longer than two intervals, such as an unchanged
+`onChange` field, the earlier value holds until one interval before the next
+sample, so movement resumes at its sampled pace. Presentation time never
+moves backwards: when latency rises it pauses until the delay covers the new
+transit time, and after a stall it catches up with the newest samples.
+`interpolated()` returns `null` on the entity's authority, which presents its
+own state, and before any value arrives; each value is a copy the caller may
+change.
+
+`DoubleInterpolator` blends numbers. Implement `Interpolator<T>` for other
+types, or use `Vector2Interpolator` from `maratus_flame`. Interpolation only
+changes what is displayed: it does not predict or reconcile gameplay.
 
 ### Late joining
 
@@ -825,8 +873,8 @@ conditional imports. Browser builds do not import the native implementation.
   ID, so an application that wants a player to keep their entities must
   transfer them itself.
 - Authority is fixed. Authority transfer, client-side prediction,
-  reconciliation, and rollback are not provided. Interpolation is application
-  code; snapshots keep presentation separate from authoritative state.
+  reconciliation, and rollback are not provided. Optional interpolation
+  smooths presentation only and never extrapolates.
 - No interest management or state compression: every client receives every
   replicated entity.
 - Sessions are intended for small player counts, such as 2-4 players. No

@@ -54,6 +54,7 @@ transport support matrix and limitations.
 | `MultiplayerScope`   | A component that drives one session for its subtree, at a fixed point in each update.                  |
 | `NetworkedComponent` | A component mixin that attaches a networked entity, with its RPC handlers and synchronized properties. |
 | `MultiplayerSpawner` | Creates and removes the components of entities the host spawns and despawns, by registered spawn type. |
+| `Vector2Codec`, `Vector2Interpolator` | Synchronize vectors such as positions, and smooth them for display on other peers. |
 
 ## Component lifecycles
 
@@ -288,6 +289,51 @@ ready, and samples the authority's values after gameplay and every
 and applied once it mounts, and a remounted component receives them again. See
 [property synchronization](https://pub.dev/packages/maratus#property-synchronization) for update modes,
 snapshots, and authority validation.
+
+### Smoothing positions
+
+`Vector2Codec` sends vectors as pairs of coordinates, each validated by a
+`DoubleCodec`, and `Vector2Interpolator` smooths them for display. A
+component whose authority moves it can show interpolated positions on every
+other peer:
+
+```dart
+final positionField = builder.addField(
+  const FieldId('game.avatar.position'),
+  const Vector2Codec(),
+);
+
+class Avatar extends PositionComponent with NetworkedComponent {
+  Avatar(this.networkEntity);
+
+  @override
+  final NetworkEntity networkEntity;
+  late MultiplayerSynchronizer synchronizer;
+
+  @override
+  void onNetworkAttach(EntityAttachment attachment) {
+    synchronizer = attachment.synchronize([
+      positionField.property(
+        get: () => position,
+        interpolator: const Vector2Interpolator(teleportDistance: 200),
+      ),
+    ]);
+  }
+
+  @override
+  void update(double dt) {
+    // Null on the authority, which moves the avatar itself.
+    if (synchronizer.interpolated(positionField) case final shown?) {
+      position.setFrom(shown.value);
+    }
+  }
+}
+```
+
+Without a setter, received positions only drive what is displayed; add one to
+also keep the latest authoritative position for gameplay. See
+[interpolation](https://pub.dev/packages/maratus#interpolation) for the
+presentation delay, buffer underruns, and teleports.
 
 ## License
 

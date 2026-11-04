@@ -21,6 +21,7 @@ import 'session_events.dart';
 part 'rpc_dispatcher.dart';
 part 'entity_attachment.dart';
 part 'session_diagnostics.dart';
+part '../replication/interpolation.dart';
 part '../replication/spawn_replicator.dart';
 part '../replication/state_replicator.dart';
 

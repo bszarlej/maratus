@@ -14,8 +14,8 @@
 
 | Package | Use it for |
 | ------- | ---------- |
-| [`maratus`](packages/maratus) | The multiplayer core in pure Dart: sessions, schemas and codecs, RPCs, spawning, property synchronization, late joining, and the WebSocket and in-memory transports. Runs without Flutter, for example in a dedicated host. |
-| [`maratus_flame`](packages/maratus_flame) | Flame games: `MultiplayerScope`, `NetworkedComponent`, and `MultiplayerSpawner`. Re-exports `maratus`, so a game needs only this package. |
+| [`maratus`](packages/maratus) | The multiplayer core in pure Dart: sessions, schemas and codecs, RPCs, spawning, property synchronization and interpolation, late joining, diagnostics, and the WebSocket and in-memory transports. Runs without Flutter, for example in a dedicated host. |
+| [`maratus_flame`](packages/maratus_flame) | Flame games: `MultiplayerScope`, `NetworkedComponent`, `MultiplayerSpawner`, and synchronized, smoothed `Vector2` values. Re-exports `maratus`, so a game needs only this package. |
 
 A Flame game depends on `maratus_flame`. Shared protocol definitions,
 dedicated hosts, and other Dart code that must run without Flutter depend on
