@@ -8,6 +8,7 @@ environment:
 workspace:
   - packages/maratus
   - packages/maratus_flame
+  - examples/chat
 
 dev_dependencies:
   melos: ^8.10.0
