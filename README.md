@@ -74,9 +74,10 @@ when it is outside its default location. See
 [`examples/chat`](examples/chat/README.md) for running and building the example.
 
 CI runs these checks on the minimum supported SDK with the lowest allowed
-dependency versions and on the current stable SDK with the newest. It also
-resolves and tests `maratus` alone with the plain Dart SDK, so the core cannot
-gain a Flutter dependency, and builds the example for web and Windows; see
+direct dependency versions and compatible transitive dependencies, and on the
+current stable SDK with the newest. It also resolves and tests `maratus` alone
+with the plain Dart SDK, so the core cannot gain a Flutter dependency, and builds
+the example for web and Windows; see
 [.github/workflows/ci.yaml](.github/workflows/ci.yaml).
 
 ### Repository layout
