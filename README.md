@@ -78,8 +78,7 @@ when it is outside its default location. See
 CI runs these checks on the minimum supported SDK with the lowest allowed
 direct dependency versions and compatible transitive dependencies, and on the
 current stable SDK with the newest. It also resolves and tests `maratus` alone
-with the plain Dart SDK, so the core cannot gain a Flutter dependency, and builds
-the example for web and Windows; see
+with the plain Dart SDK, so the core cannot gain a Flutter dependency; see
 [.github/workflows/ci.yaml](.github/workflows/ci.yaml).
 
 ### Repository layout
