@@ -15,30 +15,25 @@ void main() => runApp(const ChatApp());
 /// A small UI for running the same chat session on native and web platforms.
 class ChatApp extends StatelessWidget {
   /// Creates the example app; tests may supply a controller.
-  const ChatApp({super.key, this.controller});
-
-  /// An optional externally owned controller, primarily for widget tests.
-  final ChatController? controller;
+  const ChatApp({super.key});
 
   @override
   Widget build(BuildContext context) => MaterialApp(
     title: 'Maratus · WebSocket chat',
     theme: ThemeData(colorSchemeSeed: const Color(0xffbe4b28)),
-    home: _ChatPage(controller: controller),
+    home: _ChatPage(),
   );
 }
 
 class _ChatPage extends StatefulWidget {
-  const _ChatPage({this.controller});
-
-  final ChatController? controller;
+  const _ChatPage();
 
   @override
   State<_ChatPage> createState() => _ChatPageState();
 }
 
 class _ChatPageState extends State<_ChatPage> {
-  late final _controller = widget.controller ?? ChatController();
+  late final _controller = ChatController();
   final _port = TextEditingController(text: '8080');
   final _url = TextEditingController(text: 'ws://localhost:8080/netcode');
   final _message = TextEditingController();
@@ -48,7 +43,7 @@ class _ChatPageState extends State<_ChatPage> {
   @override
   void dispose() {
     _lab?.dispose();
-    if (widget.controller == null) _controller.dispose();
+    _controller.dispose();
     _port.dispose();
     _url.dispose();
     _message.dispose();
