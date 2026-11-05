@@ -2,10 +2,11 @@ import 'package:maratus/maratus.dart';
 
 /// The shared wire schema used by the Flutter app and the command-line host.
 final class ChatProtocol {
-  /// Registers one bounded string RPC broadcast to every ready peer, and the
-  /// avatar spawn type.
+  /// Declares the static chat room, registers one bounded string RPC
+  /// broadcast to every ready peer, and the avatar spawn type.
   factory ChatProtocol() {
     final builder = ProtocolSchemaBuilder();
+    final room = builder.addStaticEntity(const StaticEntityId('example.room'));
     final message = builder.addRpc(
       const RpcId('example.chat'),
       const StringCodec(maxLength: messageLimit),
@@ -21,10 +22,16 @@ final class ChatProtocol {
       const FieldId('example.avatar.offset'),
       const DoubleCodec(min: -12, max: 12),
     );
-    return ChatProtocol._(builder.build(), message, avatar, avatarOffset);
+    return ChatProtocol._(builder.build(), room, message, avatar, avatarOffset);
   }
 
-  ChatProtocol._(this.schema, this.message, this.avatar, this.avatarOffset);
+  ChatProtocol._(
+    this.schema,
+    this._room,
+    this.message,
+    this.avatar,
+    this.avatarOffset,
+  );
 
   /// The maximum message length in UTF-16 code units.
   static const messageLimit = 240;
@@ -35,6 +42,9 @@ final class ChatProtocol {
   /// The schema all participants compare during the handshake.
   final ProtocolSchema schema;
 
+  /// The chat room, which every session contains from the start.
+  final StaticEntity _room;
+
   /// The typed handle used to send messages.
   final Rpc<String> message;
 
@@ -44,16 +54,15 @@ final class ChatProtocol {
   /// The avatar's vertical movement, simulated by the host and sent to clients.
   final SyncField<double> avatarOffset;
 
-  /// Installs the same static entity on each peer after host or join starts.
+  /// Binds [onMessage] to the chat room of a session that has started
+  /// hosting or joining, without a component.
   ///
-  /// Installing before the first update ensures that the entity exists before
-  /// any message for it can arrive. The session still gates RPC dispatch until
-  /// the client is ready.
+  /// The session still gates RPC dispatch until a client is ready.
   NetworkEntity bind(
     MultiplayerSession session,
     void Function(PeerId sender, String text) onMessage,
   ) {
-    final entity = register(session);
+    final entity = room(session);
     session.bindRpc(entity, message, (context, text) {
       onMessage(context.sender, text);
     });
@@ -61,11 +70,11 @@ final class ChatProtocol {
     return entity;
   }
 
-  /// Registers the static chat entity, ID 1, owned by the host.
+  /// The chat room of a session that has started hosting or joining.
   ///
-  /// Register it before spawning avatars, which take the following IDs.
-  NetworkEntity register(MultiplayerSession session) => session.registry
-      .register(const EntityId(1), owner: PeerId.host, authority: PeerId.host);
+  /// Every peer's session registers it with the same ID, owned by the host,
+  /// before handling any message.
+  NetworkEntity room(MultiplayerSession session) => session.staticEntity(_room);
 
   /// Spawns the avatar of [owner] from a hosting [session].
   ///

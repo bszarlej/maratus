@@ -59,24 +59,38 @@ transport support matrix and limitations.
 ## Component lifecycles
 
 A `MultiplayerScope` drives a session for its subtree; static components mix in
-`NetworkedComponent` and expose an entity already registered in that session.
-Each peer must register matching IDs and ownership metadata. For example:
+`NetworkedComponent` and expose a
+[static entity](https://pub.dev/packages/maratus#static-entities) of that
+session, declared in the shared schema. For example:
 
 ```dart
 import 'package:flame/components.dart';
 import 'package:maratus_flame/maratus_flame.dart';
 
-class Player extends PositionComponent with NetworkedComponent {
-  Player(this.networkEntity, this.move);
+// In the shared schema:
+final scoreboard = builder.addStaticEntity(
+  const StaticEntityId('game.scoreboard'),
+);
+final score = builder.addRpc(
+  const RpcId('game.scoreboard.score'),
+  const IntCodec(min: 1, max: 3),
+  caller: RpcCaller.host,
+  target: RpcTarget.all,
+  local: RpcLocal.include,
+);
+
+class Scoreboard extends PositionComponent with NetworkedComponent {
+  Scoreboard(this.networkEntity, this.score);
 
   @override
   final NetworkEntity networkEntity;
-  final Rpc<int> move;
+  final Rpc<int> score;
+  var total = 0;
 
   @override
   void onNetworkAttach(EntityAttachment attachment) {
-    attachment.bindRpc(move, (context, direction) {
-      position.x += direction;
+    attachment.bindRpc(score, (context, points) {
+      total += points;
     });
   }
 
@@ -89,14 +103,9 @@ class Player extends PositionComponent with NetworkedComponent {
 }
 
 // After session.host(...) or session.join(...):
-final entity = session.registry.register(
-  const EntityId(1),
-  owner: PeerId.host,
-  authority: PeerId.host,
-);
 final scope = MultiplayerScope(
   session: session,
-  children: [Player(entity, move)],
+  children: [Scoreboard(session.staticEntity(scoreboard), score)],
 );
 await game.add(scope);
 ```

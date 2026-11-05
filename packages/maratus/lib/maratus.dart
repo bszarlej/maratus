@@ -11,7 +11,7 @@ export 'src/core/entity_registry.dart';
 export 'src/core/multiplayer_session.dart';
 export 'src/core/session_events.dart';
 export 'src/protocol/identifiers.dart'
-    show SpawnTypeId, RpcId, FieldId, EntityId, PeerId;
+    show SpawnTypeId, RpcId, FieldId, StaticEntityId, EntityId, PeerId;
 export 'src/protocol/messages.dart'
     show
         MessageKind,
@@ -25,6 +25,7 @@ export 'src/protocol/protocol_exception.dart';
 export 'src/protocol/rpc.dart';
 export 'src/protocol/schema.dart';
 export 'src/protocol/spawn_type.dart';
+export 'src/protocol/static_entity.dart';
 export 'src/protocol/sync_field.dart';
 export 'src/protocol/value_codec.dart';
 export 'src/transport/in_memory_network.dart';

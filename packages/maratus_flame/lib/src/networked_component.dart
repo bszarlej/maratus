@@ -2,8 +2,9 @@ part of 'multiplayer_scope.dart';
 
 /// Connects a Flame component to its nearest [MultiplayerScope].
 ///
-/// For a static component, register [networkEntity] in the scope's session
-/// before adding this component. A [MultiplayerSpawner] creates components for
+/// For a static component, use as [networkEntity] a static entity of the
+/// scope's session, which [MultiplayerSession.staticEntity] returns once the
+/// session has started. A [MultiplayerSpawner] creates components for
 /// replicated entities instead, through a factory that receives the entity.
 /// Override [onNetworkAttach] to bind RPCs and synchronize properties through
 /// the supplied attachment.
@@ -18,9 +19,8 @@ part of 'multiplayer_scope.dart';
 /// the component in another session requires assigning an entity from that
 /// session first.
 mixin NetworkedComponent on Component {
-  /// The identity of this component in its session: an entity registered
-  /// there directly, or one that a [MultiplayerSpawner] created this
-  /// component for.
+  /// The identity of this component in its session: a static entity of that
+  /// session, or one that a [MultiplayerSpawner] created this component for.
   NetworkEntity get networkEntity;
 
   MultiplayerScope? _networkScope;

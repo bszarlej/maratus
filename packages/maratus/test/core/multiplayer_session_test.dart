@@ -42,6 +42,54 @@ final class _ScriptedRandom implements Random {
   double nextDouble() => throw UnimplementedError();
 }
 
+/// A schema with two static entities, a spawn type, and a field and an RPC
+/// for the board, optionally declaring an `extra` static entity.
+final class _StaticProtocol {
+  factory _StaticProtocol({String? extra}) {
+    final builder = ProtocolSchemaBuilder();
+    // Declared out of identifier order, which assigns the entity IDs.
+    final level = builder.addStaticEntity(const StaticEntityId('arena.level'));
+    final board = builder.addStaticEntity(const StaticEntityId('arena.board'));
+    if (extra != null) builder.addStaticEntity(StaticEntityId(extra));
+    final player = builder.addSpawnType(
+      const SpawnTypeId('player'),
+      const StringCodec(maxLength: 16),
+    );
+    final score = builder.addField(
+      const FieldId('arena.board.score'),
+      const IntCodec(min: 0),
+    );
+    final vote = builder.addRpc(
+      const RpcId('arena.board.vote'),
+      const IntCodec(min: 0, max: 3),
+    );
+    return _StaticProtocol._(
+      builder.build(),
+      board,
+      level,
+      player,
+      score,
+      vote,
+    );
+  }
+
+  _StaticProtocol._(
+    this.schema,
+    this.board,
+    this.level,
+    this.player,
+    this.score,
+    this.vote,
+  );
+
+  final ProtocolSchema schema;
+  final StaticEntity board;
+  final StaticEntity level;
+  final SpawnType<String> player;
+  final SyncField<int> score;
+  final Rpc<int> vote;
+}
+
 /// Takes every pending event from [session].
 List<SessionEvent> _drain(MultiplayerSession session) => [
   for (var event = session.poll(); event != null; event = session.poll()) event,
@@ -77,14 +125,15 @@ final class _Harness {
     Duration latency = Duration.zero,
     this.timeouts = const SessionTimeouts(),
     QueueLimits hostOutgoingLimits = const QueueLimits(),
-  }) {
+    ProtocolSchema? schema,
+  }) : schema = schema ?? buildTestSchema() {
     network = InMemoryNetwork(clock: clock, latency: latency);
     host = session()..host(network.host(outgoingLimits: hostOutgoingLimits));
   }
 
   final clock = ManualClock();
   final SessionTimeouts timeouts;
-  final schema = buildTestSchema();
+  final ProtocolSchema schema;
   late final InMemoryNetwork network;
   late final MultiplayerSession host;
 
@@ -1310,6 +1359,140 @@ void main() {
           GoodbyeReason.protocolViolation,
         ),
       );
+    });
+  });
+
+  group('static entities', () {
+    test('exist on every peer with the same IDs as soon as it starts', () {
+      final protocol = _StaticProtocol();
+      final harness = _Harness(schema: protocol.schema);
+      final client = harness.join();
+
+      expect(protocol.schema.staticEntities, [protocol.board, protocol.level]);
+      for (final session in [harness.host, client]) {
+        final board = session.staticEntity(protocol.board);
+        final level = session.staticEntity(protocol.level);
+        expect(board.id, const EntityId(1));
+        expect(level.id, const EntityId(2));
+        for (final entity in [board, level]) {
+          expect(entity.owner, PeerId.host);
+          expect(entity.authority, PeerId.host);
+          expect(entity.state, EntityState.pending);
+          expect(session.registry[entity.id], same(entity));
+        }
+      }
+    });
+
+    test('are followed by the IDs of spawned entities', () {
+      final protocol = _StaticProtocol();
+      final harness = _Harness(schema: protocol.schema);
+      final client = harness.join();
+      harness.run();
+
+      final spawned = harness.host.spawn(protocol.player, 'Ada');
+      harness.run();
+
+      expect(spawned.id, const EntityId(3));
+      expect(client.registry[spawned.id]?.state, EntityState.pending);
+      expect(client.state, SessionState.ready);
+    });
+
+    test('carry state and RPCs, including in a late baseline', () {
+      final protocol = _StaticProtocol();
+      final harness = _Harness(schema: protocol.schema);
+      final hostBoard = harness.host.staticEntity(protocol.board);
+      final votes = <(PeerId, int)>[];
+      harness.host.attachEntity(
+          hostBoard,
+          isReady: () => true,
+          isValid: () => true,
+        )
+        ..bindRpc(
+          protocol.vote,
+          (context, vote) => votes.add((context.sender, vote)),
+        )
+        ..synchronize([protocol.score.property(get: () => 7)]);
+      harness.run();
+      harness.host.captureState();
+
+      final client = harness.join();
+      var score = 0;
+      final clientBoard = client.staticEntity(protocol.board);
+      client
+          .attachEntity(clientBoard, isReady: () => true, isValid: () => true)
+          .synchronize([
+            protocol.score.property(
+              get: () => score,
+              set: (value) => score = value,
+            ),
+          ]);
+      harness.run();
+
+      expect(client.state, SessionState.ready);
+      expect(score, 7);
+      expect(client.callRpc(clientBoard, protocol.vote, 2), isTrue);
+      harness.run();
+      expect(votes, [(client.localPeer!, 2)]);
+    });
+
+    test('must match for a client to join', () {
+      final protocol = _StaticProtocol();
+      final harness = _Harness(schema: protocol.schema);
+      final client = harness.join(
+        schema: _StaticProtocol(extra: 'arena.lobby').schema,
+      );
+      harness.run();
+
+      expect(client.disconnectReason, DisconnectReason.schemaMismatch);
+      expect(harness.host.peers, isEmpty);
+    });
+
+    test('are registered again by each new session', () {
+      final protocol = _StaticProtocol();
+      final harness = _Harness(schema: protocol.schema);
+      final first = harness.host.staticEntity(protocol.board);
+
+      harness.host.close();
+      expect(first.state, EntityState.removed);
+      expect(() => harness.host.staticEntity(protocol.board), throwsStateError);
+      harness.host.host(harness.network.host());
+      final second = harness.host.staticEntity(protocol.board);
+
+      expect(second, isNot(same(first)));
+      expect(second.id, first.id);
+      expect(second.state, EntityState.pending);
+    });
+
+    test('are unavailable before the session starts', () {
+      final protocol = _StaticProtocol();
+      final session = MultiplayerSession(schema: protocol.schema);
+
+      expect(() => session.staticEntity(protocol.board), throwsStateError);
+    });
+
+    test('accept only the handles of the session schema', () {
+      final protocol = _StaticProtocol();
+      final harness = _Harness(schema: protocol.schema);
+
+      expect(
+        () => harness.host.staticEntity(
+          const StaticEntity(id: StaticEntityId('arena.board')),
+        ),
+        throwsArgumentError,
+      );
+      expect(
+        () => harness.host.staticEntity(_StaticProtocol().board),
+        throwsArgumentError,
+      );
+    });
+
+    test('cannot be despawned', () {
+      final protocol = _StaticProtocol();
+      final harness = _Harness(schema: protocol.schema);
+      final board = harness.host.staticEntity(protocol.board);
+
+      expect(() => harness.host.despawn(board), throwsArgumentError);
+      expect(board.state, EntityState.pending);
     });
   });
 

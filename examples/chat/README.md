@@ -98,10 +98,11 @@ Disconnect ends the simulation.
 
 `lib/chat_protocol.dart` is shared by the UI and command-line host. Each peer
 registers `example.chat` with a 240-code-unit string codec, any-peer caller
-permission, all-peer targeting, and local execution included. Each registers
-the same static entity, ID 1, with the host as its owner and authority, after
-starting its session. The command-line host imports only `package:maratus`,
-which has no Flutter dependency, and binds directly to that entity.
+permission, all-peer targeting, and local execution included. The schema also
+declares the static `example.room` entity, which every session contains from
+the start, owned by the host. The command-line host imports only
+`package:maratus`, which has no Flutter dependency, and binds directly to that
+entity.
 
 `lib/chat_controller.dart` owns the UI session and `ChatGame`, which is displayed
 by a Flame `GameWidget`. Each connection creates a `MultiplayerScope` containing

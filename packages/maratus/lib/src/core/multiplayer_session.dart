@@ -10,6 +10,7 @@ import '../protocol/protocol_exception.dart';
 import '../protocol/rpc.dart';
 import '../protocol/schema.dart';
 import '../protocol/spawn_type.dart';
+import '../protocol/static_entity.dart';
 import '../protocol/sync_field.dart';
 import '../protocol/value_codec.dart';
 import '../protocol/wire_codec.dart';
@@ -100,7 +101,9 @@ typedef SessionMessageHandler =
 /// reports ready, with the latest revision it applied, once every entity of
 /// the baseline is ready.
 ///
-/// The host creates replicated entities with [spawn] and removes them with
+/// The schema's static entities exist on every peer, with the same IDs, as
+/// soon as it starts hosting or joining; [staticEntity] returns them. The
+/// host creates replicated entities with [spawn] and removes them with
 /// [despawn]; each peer creates their local representation through
 /// [bindSpawn] handlers. Each entity's authority sends its synchronized
 /// properties when [captureState] runs, and the host relays them, so only
@@ -212,6 +215,9 @@ final class MultiplayerSession {
 
   /// The networked entities of the current session.
   final registry = EntityRegistry();
+
+  /// The static entities of the current session, by declaration.
+  final _staticEntities = <StaticEntity, NetworkEntity>{};
 
   final _events = Queue<SessionEvent>();
   final _remotes = <PeerConnection, _Remote>{};
@@ -502,6 +508,31 @@ final class MultiplayerSession {
     PeerId? peer,
   }) => _rpcDispatcher.call(entity, rpc, payload, peer: peer);
 
+  /// The entity of the static [entity] declared in the schema, in the current
+  /// session.
+  ///
+  /// Each session registers the schema's static entities when it starts
+  /// hosting or joining, before it handles any message, so they exist on
+  /// every peer with the same IDs. The host owns them and is their
+  /// authority. Like any entity, each starts pending until an attachment or
+  /// [EntityRegistry.markReady] makes it ready. Static entities are not
+  /// spawned, so [despawn] does not remove them; they are removed when the
+  /// session disconnects, and the next session registers them again.
+  ///
+  /// Throws an [ArgumentError] for a foreign [entity] handle, and a
+  /// [StateError] while the session is disconnected.
+  NetworkEntity staticEntity(StaticEntity entity) {
+    if (!identical(_schema.staticEntityDefinition(entity.id), entity)) {
+      throw ArgumentError.value(
+        entity,
+        'entity',
+        'must belong to the session schema',
+      );
+    }
+    return _staticEntities[entity] ??
+        (throw StateError('The session is disconnected.'));
+  }
+
   /// Spawns a replicated entity of [type], built from [data], on every peer.
   ///
   /// Only a hosting session spawns entities. It allocates the entity ID and
@@ -760,6 +791,15 @@ final class MultiplayerSession {
     _spawns.clear();
     _states.clear();
     registry.clear();
+    _staticEntities.clear();
+    // Every peer of the session takes the same IDs for the static entities,
+    // before handling any message that could refer to them.
+    for (final entity in _schema.staticEntities) {
+      _staticEntities[entity] = registry.create(
+        owner: PeerId.host,
+        authority: PeerId.host,
+      );
+    }
   }
 
   void _handle(PeerEvent event) {
@@ -1097,6 +1137,7 @@ final class MultiplayerSession {
     _states.clear();
     final ended = _spawns.end();
     registry.clear();
+    _staticEntities.clear();
     _setState(SessionState.disconnected, reason);
     // Handlers run last: they may start another session.
     _spawns.release(ended);

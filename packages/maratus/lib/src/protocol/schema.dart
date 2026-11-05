@@ -6,6 +6,7 @@ import 'identifiers.dart';
 import 'protocol_exception.dart';
 import 'rpc.dart';
 import 'spawn_type.dart';
+import 'static_entity.dart';
 import 'sync_field.dart';
 import 'value_codec.dart';
 
@@ -63,7 +64,8 @@ final class SchemaEntry<T> {
 /// The registrations that host and clients must agree on.
 ///
 /// A schema maps stable identifiers for spawn types, RPCs, and synchronized
-/// fields to the codecs of their values. Peers compare [fingerprint]s when
+/// fields to the codecs of their values, and declares the static entities
+/// that every session contains. Peers compare [fingerprint]s when
 /// connecting.
 final class ProtocolSchema {
   ProtocolSchema._(
@@ -73,7 +75,17 @@ final class ProtocolSchema {
     this._spawnTypeDefinitions,
     this._rpcDefinitions,
     this._fieldDefinitions,
-  ) : fingerprint = _fingerprint(_spawnTypes, _rpcDefinitions, _fields);
+    this._staticEntityDefinitions,
+  ) : staticEntities = List.unmodifiable([
+        for (final id in _staticEntityDefinitions.keys.toList()..sort())
+          _staticEntityDefinitions[id]!,
+      ]),
+      fingerprint = _fingerprint(
+        _spawnTypes,
+        _rpcDefinitions,
+        _fields,
+        _staticEntityDefinitions.keys,
+      );
 
   final Map<String, SchemaEntry<Object?>> _spawnTypes;
   final Map<String, SchemaEntry<Object?>> _rpcs;
@@ -81,10 +93,18 @@ final class ProtocolSchema {
   final Map<String, SpawnType<Object?>> _spawnTypeDefinitions;
   final Map<String, Rpc<Object?>> _rpcDefinitions;
   final Map<String, SyncField<Object?>> _fieldDefinitions;
+  final Map<String, StaticEntity> _staticEntityDefinitions;
+
+  /// The declared static entities, in the order of their entity IDs: sorted
+  /// by identifier, so that the first has ID 1, the next ID 2, and so on.
+  ///
+  /// Every session registers these entities when it starts hosting or
+  /// joining, and the entities it spawns take the IDs that follow.
+  final List<StaticEntity> staticEntities;
 
   /// A SHA-256 digest, in lowercase hexadecimal, of every identifier and
   /// codec descriptor in this schema, including each RPC's caller, target,
-  /// and local-invocation policies.
+  /// and local-invocation policies, and of the static entities.
   ///
   /// Equal registrations produce equal fingerprints on every platform,
   /// regardless of the order in which they were registered.
@@ -120,13 +140,21 @@ final class ProtocolSchema {
   SyncField<Object?>? fieldDefinition(FieldId id) =>
       _fieldDefinitions[id.value];
 
+  /// The declared static entity handle for [id], or `null` if there is
+  /// none.
+  ///
+  /// This is the same handle returned when the entity was declared.
+  StaticEntity? staticEntityDefinition(StaticEntityId id) =>
+      _staticEntityDefinitions[id.value];
+
   /// The version of the canonical description that [fingerprint] digests.
-  static const _canonicalFormat = 2;
+  static const _canonicalFormat = 3;
 
   static String _fingerprint(
     Map<String, SchemaEntry<Object?>> spawnTypes,
     Map<String, Rpc<Object?>> rpcs,
     Map<String, SchemaEntry<Object?>> fields,
+    Iterable<String> staticEntities,
   ) {
     List<List<String>> describe(Map<String, SchemaEntry<Object?>> entries) => [
       for (final id in entries.keys.toList()..sort())
@@ -147,6 +175,7 @@ final class ProtocolSchema {
           ],
       ],
       'fields': describe(fields),
+      'staticEntities': staticEntities.toList()..sort(),
     });
     return sha256.convert(utf8.encode(canonical)).toString();
   }
@@ -160,6 +189,7 @@ final class ProtocolSchemaBuilder {
   final _spawnTypeDefinitions = <String, SpawnType<Object?>>{};
   final _rpcDefinitions = <String, Rpc<Object?>>{};
   final _fieldDefinitions = <String, SyncField<Object?>>{};
+  final _staticEntities = <String, StaticEntity>{};
 
   /// Registers spawn type [id] with the [codec] for its construction data
   /// and returns its handle.
@@ -212,6 +242,36 @@ final class ProtocolSchemaBuilder {
     return field;
   }
 
+  /// Declares static entity [id], an entity that exists in every session
+  /// without being spawned, and returns its handle.
+  ///
+  /// Each session registers the declared entities when it starts hosting or
+  /// joining, before it handles any message. Every peer gives them the same
+  /// entity IDs: sorted by identifier, they take the IDs from 1 up, as
+  /// [ProtocolSchema.staticEntities] lists them. The host owns them and is
+  /// their authority. Peers that declare different static entities have
+  /// different fingerprints, so they cannot connect.
+  ///
+  /// Throws an [ArgumentError] if [id] is not a valid identifier or is
+  /// already declared as a static entity.
+  StaticEntity addStaticEntity(StaticEntityId id) {
+    if (!isValidIdentifier(id.value)) {
+      throw ArgumentError.value(
+        id.value,
+        'id',
+        'is not a valid static entity identifier',
+      );
+    }
+    if (_staticEntities.containsKey(id.value)) {
+      throw ArgumentError.value(
+        id.value,
+        'id',
+        'is already declared as a static entity',
+      );
+    }
+    return _staticEntities[id.value] = StaticEntity(id: id);
+  }
+
   /// Creates a schema from the registrations made so far.
   ProtocolSchema build() => ProtocolSchema._(
     Map.of(_spawnTypes),
@@ -220,6 +280,7 @@ final class ProtocolSchemaBuilder {
     Map.of(_spawnTypeDefinitions),
     Map.of(_rpcDefinitions),
     Map.of(_fieldDefinitions),
+    Map.of(_staticEntities),
   );
 
   static void _add<T>(

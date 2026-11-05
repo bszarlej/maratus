@@ -10,15 +10,16 @@ import 'protocol_test_utils.dart';
 /// The canonical description of the test schema that its fingerprint
 /// digests.
 const _canonicalTestSchema =
-    '{"format":2,'
+    '{"format":3,'
     '"spawnTypes":[["player","string(maxLength=16)"]],'
     '"rpcs":[["player.move","test.move_input@1","any","host","exclude"]],'
     '"fields":[["player.health","int(min=0,max=100)"],'
-    '["player.name","string(maxLength=16)"]]}';
+    '["player.name","string(maxLength=16)"]],'
+    '"staticEntities":[]}';
 
 /// The SHA-256 digest of [_canonicalTestSchema], computed independently.
 const _testSchemaFingerprint =
-    'bcc7a53aac40acc7037edfd75ff506661197e24f24b3d9651eca1bb4842f0ef9';
+    'c2c59c03387a57fad4d438a1b82153121b1b5a309579030c0930ee31457b7d0c';
 
 void main() {
   group('ProtocolSchemaBuilder', () {
@@ -127,16 +128,52 @@ void main() {
       expect(builder.build().fieldDefinition(health.id), same(health));
     });
 
+    test('lists static entities in identifier order', () {
+      final builder = ProtocolSchemaBuilder();
+      final level = builder.addStaticEntity(const StaticEntityId('level'));
+      final board = builder.addStaticEntity(const StaticEntityId('board'));
+      final schema = builder.build();
+
+      expect(level.id, const StaticEntityId('level'));
+      expect(schema.staticEntities, [board, level]);
+      expect(schema.staticEntityDefinition(board.id), same(board));
+      expect(schema.staticEntityDefinition(level.id), same(level));
+      expect(
+        schema.staticEntityDefinition(const StaticEntityId('lobby')),
+        isNull,
+      );
+      expect(() => schema.staticEntities.add(board), throwsUnsupportedError);
+
+      final lobby = builder.addStaticEntity(const StaticEntityId('lobby'));
+      expect(schema.staticEntities, [board, level]);
+      expect(builder.build().staticEntities, [board, level, lobby]);
+    });
+
+    test('rejects duplicate and malformed static entity identifiers', () {
+      final builder = ProtocolSchemaBuilder();
+      final board = builder.addStaticEntity(const StaticEntityId('board'));
+
+      for (final id in ['board', 'Board', 'board.', '']) {
+        expect(
+          () => builder.addStaticEntity(StaticEntityId(id)),
+          throwsArgumentError,
+          reason: id,
+        );
+      }
+      expect(builder.build().staticEntities, [board]);
+    });
+
     test('keeps a separate namespace for each kind of registration', () {
-      final schema =
-          (ProtocolSchemaBuilder()
-                ..addRpc(const RpcId('ping'), const BoolCodec())
-                ..addField(const FieldId('ping'), const IntCodec()))
-              .build();
+      final builder = ProtocolSchemaBuilder()
+        ..addRpc(const RpcId('ping'), const BoolCodec())
+        ..addField(const FieldId('ping'), const IntCodec());
+      final ping = builder.addStaticEntity(const StaticEntityId('ping'));
+      final schema = builder.build();
 
       expect(schema.rpc(const RpcId('ping'))?.codec, isA<BoolCodec>());
       expect(schema.field(const FieldId('ping'))?.codec, isA<IntCodec>());
       expect(schema.spawnType(const SpawnTypeId('ping')), isNull);
+      expect(schema.staticEntityDefinition(ping.id), same(ping));
     });
 
     test('rejects duplicate identifiers', () {
@@ -266,6 +303,8 @@ void main() {
           const FieldId('player.name'),
           const StringCodec(maxLength: 16),
         ),
+        (b) => b.addStaticEntity(const StaticEntityId('board')),
+        (b) => b.addStaticEntity(const StaticEntityId('level')),
       ];
       final expected = fingerprintOf(registrations);
       final random = Random(1);
@@ -296,6 +335,13 @@ void main() {
         ]),
         'spawn type instead of RPC': fingerprintOf([
           (b) => b.addSpawnType(const SpawnTypeId('ping'), const IntCodec()),
+        ]),
+        'added static entity': fingerprintOf([
+          (b) => b.addRpc(const RpcId('ping'), const IntCodec()),
+          (b) => b.addStaticEntity(const StaticEntityId('ping')),
+        ]),
+        'static entity instead of RPC': fingerprintOf([
+          (b) => b.addStaticEntity(const StaticEntityId('ping')),
         ]),
       };
 
