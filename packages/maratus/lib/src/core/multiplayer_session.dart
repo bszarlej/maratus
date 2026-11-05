@@ -15,6 +15,7 @@ import '../protocol/sync_field.dart';
 import '../protocol/value_codec.dart';
 import '../protocol/wire_codec.dart';
 import '../transport/multiplayer_peer.dart';
+import 'admission.dart';
 import 'clock.dart';
 import 'entity_registry.dart';
 import 'session_events.dart';
@@ -38,8 +39,9 @@ final class SessionTimeouts {
   });
 
   /// How long a client may take from starting to join until the host
-  /// accepts it, and how long a host waits for a new connection's hello,
-  /// from the update that handles the connection.
+  /// accepts it, and how long a host waits for a new connection's hello and
+  /// the decision of its [MultiplayerSession.onJoinRequest] handler, from
+  /// the update that handles the connection.
   final Duration handshake;
 
   /// How long a client may take, once accepted, to become ready: to receive
@@ -77,8 +79,10 @@ typedef SessionMessageHandler =
 /// reported as [SessionEvent]s, taken with [poll].
 ///
 /// The host accepts a client's hello only if the client's schema has the
-/// same fingerprint, and then assigns it a [PeerId] and a connection
-/// generation. Every later message on that connection carries the
+/// same fingerprint, and admits the client only while [admitting] and if its
+/// [onJoinRequest] handler, if any, agrees. It then welcomes the client with
+/// a [PeerId] and a connection generation; until then, nothing replicated
+/// reaches the client. Every later message on that connection carries the
 /// generation, and messages that carry another one are dropped as stale.
 /// The host attributes each message to the connection it arrived on, never
 /// to an identity that the message claims.
@@ -207,6 +211,34 @@ final class MultiplayerSession {
   /// transport queue overflows.
   final QueueLimits stateBackpressure;
 
+  /// Decides whether this host admits each client that asks to join, or
+  /// `null`, the default, to admit every client while [admitting].
+  ///
+  /// The host calls it during [update], once a client's hello arrives with
+  /// the same schema fingerprint, with the client's validated join request
+  /// and the peer ID that the client gets if admitted. Until the decision,
+  /// the client receives nothing from the session, and the host neither
+  /// lists it in [peers] nor reports it: [PeerJoined] follows admission. A
+  /// decision that the handler completes later takes effect at the next
+  /// [update]. The handshake timeout covers the decision, so a client that
+  /// is still undecided when it expires is turned away with
+  /// [DisconnectReason.timeout].
+  ///
+  /// A rejected client disconnects with [DisconnectReason.rejected] and the
+  /// reason given to [Admission.reject] as its [rejectionReason]. A handler
+  /// that throws, or whose future fails, rejects the client without a reason
+  /// and reports [AdmissionFailed].
+  AdmissionHandler? onJoinRequest;
+
+  /// Whether this host admits new clients, `true` by default.
+  ///
+  /// While `false`, the host turns away each client whose hello arrives with
+  /// [DisconnectReason.notAdmitting], without calling [onJoinRequest], for
+  /// example once a match has started. Clients whose request is already
+  /// being decided are unaffected; a handler can check this flag itself,
+  /// for example after awaiting a backend.
+  bool admitting = true;
+
   /// The number of accepted local RPCs awaiting attachment readiness/update.
   int get pendingRpcCount => _attachments.pendingCount;
 
@@ -226,6 +258,7 @@ final class MultiplayerSession {
   var _isHost = false;
   var _state = SessionState.disconnected;
   DisconnectReason? _disconnectReason;
+  String? _rejectionReason;
   PeerId? _localPeer;
   int? _epoch;
   int? _lastEpoch;
@@ -233,6 +266,9 @@ final class MultiplayerSession {
   var _nextClient = 2;
   var _nextGeneration = 1;
   Duration? _joinDeadline;
+
+  /// The wire value of a joining client's request, sent with its hello.
+  Object? _joinRequest;
   var _staleMessages = 0;
   var _obsoleteMessages = 0;
   var _updating = false;
@@ -249,6 +285,10 @@ final class MultiplayerSession {
   /// Why this session disconnected, or `null` if it is not disconnected or
   /// has never started.
   DisconnectReason? get disconnectReason => _disconnectReason;
+
+  /// For a client that the host rejected, with [DisconnectReason.rejected],
+  /// the reason that the host gave, if any; otherwise `null`.
+  String? get rejectionReason => _rejectionReason;
 
   /// The ID of this peer: [PeerId.host] while hosting, and the ID the host
   /// assigned while joined. `null` otherwise.
@@ -362,31 +402,75 @@ final class MultiplayerSession {
     _setState(SessionState.hosting);
   }
 
-  /// Starts joining the host that [peer] connects to.
+  /// Starts joining the host that [peer] connects to, asking to be admitted
+  /// with [request].
   ///
   /// The session takes over [peer] and closes it when it disconnects.
-  /// Throws an [ArgumentError] if [peer] is a host peer, and a [StateError]
-  /// if the session is not disconnected.
-  void join(MultiplayerPeer peer) {
+  /// [request] is the data for the host's [onJoinRequest] handler, such as a
+  /// player name or an access token, encoded with the join request codec
+  /// that the schema sets with [ProtocolSchemaBuilder.setJoinRequest]. It
+  /// must be `null` if the schema sets none.
+  ///
+  /// Throws an [ArgumentError] if [peer] is a host peer, or if [request] is
+  /// invalid for the codec, cannot make a codec and wire round trip, or is
+  /// given without a codec. Throws a [StateError] if the session is not
+  /// disconnected.
+  void join(MultiplayerPeer peer, {Object? request}) {
     if (peer.isHost) {
       throw ArgumentError.value(peer, 'peer', 'must be a client peer');
     }
+    final wire = _encodeJoinRequest(request);
     _start(peer, isHost: false);
+    _joinRequest = wire;
     _joinDeadline = _clock.now + timeouts.handshake;
     _setState(SessionState.connecting);
+  }
+
+  /// Encodes a joining client's [request] as the wire value of its hello,
+  /// with its own copy of the data.
+  ///
+  /// Throws an [ArgumentError] unless [request] makes a round trip through
+  /// the schema's join request codec within the wire limits, or if the schema
+  /// sets no codec and [request] is not `null`.
+  Object? _encodeJoinRequest(Object? request) {
+    final entry = _schema.joinRequest;
+    if (entry == null) {
+      if (request == null) return null;
+      throw ArgumentError.value(
+        request,
+        'request',
+        'requires a join request codec in the schema',
+      );
+    }
+    final bytes = _codec.encode(
+      MessageEnvelope(
+        HelloMessage(
+          fingerprint: _schema.fingerprint,
+          request: entry.encode(request),
+        ),
+      ),
+    );
+    try {
+      final hello = _codec.decode(bytes).message as HelloMessage;
+      entry.decode(hello.request);
+      return hello.request;
+    } on ProtocolException catch (error) {
+      throw ArgumentError('The join request cannot be decoded: $error');
+    }
   }
 
   /// Takes the peer's events, advances the handshake, and enforces
   /// [timeouts].
   ///
   /// Received spawn, despawn, and state records are applied as their events
-  /// are handled. Ready synchronizers then receive the latest values of the
-  /// entities this peer does not write, before queued RPCs for attached
-  /// entities run. A joining client then reports ready if every entity of
-  /// its baseline is ready, and pings that are due are sent. Deadlines are
-  /// checked last, at this update boundary, so a queued reply or a
-  /// completed installation takes precedence even when this method runs
-  /// after the deadline.
+  /// are handled. A host then applies the admission decisions completed
+  /// since the previous update. Ready synchronizers then receive the latest
+  /// values of the entities this peer does not write, before queued RPCs for
+  /// attached entities run. A joining client then reports ready if every
+  /// entity of its baseline is ready, and pings that are due are sent.
+  /// Deadlines are checked last, at this update boundary, so a queued reply,
+  /// a completed decision, or a completed installation takes precedence even
+  /// when this method runs after the deadline.
   /// Has no effect while the session is disconnected.
   /// Throws a [StateError] if called recursively, during [captureState], or
   /// from an RPC or spawn handler, including a handler invoked by a local
@@ -403,6 +487,8 @@ final class MultiplayerSession {
         _handle(event);
         if (_peer != peer) return;
       }
+      _applyAdmissions();
+      if (_peer != peer) return;
       _states.apply();
       if (_peer != peer) return;
       _attachments.flush();
@@ -779,6 +865,8 @@ final class MultiplayerSession {
     }
     _peer = peer;
     _isHost = isHost;
+    _rejectionReason = null;
+    _joinRequest = null;
     _revision = 0;
     _nextClient = 2;
     _nextGeneration = 1;
@@ -832,7 +920,13 @@ final class MultiplayerSession {
       connection,
       deadline: _joinDeadline,
     );
-    if (!_send(remote, HelloMessage(fingerprint: _schema.fingerprint))) return;
+    if (!_send(
+      remote,
+      HelloMessage(fingerprint: _schema.fingerprint, request: _joinRequest),
+    )) {
+      return;
+    }
+    _joinRequest = null;
     _setState(SessionState.handshaking);
   }
 
@@ -874,13 +968,22 @@ final class MultiplayerSession {
     switch ((remote.state, envelope.message)) {
       case (_, GoodbyeMessage(:final reason)):
         _drop(remote, _goodbyeReason(reason));
-      case (!= _RemoteState.handshaking, PingMessage(:final sequence)):
+      case (
+        _RemoteState.synchronizing || _RemoteState.ready,
+        PingMessage(:final sequence),
+      ):
         _answer(remote, sequence);
-      case (!= _RemoteState.handshaking, PongMessage(:final sequence)):
+      case (
+        _RemoteState.synchronizing || _RemoteState.ready,
+        PongMessage(:final sequence),
+      ):
         _pong(remote, sequence);
-      case (_RemoteState.handshaking, HelloMessage(:final fingerprint)):
+      case (
+        _RemoteState.handshaking,
+        HelloMessage(:final fingerprint, :final request),
+      ):
         if (fingerprint == _schema.fingerprint) {
-          _welcome(remote);
+          _requestAdmission(remote, request);
         } else {
           _drop(remote, DisconnectReason.schemaMismatch, notify: true);
         }
@@ -902,8 +1005,107 @@ final class MultiplayerSession {
     }
   }
 
-  void _welcome(_Remote remote) {
+  /// Validates a hello before consulting application code. A reserved ID
+  /// stays separate from membership until the decision is applied.
+  void _requestAdmission(_Remote remote, Object? wire) {
+    final Object? data;
+    try {
+      final entry = _schema.joinRequest;
+      if (entry == null && wire != null) {
+        throw const ProtocolException(
+          ProtocolErrorCode.invalidValue,
+          'The schema does not accept join request data.',
+        );
+      }
+      data = entry?.decode(wire);
+    } on ProtocolException {
+      _drop(remote, DisconnectReason.protocolViolation, notify: true);
+      return;
+    }
+    if (!admitting) {
+      _drop(remote, DisconnectReason.notAdmitting, notify: true);
+      return;
+    }
     final peer = PeerId(_nextClient++);
+    remote
+      ..candidate = peer
+      ..state = _RemoteState.admitting;
+    final handler = onJoinRequest;
+    if (handler == null) {
+      _welcome(remote);
+      return;
+    }
+    final FutureOr<Admission> result;
+    try {
+      result = handler(JoinRequest(peer: peer, data: data));
+    } on Object catch (error, stackTrace) {
+      _failAdmission(remote, error, stackTrace);
+      _applyAdmission(remote);
+      return;
+    }
+    if (result is Future<Admission>) {
+      unawaited(
+        result.then<void>(
+          (decision) => _recordAdmission(remote, decision),
+          onError: (Object error, StackTrace stackTrace) =>
+              _failAdmission(remote, error, stackTrace),
+        ),
+      );
+    } else {
+      _recordAdmission(remote, result);
+      _applyAdmission(remote);
+    }
+  }
+
+  bool _awaitingAdmission(_Remote remote) =>
+      identical(_remotes[remote.connection], remote) &&
+      remote.state == _RemoteState.admitting;
+
+  void _recordAdmission(_Remote remote, Admission decision) {
+    if (_awaitingAdmission(remote)) remote.admission = decision;
+  }
+
+  void _failAdmission(_Remote remote, Object error, StackTrace stackTrace) {
+    if (!_awaitingAdmission(remote)) return;
+    remote
+      ..admission = Admission.reject()
+      ..admissionFailure = AdmissionFailed(
+        peer: remote.candidate!,
+        error: error,
+        stackTrace: stackTrace,
+      );
+  }
+
+  /// Future callbacks only store their result; membership and events change
+  /// at an update boundary, after queued disconnects have been handled.
+  void _applyAdmissions() {
+    for (final remote in _remotes.values.toList()) {
+      _applyAdmission(remote);
+    }
+  }
+
+  void _applyAdmission(_Remote remote) {
+    final decision = remote.admission;
+    if (decision == null || !_awaitingAdmission(remote)) return;
+    remote.admission = null;
+    if (remote.admissionFailure case final failure?) {
+      remote.admissionFailure = null;
+      _emit(failure);
+    }
+    if (decision.isAdmitted) {
+      _welcome(remote);
+    } else {
+      _drop(
+        remote,
+        DisconnectReason.rejected,
+        notify: true,
+        detail: decision.reason,
+      );
+    }
+  }
+
+  void _welcome(_Remote remote) {
+    final peer = remote.candidate!;
     remote
       ..peer = peer
       ..generation = _nextGeneration++
@@ -928,8 +1130,8 @@ final class MultiplayerSession {
 
   void _receiveFromHost(_Remote remote, MessageEnvelope envelope) {
     switch ((remote.state, envelope.message)) {
-      case (_, GoodbyeMessage(:final reason)):
-        _drop(remote, _goodbyeReason(reason));
+      case (_, GoodbyeMessage(:final reason, :final detail)):
+        _drop(remote, _goodbyeReason(reason), detail: detail);
       case (!= _RemoteState.handshaking, PingMessage(:final sequence)):
         _answer(remote, sequence);
       case (!= _RemoteState.handshaking, PongMessage(:final sequence)):
@@ -1103,15 +1305,19 @@ final class MultiplayerSession {
     DisconnectReason reason, {
     bool notify = false,
     bool release = true,
+    String? detail,
   }) {
     if (_remotes[remote.connection] != remote) return;
     // State held for a peer that is leaving is never sent.
     remote.held.clear();
     final goodbye = notify ? _goodbyeFor(reason) : null;
-    if (goodbye != null && !_send(remote, GoodbyeMessage(goodbye))) return;
+    if (goodbye != null &&
+        !_send(remote, GoodbyeMessage(goodbye, detail: detail))) {
+      return;
+    }
     remote.connection.close();
     if (!_isHost) {
-      _disconnect(reason);
+      _disconnect(reason, detail: detail);
       return;
     }
     _remotes.remove(remote.connection);
@@ -1123,7 +1329,7 @@ final class MultiplayerSession {
     }
   }
 
-  void _disconnect(DisconnectReason reason) {
+  void _disconnect(DisconnectReason reason, {String? detail}) {
     final peer = _peer;
     if (peer == null) return;
     _peer = null;
@@ -1133,6 +1339,8 @@ final class MultiplayerSession {
     _localPeer = null;
     _epoch = null;
     _joinDeadline = null;
+    _joinRequest = null;
+    _rejectionReason = reason == DisconnectReason.rejected ? detail : null;
     _rpcDispatcher.clear();
     _states.clear();
     final ended = _spawns.end();
@@ -1208,6 +1416,8 @@ final class MultiplayerSession {
   static DisconnectReason _goodbyeReason(GoodbyeReason reason) =>
       switch (reason) {
         GoodbyeReason.kicked => DisconnectReason.kicked,
+        GoodbyeReason.rejected => DisconnectReason.rejected,
+        GoodbyeReason.notAdmitting => DisconnectReason.notAdmitting,
         GoodbyeReason.versionMismatch => DisconnectReason.versionMismatch,
         GoodbyeReason.schemaMismatch => DisconnectReason.schemaMismatch,
         GoodbyeReason.timeout => DisconnectReason.timeout,
@@ -1218,6 +1428,8 @@ final class MultiplayerSession {
   static GoodbyeReason? _goodbyeFor(DisconnectReason reason) =>
       switch (reason) {
         DisconnectReason.kicked => GoodbyeReason.kicked,
+        DisconnectReason.rejected => GoodbyeReason.rejected,
+        DisconnectReason.notAdmitting => GoodbyeReason.notAdmitting,
         DisconnectReason.versionMismatch => GoodbyeReason.versionMismatch,
         DisconnectReason.schemaMismatch => GoodbyeReason.schemaMismatch,
         DisconnectReason.timeout => GoodbyeReason.timeout,
@@ -1231,6 +1443,7 @@ final class MultiplayerSession {
 
 enum _RemoteState {
   handshaking,
+  admitting,
   synchronizing,
 
   /// On a client, the host's state once the baseline has arrived, while the
@@ -1246,6 +1459,11 @@ final class _Remote {
 
   final PeerConnection connection;
   PeerId? peer;
+
+  /// Reserved while admission is pending, without making this a member.
+  PeerId? candidate;
+  Admission? admission;
+  AdmissionFailed? admissionFailure;
   var generation = 0;
 
   /// The revision of the baseline that the host welcomed a client with.

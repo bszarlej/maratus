@@ -81,11 +81,18 @@ sealed class ProtocolMessage {
 /// Starts the handshake: a client asks the host to accept its connection.
 final class HelloMessage extends ProtocolMessage {
   /// Creates a message that presents the [fingerprint] of the client's
-  /// schema.
-  const HelloMessage({required this.fingerprint});
+  /// schema and, optionally, its join [request].
+  const HelloMessage({required this.fingerprint, this.request});
 
   /// The fingerprint of the client's schema, which must match the host's.
   final String fingerprint;
+
+  /// The client's join request as a wire value, or `null` if it sends none.
+  ///
+  /// The protocol layer checks only the wire limits. Once the fingerprints
+  /// match, the host decodes the request with the join request codec of its
+  /// schema, which is then also the client's.
+  final Object? request;
 
   @override
   MessageKind get kind => MessageKind.hello;
@@ -134,11 +141,19 @@ final class ReadyMessage extends ProtocolMessage {
 
 /// Tells the other side why the sender is about to close the connection.
 final class GoodbyeMessage extends ProtocolMessage {
-  /// Creates a message that gives the [reason] for closing a connection.
-  const GoodbyeMessage(this.reason);
+  /// Creates a message that gives the [reason] for closing a connection,
+  /// with an optional [detail] for the other side to show.
+  const GoodbyeMessage(this.reason, {this.detail});
+
+  /// The maximum length of a [detail], in UTF-16 code units.
+  static const maxDetailLength = 256;
 
   /// Why the sender closes the connection.
   final GoodbyeReason reason;
+
+  /// An explanation in the sender's words, such as the reason a host gave
+  /// for rejecting a client, or `null` if there is none.
+  final String? detail;
 
   @override
   MessageKind get kind => MessageKind.goodbye;
@@ -162,7 +177,13 @@ enum GoodbyeReason {
   bootstrapFailed('bootstrap'),
 
   /// The other side sent a message that violates the protocol.
-  protocolViolation('violation');
+  protocolViolation('violation'),
+
+  /// The host decided not to admit the client.
+  rejected('rejected'),
+
+  /// The host is not admitting new clients.
+  notAdmitting('not_admitting');
 
   const GoodbyeReason(this.code);
 

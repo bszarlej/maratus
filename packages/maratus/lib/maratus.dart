@@ -6,6 +6,7 @@
 /// `package:maratus_flame`, which re-exports these APIs.
 library;
 
+export 'src/core/admission.dart';
 export 'src/core/clock.dart';
 export 'src/core/entity_registry.dart';
 export 'src/core/multiplayer_session.dart';

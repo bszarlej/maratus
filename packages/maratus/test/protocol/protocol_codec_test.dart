@@ -17,10 +17,18 @@ const _fingerprint =
 /// Encoded messages of each kind, written against the test schema.
 const _fixtures = {
   'hello': '{"v":1,"k":"hello","g":0,"r":0,"b":{"f":"$_fingerprint"}}',
+  'hello with request':
+      '{"v":1,"k":"hello","g":0,"r":0,'
+      '"b":{"f":"$_fingerprint","j":{"name":"Ada","roles":["player"]}}}',
   'welcome': '{"v":1,"k":"welcome","g":5,"r":12,"b":{"p":2,"e":3735928559}}',
   'synced': '{"v":1,"k":"synced","g":5,"r":12,"b":{}}',
   'ready': '{"v":1,"k":"ready","g":5,"r":12,"b":{}}',
   'goodbye': '{"v":1,"k":"goodbye","g":5,"r":0,"b":{"c":"kicked"}}',
+  'rejected goodbye':
+      '{"v":1,"k":"goodbye","g":0,"r":0,'
+      '"b":{"c":"rejected","m":"Match full"}}',
+  'not admitting goodbye':
+      '{"v":1,"k":"goodbye","g":0,"r":0,"b":{"c":"not_admitting"}}',
   'ping': '{"v":1,"k":"ping","g":5,"r":0,"b":{"n":3}}',
   'pong': '{"v":1,"k":"pong","g":5,"r":0,"b":{"n":3}}',
   'spawn':
@@ -47,6 +55,15 @@ const _fixtures = {
 /// The envelopes that [_fixtures] encode.
 final _envelopes = {
   'hello': const MessageEnvelope(HelloMessage(fingerprint: _fingerprint)),
+  'hello with request': const MessageEnvelope(
+    HelloMessage(
+      fingerprint: _fingerprint,
+      request: {
+        'name': 'Ada',
+        'roles': ['player'],
+      },
+    ),
+  ),
   'welcome': const MessageEnvelope(
     WelcomeMessage(peer: PeerId(2), epoch: 3735928559),
     generation: 5,
@@ -57,6 +74,12 @@ final _envelopes = {
   'goodbye': const MessageEnvelope(
     GoodbyeMessage(GoodbyeReason.kicked),
     generation: 5,
+  ),
+  'rejected goodbye': const MessageEnvelope(
+    GoodbyeMessage(GoodbyeReason.rejected, detail: 'Match full'),
+  ),
+  'not admitting goodbye': const MessageEnvelope(
+    GoodbyeMessage(GoodbyeReason.notAdmitting),
   ),
   'ping': const MessageEnvelope(PingMessage(3), generation: 5),
   'pong': const MessageEnvelope(PongMessage(3), generation: 5),
@@ -511,6 +534,39 @@ final _invalidInputs = <_InvalidInput>[
     ProtocolErrorCode.invalidValue,
     path: ['b', 'c'],
   ),
+  _invalid(
+    'a goodbye detail that is not a string',
+    '{"v":1,"k":"goodbye","g":0,"r":0,"b":{"c":"rejected","m":7}}',
+    ProtocolErrorCode.invalidValue,
+    path: ['b', 'm'],
+  ),
+  _invalid(
+    'an explicit null goodbye detail',
+    '{"v":1,"k":"goodbye","g":0,"r":0,"b":{"c":"rejected","m":null}}',
+    ProtocolErrorCode.invalidValue,
+    path: ['b', 'm'],
+  ),
+  _invalid(
+    'an overlong goodbye detail',
+    '{"v":1,"k":"goodbye","g":0,"r":0,'
+        '"b":{"c":"rejected","m":"${'a' * (GoodbyeMessage.maxDetailLength + 1)}"}}',
+    ProtocolErrorCode.limitExceeded,
+    path: ['b', 'm'],
+  ),
+  _invalid(
+    'a goodbye with an unexpected field beside its detail',
+    '{"v":1,"k":"goodbye","g":0,"r":0,'
+        '"b":{"c":"rejected","m":"Match full","p":2}}',
+    ProtocolErrorCode.invalidValue,
+    path: ['b'],
+  ),
+  _invalid(
+    'a hello with an unexpected field beside its request',
+    '{"v":1,"k":"hello","g":0,"r":0,'
+        '"b":{"f":"$_fingerprint","j":"Ada","p":2}}',
+    ProtocolErrorCode.invalidValue,
+    path: ['b'],
+  ),
 ];
 
 Uint8List _bytes(String text) => utf8.encode(text);
@@ -640,6 +696,117 @@ void main() {
           _fingerprint,
         ),
       );
+    });
+
+    test(
+      'preserves join wire values for validation after schema comparison',
+      () {
+        final schema =
+            (ProtocolSchemaBuilder()..setJoinRequest(const StringCodec()))
+                .build();
+        final withJoinRequest = ProtocolCodec(schema);
+        for (final request in <Object?>[
+          null,
+          false,
+          7,
+          'Ada',
+          <Object?>[],
+          <String, Object?>{},
+          {
+            'players': ['Ada', null],
+          },
+        ]) {
+          final message =
+              withJoinRequest
+                      .decode(
+                        withJoinRequest.encode(
+                          MessageEnvelope(
+                            HelloMessage(
+                              fingerprint: _fingerprint,
+                              request: request,
+                            ),
+                          ),
+                        ),
+                      )
+                      .message
+                  as HelloMessage;
+
+          expect(message.fingerprint, _fingerprint);
+          expect(message.request, request);
+        }
+        final explicitNull =
+            codec
+                    .decode(
+                      _bytes(
+                        '{"v":1,"k":"hello","g":0,"r":0,'
+                        '"b":{"f":"$_fingerprint","j":null}}',
+                      ),
+                    )
+                    .message
+                as HelloMessage;
+
+        expect(explicitNull.request, isNull);
+      },
+    );
+
+    test('decodes admission rejection codes and optional detail', () {
+      for (final reason in [
+        GoodbyeReason.rejected,
+        GoodbyeReason.notAdmitting,
+      ]) {
+        for (final detail in [
+          null,
+          '',
+          'Match full',
+          'a' * GoodbyeMessage.maxDetailLength,
+        ]) {
+          final message =
+              codec
+                      .decode(
+                        codec.encode(
+                          MessageEnvelope(
+                            GoodbyeMessage(reason, detail: detail),
+                          ),
+                        ),
+                      )
+                      .message
+                  as GoodbyeMessage;
+
+          expect(message.reason, reason);
+          expect(message.detail, detail);
+        }
+      }
+    });
+
+    test('enforces wire limits inside a join request in both directions', () {
+      final cases = <({WireLimits limits, Object request})>[
+        (
+          limits: const WireLimits(maxCollectionLength: 5),
+          request: [0, 1, 2, 3, 4, 5],
+        ),
+        (
+          limits: const WireLimits(maxDepth: 2),
+          request: {
+            'nested': [1],
+          },
+        ),
+        (limits: const WireLimits(maxMessageBytes: 128), request: 'a' * 129),
+      ];
+      for (final testCase in cases) {
+        final limited = ProtocolCodec(
+          buildTestSchema(),
+          limits: testCase.limits,
+        );
+        final envelope = MessageEnvelope(
+          HelloMessage(fingerprint: _fingerprint, request: testCase.request),
+        );
+
+        expect(() => limited.encode(envelope), throwsArgumentError);
+        expect(
+          () => limited.decode(codec.encode(envelope)),
+          throwsProtocolException(ProtocolErrorCode.limitExceeded),
+        );
+      }
     });
 
     test('decodes spawn metadata with and without a parent', () {
@@ -918,6 +1085,22 @@ void main() {
       expectRejected(HelloMessage(fingerprint: 'a' * 65));
       expectRejected(const WelcomeMessage(peer: PeerId.host, epoch: 7));
       expectRejected(const WelcomeMessage(peer: PeerId(2), epoch: 0));
+      expectRejected(
+        GoodbyeMessage(
+          GoodbyeReason.rejected,
+          detail: 'a' * (GoodbyeMessage.maxDetailLength + 1),
+        ),
+      );
+      for (final request in <Object>[
+        double.nan,
+        double.infinity,
+        {1: 'Ada'},
+        Object(),
+      ]) {
+        expectRejected(
+          HelloMessage(fingerprint: _fingerprint, request: request),
+        );
+      }
     });
 
     test('invalid entity IDs and envelope counters', () {

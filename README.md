@@ -14,7 +14,7 @@
 
 | Package | Use it for |
 | ------- | ---------- |
-| [`maratus`](packages/maratus) | The multiplayer core in pure Dart: sessions, schemas and codecs, RPCs, spawning, property synchronization and interpolation, late joining, diagnostics, and the WebSocket and in-memory transports. Runs without Flutter, for example in a dedicated host. |
+| [`maratus`](packages/maratus) | The multiplayer core in pure Dart: sessions and admission control, schemas and codecs, RPCs, spawning, property synchronization and interpolation, late joining, diagnostics, and the WebSocket and in-memory transports. Runs without Flutter, for example in a dedicated host. |
 | [`maratus_flame`](packages/maratus_flame) | Flame games: `MultiplayerScope`, `NetworkedComponent`, `MultiplayerSpawner`, and synchronized, smoothed `Vector2` values. Re-exports `maratus`, so a game needs only this package. |
 
 A Flame game depends on `maratus_flame`. Shared protocol definitions,
@@ -29,6 +29,9 @@ dedicated hosts, and other Dart code that must run without Flutter depend on
 - **Explicit schemas.** Spawn types, RPCs, and synchronized fields are
   registered with stable identifiers and codecs that validate everything
   received. Host and clients must register the same schema to connect.
+- **Admission control.** Hosts can accept or reject a joining client using
+  validated application data, complete checks asynchronously, or close a
+  match to new players. Clients receive the world only after acceptance.
 - **Authority and ownership.** Each entity's authority writes its state, and
   its owner may send it input, such as movement RPCs for a player's avatar.
 - **Late joining.** A joining client installs the host's current world before
