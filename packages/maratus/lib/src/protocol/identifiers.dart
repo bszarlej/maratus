@@ -7,6 +7,10 @@ extension type const RpcId(String value) {}
 /// Identifies a synchronized field in a protocol schema.
 extension type const FieldId(String value) {}
 
+/// Identifies a static entity in a protocol schema: an entity that exists
+/// in every session without being spawned.
+extension type const StaticEntityId(String value) {}
+
 /// Identifies a networked entity within a session.
 ///
 /// Valid entity IDs are integers from 1 to 2^53 - 1.

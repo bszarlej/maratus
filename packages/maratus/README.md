@@ -48,11 +48,12 @@ import 'package:maratus/maratus.dart';
 | `Rpc<T>`                  | A typed call addressed to a registered entity, with caller, destination, and local-execution policies.      |
 | `ValueCodec<T>`           | Converts a value to and from its wire representation, validating values received from other peers.          |
 
-Spawn types, RPCs, and synchronized properties are registered explicitly with
-stable identifiers and codecs before connecting. Nothing is discovered by
-reflection, and `runtimeType` is never used as a protocol identifier. Host and
-clients must register the same schema; a mismatch fails the handshake. RPC
-caller, destination, and local-execution policies are part of that schema.
+Spawn types, RPCs, synchronized properties, and static entities are registered
+explicitly with stable identifiers and codecs before connecting. Nothing is
+discovered by reflection, and `runtimeType` is never used as a protocol
+identifier. Host and clients must register the same schema; a mismatch fails
+the handshake. RPC caller, destination, and local-execution policies are part
+of that schema.
 
 ### Values and codecs
 
@@ -163,19 +164,20 @@ Messages carrying an old generation are discarded.
 Create a schema, then give each `MultiplayerSession` its own transport peer.
 The session owns that peer and closes it when the session disconnects. This
 example drives an in-memory host and client without real-time delays. It
-registers matching static entities and sends owner-only input to the host:
+declares a [static entity](#static-entities) and sends a vote from the client
+to the host:
 
 ```dart
 import 'package:maratus/maratus.dart';
 
 void main() {
   final builder = ProtocolSchemaBuilder();
-  final move = builder.addRpc(
-    const RpcId('player.move'),
-    const IntCodec(min: -1, max: 1),
-    caller: RpcCaller.owner,
+  final board = builder.addStaticEntity(const StaticEntityId('game.board'));
+  final vote = builder.addRpc(
+    const RpcId('game.board.vote'),
+    const IntCodec(min: 0, max: 3),
+    caller: RpcCaller.anyPeer,
     target: RpcTarget.host,
-    local: RpcLocal.include,
   );
   final schema = builder.build();
   final clock = ManualClock();
@@ -184,6 +186,17 @@ void main() {
     ..host(network.host());
   final client = MultiplayerSession(schema: schema, clock: clock)
     ..join(network.connect());
+
+  // The board exists on both peers, with the same ID, from the start.
+  final hostBoard = host.staticEntity(board);
+  final clientBoard = client.staticEntity(board);
+  final votes = <PeerId, int>{};
+  host.bindRpc(hostBoard, vote, (context, option) {
+    assert(context.target == PeerId.host);
+    votes[context.sender] = option;
+  });
+  host.registry.markReady(hostBoard.id);
+  client.registry.markReady(clientBoard.id);
 
   void pump() {
     // Each update consumes arrivals; the next advance delivers replies.
@@ -199,30 +212,11 @@ void main() {
     assert(client.state == SessionState.ready);
     assert(host.isReady(client.localPeer!));
 
-    // Static setup: each peer registers the same ID and ownership metadata.
-    final hostEntity = host.registry.create(
-      owner: client.localPeer!,
-      authority: PeerId.host,
-    );
-    final clientEntity = client.registry.register(
-      hostEntity.id,
-      owner: hostEntity.owner,
-      authority: hostEntity.authority,
-    );
-    var position = 0;
-    host.bindRpc(hostEntity, move, (context, direction) {
-      assert(context.sender == hostEntity.owner);
-      assert(context.target == PeerId.host);
-      position += direction;
-    });
-    host.registry.markReady(hostEntity.id);
-    client.registry.markReady(clientEntity.id);
-
-    final queued = client.callRpc(clientEntity, move, 1);
+    final queued = client.callRpc(clientBoard, vote, 2);
     assert(queued);
-    assert(position == 0);
+    assert(votes.isEmpty);
     pump();
-    assert(position == 1);
+    assert(votes[client.localPeer!] == 2);
   } finally {
     client.close();
     host.close();
@@ -278,10 +272,9 @@ Three values distinguish session identity and message ordering:
 
 The session bootstrap establishes a revision barrier. Its baseline holds the
 replicated entities and retained property values that exist when the host
-welcomes the client; see [Late joining](#late-joining). Static entity
-identities registered directly in `registry` must be registered on each peer
-separately. Registering an entity records its ID, owner, and fixed authority
-locally.
+welcomes the client; see [Late joining](#late-joining). Static entities need
+no spawn records: every peer registers them itself when its session starts.
+Each entity in the `registry` records its ID, owner, and fixed authority.
 It starts `pending`, becomes `ready` through `markReady()`, and can be
 `removed` without allowing its ID to be reused in that session. A pending
 entity that was removed cannot become ready after asynchronous loading
@@ -334,9 +327,9 @@ still reject it. On the host, every selected delivery must be accepted for
 Selecting no destinations also returns `false`. There is no remote
 acknowledgement or returned gameplay result.
 
-Bind handlers to matching static entities as above, or to replicated entities
-from their spawn handlers and components. A pending entity may have a binding,
-but calls execute only when it is ready. Disposing the returned `RpcBinding` removes its handler;
+Bind handlers to [static entities](#static-entities), as above, or to
+replicated entities from their spawn handlers and components. A pending
+entity may have a binding, but calls execute only when it is ready. Disposing the returned `RpcBinding` removes its handler;
 entity removal and session shutdown invalidate bindings. Unknown, removed, or
 unattached pending entities, missing handlers, denied callers, and invalid destinations
 are rejected. Well-formed rejected calls produce local `RpcRejected` events;
@@ -352,6 +345,41 @@ already started by a handler; its asynchronous side effects remain the
 application's responsibility. Failures completing after the session ends are
 consumed without adding events to a later session. Session control and spawning
 messages do not depend on public RPCs.
+
+### Static entities
+
+Entities that exist for the whole session, such as a scoreboard or the level,
+are declared in the schema instead of being spawned:
+
+```dart
+final scoreboard = builder.addStaticEntity(
+  const StaticEntityId('game.scoreboard'),
+);
+```
+
+Each session registers the schema's static entities when it starts hosting or
+joining, before it handles any message, and `staticEntity()` returns the
+current session's entity:
+
+```dart
+session.join(peer);
+final entity = session.staticEntity(scoreboard);
+```
+
+Every peer gives static entities the same IDs: sorted by identifier, they take
+the IDs from 1 up, and spawned entities take the IDs that follow. The host
+owns them and is their authority. Their identifiers are part of the schema
+fingerprint, so peers that declare different static entities fail the
+handshake with `schemaMismatch`.
+
+Like any entity, a static entity starts `pending` until it is attached or
+marked ready, and it carries RPCs and synchronized properties the same way. A
+joining client receives its retained property values in the baseline. Static
+entities cannot be despawned: they are removed when the session disconnects,
+and the next session registers them again, so take the entity from
+`staticEntity()` after each start. `staticEntity()` throws a `StateError`
+while the session is disconnected, and an `ArgumentError` for a handle that
+its schema did not return.
 
 ### Replicated spawning
 
@@ -432,9 +460,8 @@ despawns an entity that was not spawned is a protocol violation. A replayed
 record with an obsolete revision is ignored. A joining client receives every
 live entity, parents first, between the welcome and the end of
 synchronization. It then receives every later spawn and despawn, including
-those made while it is still synchronizing. Static and spawned entities share
-the session's ID space, so register static entities with the same IDs on every
-peer before spawning.
+those made while it is still synchronizing. Spawned entities take the IDs after
+the [static entities](#static-entities), so a spawn record never reuses one.
 
 `onSpawn` and `onDespawn` handlers each receive their own copy of the
 construction data. A binding is told about the entities that exist when it is
@@ -529,8 +556,8 @@ that entity's snapshots, and closing clears all session state.
 
 A joining client receives live spawn records followed by the host's retained
 property values, and applies those values as each attachment becomes ready,
-before the client reports ready. Register matching static entities on each
-peer after starting its session and before processing incoming state.
+before the client reports ready. Static entities exist on every peer before
+any state arrives, so their values are retained the same way.
 
 Call `session.update()` before gameplay, then `session.captureState()`
 afterward. In Flame, `MultiplayerScope` from `maratus_flame` performs both
@@ -602,8 +629,9 @@ attached the entity and its attachment reports ready, or the handler has called
 synchronizer as soon as its attachment is ready, so the baseline state is in
 place before the client reports ready. A baseline entity despawned
 in the meantime stops delaying readiness, and entities spawned after the
-baseline load like any spawn during gameplay. Static entities registered
-directly in `registry` are not part of the baseline.
+baseline load like any spawn during gameplay. Static entities have no spawn
+records in the baseline, because every peer registers them itself, and do not
+delay readiness; their retained property values are part of it.
 
 The ready report acknowledges the latest revision the client has applied,
 which can be later than its baseline. The host accepts any revision it has

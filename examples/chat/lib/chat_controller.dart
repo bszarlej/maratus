@@ -197,7 +197,7 @@ final class ChatController extends ChangeNotifier {
   }
 
   void _bindEntity() {
-    final entity = _entity = _protocol.register(_session);
+    final entity = _entity = _protocol.room(_session);
     game.installSession(
       session: _session,
       entity: entity,
