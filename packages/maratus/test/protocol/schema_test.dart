@@ -10,16 +10,16 @@ import 'protocol_test_utils.dart';
 /// The canonical description of the test schema that its fingerprint
 /// digests.
 const _canonicalTestSchema =
-    '{"format":3,'
+    '{"format":4,'
     '"spawnTypes":[["player","string(maxLength=16)"]],'
     '"rpcs":[["player.move","test.move_input@1","any","host","exclude"]],'
     '"fields":[["player.health","int(min=0,max=100)"],'
     '["player.name","string(maxLength=16)"]],'
-    '"staticEntities":[]}';
+    '"staticEntities":[],"joinRequest":null}';
 
 /// The SHA-256 digest of [_canonicalTestSchema], computed independently.
 const _testSchemaFingerprint =
-    'c2c59c03387a57fad4d438a1b82153121b1b5a309579030c0930ee31457b7d0c';
+    '0154d70f952c90049550179f60ecf6779dab9efbe5ed9f5b75ee241ea777294d';
 
 void main() {
   group('ProtocolSchemaBuilder', () {
@@ -48,6 +48,46 @@ void main() {
       expect(schema.rpc(const RpcId('player.fly')), isNull);
       expect(schema.rpcDefinition(const RpcId('player.fly')), isNull);
       expect(schema.field(const FieldId('player.mana')), isNull);
+      expect(schema.joinRequest, isNull);
+    });
+
+    test('registers a typed join request codec', () {
+      const codec = StringCodec(maxLength: 16);
+      final schema = (ProtocolSchemaBuilder()..setJoinRequest(codec)).build();
+      final entry = schema.joinRequest!;
+
+      expect(entry.codec, same(codec));
+      expect(entry.encode('Ada'), 'Ada');
+      expect(entry.decode('Ada'), 'Ada');
+      expect(() => entry.encode(7), throwsArgumentError);
+      expect(
+        () => entry.decode(7),
+        throwsProtocolException(ProtocolErrorCode.invalidValue),
+      );
+    });
+
+    test('rejects a second join request codec without replacing the first', () {
+      const original = StringCodec(maxLength: 16);
+      final builder = ProtocolSchemaBuilder()..setJoinRequest(original);
+      final schema = builder.build();
+
+      expect(() => builder.setJoinRequest(const BoolCodec()), throwsStateError);
+      expect(builder.build().joinRequest, same(schema.joinRequest));
+      expect(builder.build().joinRequest!.codec, same(original));
+      expect(builder.build().fingerprint, schema.fingerprint);
+    });
+
+    test('adding a join request codec leaves an earlier schema unchanged', () {
+      final builder = ProtocolSchemaBuilder();
+      final before = builder.build();
+      final fingerprint = before.fingerprint;
+
+      builder.setJoinRequest(const BoolCodec());
+
+      expect(before.joinRequest, isNull);
+      expect(before.fingerprint, fingerprint);
+      expect(builder.build().joinRequest!.codec, isA<BoolCodec>());
+      expect(builder.build().fingerprint, isNot(fingerprint));
     });
 
     test('returns a typed handle with default policies', () {
@@ -277,6 +317,7 @@ void main() {
 
     test('does not depend on registration order', () {
       final registrations = <void Function(ProtocolSchemaBuilder builder)>[
+        (b) => b.setJoinRequest(const StringCodec(maxLength: 32)),
         (b) => b.addSpawnType(
           const SpawnTypeId('player'),
           const StringCodec(maxLength: 16),
@@ -364,6 +405,24 @@ void main() {
       ]);
 
       expect(forged, isNot(genuine));
+    });
+
+    test('includes the join request codec and its descriptor', () {
+      final absent = fingerprintOf([]);
+      final descriptors = <ValueCodec<Object?>>[
+        const StringCodec(maxLength: 16),
+        const StringCodec(maxLength: 32),
+        const BoolCodec(),
+        const _DescribedCodec('game.join@1'),
+        const _DescribedCodec('game.join@2'),
+      ];
+      final fingerprints = <String>{absent};
+
+      for (final codec in descriptors) {
+        final fingerprint = fingerprintOf([(b) => b.setJoinRequest(codec)]);
+        expect(fingerprints.add(fingerprint), isTrue, reason: codec.descriptor);
+        expect(fingerprintOf([(b) => b.setJoinRequest(codec)]), fingerprint);
+      }
     });
 
     test('changes independently with each RPC policy', () {

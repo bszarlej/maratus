@@ -20,9 +20,10 @@ import 'wire_codec.dart';
 /// - `k`: the [MessageKind.code].
 /// - `g`: the [MessageEnvelope.generation].
 /// - `r`: the [MessageEnvelope.revision].
-/// - `b`: the message body. Hello bodies hold the schema fingerprint `f`,
-///   welcome bodies the client's peer ID `p` and the epoch `e`, and goodbye
-///   bodies the reason code `c`; synced and ready bodies are empty. Ping and
+/// - `b`: the message body. Hello bodies hold the schema fingerprint `f`
+///   and optionally a join request `j`, welcome bodies the client's peer ID
+///   `p` and the epoch `e`, and goodbye bodies the reason code `c` and
+///   optionally a detail `m`; synced and ready bodies are empty. Ping and
 ///   pong bodies hold the ping's sequence `n`. The other bodies hold the
 ///   entity ID `e`: spawn bodies add the spawn type `t`, construction data
 ///   `d`, owner `o`, authority `a`, and optionally a parent entity `p`. RPC
@@ -30,7 +31,8 @@ import 'wire_codec.dart';
 ///   peer `t`. RPC deliveries require both sender `s` and target `t`; state
 ///   bodies add the authority's sample time `t`, in microseconds, and an
 ///   object `f` of field values. The session validates the origin of RPC
-///   deliveries and the consistency of spawn metadata.
+///   deliveries and the consistency of spawn metadata, and decodes join
+///   requests once the schema fingerprints match.
 final class ProtocolCodec {
   /// Creates a codec for the messages of [schema].
   ProtocolCodec(
@@ -62,6 +64,9 @@ final class ProtocolCodec {
   static const _clientCodec = IntCodec(min: 2);
   static const _epochCodec = IntCodec(min: 1);
   static const _fingerprintCodec = StringCodec(maxLength: 64);
+  static const _detailCodec = StringCodec(
+    maxLength: GoodbyeMessage.maxDetailLength,
+  );
   static const _identifierCodec = StringCodec(maxLength: maxIdentifierLength);
   static final _kinds = {
     for (final kind in MessageKind.values) kind.code: kind,
@@ -160,15 +165,19 @@ final class ProtocolCodec {
 
   Map<String, Object?> _encodeBody(ProtocolMessage message) =>
       switch (message) {
-        HelloMessage(:final fingerprint) => {
+        HelloMessage(:final fingerprint, :final request) => {
           'f': _fingerprintCodec.encode(fingerprint),
+          'j': ?request,
         },
         WelcomeMessage(:final peer, :final epoch) => {
           'p': _clientCodec.encode(peer.value),
           'e': _epochCodec.encode(epoch),
         },
         SyncedMessage() || ReadyMessage() => const {},
-        GoodbyeMessage(:final reason) => {'c': reason.code},
+        GoodbyeMessage(:final reason, :final detail) => {
+          'c': reason.code,
+          if (detail != null) 'm': _detailCodec.encode(detail),
+        },
         PingMessage(:final sequence) || PongMessage(:final sequence) => {
           'n': _checkCounter(sequence, 'sequence'),
         },
@@ -238,8 +247,16 @@ final class ProtocolCodec {
   ProtocolMessage _decodeBody(MessageKind kind, Object? value) {
     switch (kind) {
       case MessageKind.hello:
-        final body = WireObject(value, const {'f'});
-        return HelloMessage(fingerprint: body.read('f', _fingerprintCodec));
+        final hasRequest =
+            value is Map<String, Object?> && value.containsKey('j');
+        final body = WireObject(
+          value,
+          hasRequest ? const {'f', 'j'} : const {'f'},
+        );
+        return HelloMessage(
+          fingerprint: body.read('f', _fingerprintCodec),
+          request: hasRequest ? body['j'] : null,
+        );
       case MessageKind.welcome:
         final body = WireObject(value, const {'p', 'e'});
         return WelcomeMessage(
@@ -253,7 +270,12 @@ final class ProtocolCodec {
         WireObject(value, const {});
         return const ReadyMessage();
       case MessageKind.goodbye:
-        final body = WireObject(value, const {'c'});
+        final hasDetail =
+            value is Map<String, Object?> && value.containsKey('m');
+        final body = WireObject(
+          value,
+          hasDetail ? const {'c', 'm'} : const {'c'},
+        );
         final code = body.read('c', _identifierCodec);
         final reason = _goodbyeReasons[code];
         if (reason == null) {
@@ -263,7 +285,10 @@ final class ProtocolCodec {
             path: const ['c'],
           );
         }
-        return GoodbyeMessage(reason);
+        return GoodbyeMessage(
+          reason,
+          detail: hasDetail ? body.read('m', _detailCodec) : null,
+        );
       case MessageKind.ping:
         final body = WireObject(value, const {'n'});
         return PingMessage(body.read('n', _counterCodec));

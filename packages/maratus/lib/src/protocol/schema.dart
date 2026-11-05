@@ -64,9 +64,9 @@ final class SchemaEntry<T> {
 /// The registrations that host and clients must agree on.
 ///
 /// A schema maps stable identifiers for spawn types, RPCs, and synchronized
-/// fields to the codecs of their values, and declares the static entities
-/// that every session contains. Peers compare [fingerprint]s when
-/// connecting.
+/// fields to the codecs of their values, declares the static entities that
+/// every session contains, and sets the codec of the data clients send when
+/// they join. Peers compare [fingerprint]s when connecting.
 final class ProtocolSchema {
   ProtocolSchema._(
     this._spawnTypes,
@@ -76,6 +76,7 @@ final class ProtocolSchema {
     this._rpcDefinitions,
     this._fieldDefinitions,
     this._staticEntityDefinitions,
+    this.joinRequest,
   ) : staticEntities = List.unmodifiable([
         for (final id in _staticEntityDefinitions.keys.toList()..sort())
           _staticEntityDefinitions[id]!,
@@ -85,6 +86,7 @@ final class ProtocolSchema {
         _rpcDefinitions,
         _fields,
         _staticEntityDefinitions.keys,
+        joinRequest,
       );
 
   final Map<String, SchemaEntry<Object?>> _spawnTypes;
@@ -102,9 +104,17 @@ final class ProtocolSchema {
   /// joining, and the entities it spawns take the IDs that follow.
   final List<StaticEntity> staticEntities;
 
+  /// The registration of the data that clients send with their request to
+  /// join, or `null` if they send none.
+  ///
+  /// A joining client encodes its request with this codec, and the host
+  /// decodes and validates it before deciding whether to admit the client.
+  final SchemaEntry<Object?>? joinRequest;
+
   /// A SHA-256 digest, in lowercase hexadecimal, of every identifier and
   /// codec descriptor in this schema, including each RPC's caller, target,
-  /// and local-invocation policies, and of the static entities.
+  /// and local-invocation policies, the static entities, and the join request
+  /// codec.
   ///
   /// Equal registrations produce equal fingerprints on every platform,
   /// regardless of the order in which they were registered.
@@ -148,13 +158,14 @@ final class ProtocolSchema {
       _staticEntityDefinitions[id.value];
 
   /// The version of the canonical description that [fingerprint] digests.
-  static const _canonicalFormat = 3;
+  static const _canonicalFormat = 4;
 
   static String _fingerprint(
     Map<String, SchemaEntry<Object?>> spawnTypes,
     Map<String, Rpc<Object?>> rpcs,
     Map<String, SchemaEntry<Object?>> fields,
     Iterable<String> staticEntities,
+    SchemaEntry<Object?>? joinRequest,
   ) {
     List<List<String>> describe(Map<String, SchemaEntry<Object?>> entries) => [
       for (final id in entries.keys.toList()..sort())
@@ -176,6 +187,7 @@ final class ProtocolSchema {
       ],
       'fields': describe(fields),
       'staticEntities': staticEntities.toList()..sort(),
+      'joinRequest': joinRequest?.codec.descriptor,
     });
     return sha256.convert(utf8.encode(canonical)).toString();
   }
@@ -190,6 +202,7 @@ final class ProtocolSchemaBuilder {
   final _rpcDefinitions = <String, Rpc<Object?>>{};
   final _fieldDefinitions = <String, SyncField<Object?>>{};
   final _staticEntities = <String, StaticEntity>{};
+  SchemaEntry<Object?>? _joinRequest;
 
   /// Registers spawn type [id] with the [codec] for its construction data
   /// and returns its handle.
@@ -272,6 +285,23 @@ final class ProtocolSchemaBuilder {
     return _staticEntities[id.value] = StaticEntity(id: id);
   }
 
+  /// Sets the [codec] of the data that clients send with their request to
+  /// join, such as a player name or an access token.
+  ///
+  /// A client passes that data to `MultiplayerSession.join`, which sends it
+  /// with the handshake. The host decodes and validates it, then passes it to
+  /// its admission handler, which decides whether to admit the client. The
+  /// codec's descriptor is part of the schema fingerprint. Without a join
+  /// request codec, clients send no data.
+  ///
+  /// Throws a [StateError] if a join request codec is already set.
+  void setJoinRequest<T>(ValueCodec<T> codec) {
+    if (_joinRequest != null) {
+      throw StateError('The join request codec is already set.');
+    }
+    _joinRequest = SchemaEntry<T>._('join request', codec);
+  }
+
   /// Creates a schema from the registrations made so far.
   ProtocolSchema build() => ProtocolSchema._(
     Map.of(_spawnTypes),
@@ -281,6 +311,7 @@ final class ProtocolSchemaBuilder {
     Map.of(_rpcDefinitions),
     Map.of(_fieldDefinitions),
     Map.of(_staticEntities),
+    _joinRequest,
   );
 
   static void _add<T>(

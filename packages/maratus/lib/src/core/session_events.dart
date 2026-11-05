@@ -15,7 +15,8 @@ enum SessionState {
   /// Opening the connection to the host.
   connecting,
 
-  /// Connected, and waiting for the host to accept the client.
+  /// Connected, and waiting for the host to check the schema and decide
+  /// whether to admit the client.
   handshaking,
 
   /// Accepted by the host, and installing its baseline of entities and
@@ -37,6 +38,14 @@ enum DisconnectReason {
 
   /// The host removed the client.
   kicked,
+
+  /// The host decided not to admit the client. The client's
+  /// `MultiplayerSession.rejectionReason` tells why, if the host said.
+  rejected,
+
+  /// The host was not admitting new clients, for example because a match
+  /// had started.
+  notAdmitting,
 
   /// The peers use different protocol versions.
   versionMismatch,
@@ -181,6 +190,29 @@ final class SpawnHandlerFailed extends SessionEvent {
   final SpawnTypeId type;
 
   /// The error thrown by the handler.
+  final Object error;
+
+  /// The stack trace captured at the failure.
+  final StackTrace stackTrace;
+}
+
+/// A host's admission handler threw, or its future completed with an error.
+///
+/// The host rejects that client without a reason. Failures completing after
+/// the session ends are consumed without adding events to a new session.
+final class AdmissionFailed extends SessionEvent {
+  /// Reports a handler [error] for the client that would have joined as
+  /// [peer], and its original [stackTrace].
+  const AdmissionFailed({
+    required this.peer,
+    required this.error,
+    required this.stackTrace,
+  });
+
+  /// The ID that the client would have had.
+  final PeerId peer;
+
+  /// The error that the handler threw or completed with.
   final Object error;
 
   /// The stack trace captured at the failure.

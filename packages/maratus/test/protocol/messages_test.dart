@@ -33,6 +33,8 @@ void main() {
         'timeout': 'timeout',
         'bootstrapFailed': 'bootstrap',
         'protocolViolation': 'violation',
+        'rejected': 'rejected',
+        'notAdmitting': 'not_admitting',
       },
     );
   });

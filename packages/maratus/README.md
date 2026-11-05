@@ -142,7 +142,7 @@ A transport connection is not the same as being ready to play.
 | --------------- | ------------------------------------------------------------------------------------------------------- |
 | `disconnected`  | No connection. Initial and final state.                                                                 |
 | `connecting`    | Opening the transport to the host.                                                                      |
-| `handshaking`   | Transport open. Protocol version and schema fingerprint are being checked; awaiting a host-assigned ID. |
+| `handshaking`   | Transport open. Awaiting protocol and schema checks and the host's admission decision.                 |
 | `synchronizing` | Accepted. Installing the host's baseline of entities and state while later changes keep arriving.      |
 | `ready`         | The baseline is installed and acknowledged. Gameplay messages can be exchanged.                        |
 | `hosting`       | Accepting clients and tracking each client's readiness.                                                |
@@ -150,7 +150,7 @@ A transport connection is not the same as being ready to play.
 Calling `close()` moves the local session directly to `disconnected` and
 closes its transport. Remote peers observe that close during `update()`.
 Every return to `disconnected` carries a reason, such as a local close,
-host shutdown, version or schema mismatch, timeout, failed bootstrap,
+host shutdown, admission rejection, version or schema mismatch, timeout, failed bootstrap,
 transport error, or protocol violation. A host moves from `disconnected` to `hosting` and tracks
 each client through the handshake, synchronization, and ready stages.
 
@@ -279,6 +279,77 @@ It starts `pending`, becomes `ready` through `markReady()`, and can be
 `removed` without allowing its ID to be reused in that session. A pending
 entity that was removed cannot become ready after asynchronous loading
 finishes.
+
+### Admission control
+
+By default, a host admits every client with a matching protocol and schema.
+Set `onJoinRequest` to decide which clients may join. Register a join request
+codec in the shared schema to send application data, such as a player name
+or access token, with `join()`:
+
+```dart
+final builder = ProtocolSchemaBuilder()
+  ..setJoinRequest(const StringCodec(maxLength: 32));
+final schema = builder.build();
+final clock = ManualClock();
+final network = InMemoryNetwork(clock: clock);
+final host = MultiplayerSession(schema: schema, clock: clock)
+  ..onJoinRequest = (JoinRequest request) {
+    final name = request.data as String; // Validated by the shared codec.
+    if (name.trim().isEmpty) {
+      return Admission.reject('Choose a player name.');
+    }
+    return const Admission.admit();
+  }
+  ..host(network.host());
+final client = MultiplayerSession(schema: schema, clock: clock)
+  ..join(network.connect(), request: 'Ada');
+
+// In an application, drive these updates from the game loop.
+for (var i = 0; i < 6; i++) {
+  clock.advance(Duration.zero);
+  host.update();
+  client.update();
+}
+if (client.disconnectReason == DisconnectReason.rejected) {
+  print(client.rejectionReason ?? 'The host declined the request.');
+} else if (client.disconnectReason == DisconnectReason.notAdmitting) {
+  print('This match is closed to new players.');
+}
+client.close();
+host.close();
+```
+
+`JoinRequest.peer` is the ID the client will receive if admitted, and
+`JoinRequest.data` is its decoded, validated request. The codec's descriptor
+is part of the schema fingerprint, so both sides must register it. Without
+a join request codec, omit `request`; passing non-null data throws
+`ArgumentError`. Data rejected by a registered codec also throws locally
+before joining.
+
+The handler runs during the host's `update()` and may return an `Admission`
+or `Future<Admission>`, for example while checking a token with a backend.
+An asynchronous decision takes effect during a later `update()`. While it
+is pending, the client stays `handshaking`, receives no world or gameplay
+messages, and is absent from the host's `peers`. `PeerJoined` follows
+acceptance; a client that was never admitted produces no `PeerJoined` or
+`PeerLeft`. The handshake timeout includes the time spent deciding. A
+decision that arrives after the connection or session ends has no effect.
+
+`Admission.reject()` disconnects the client with `DisconnectReason.rejected`.
+Its optional message is available as `client.rejectionReason` and may contain
+at most 256 UTF-16 code units (`Admission.maxReasonLength`). A handler that
+throws or returns a failing future rejects the client without a message;
+the host receives `AdmissionFailed` with the error and stack trace. Error
+text is never sent to the client automatically.
+
+Set `host.admitting = false` to close a match to new requests. This gate is
+`true` by default. A closed gate skips the handler and disconnects new
+clients with `DisconnectReason.notAdmitting`. Existing players and pending
+decisions are unaffected. If an asynchronous check must also respect a gate
+closed while it was waiting, check `host.admitting` again before returning
+its decision. Player accounts and credential verification remain application
+responsibilities.
 
 ### Typed RPCs
 
@@ -791,8 +862,10 @@ the transport's event queue. After `session.update()`, inspect
 
 | Reason | Typical cause |
 | ------ | ------------- |
+| `rejected` | The host's admission handler declined the request or failed. `session.rejectionReason` contains its optional message. |
+| `notAdmitting` | The host closed admission to new requests with `admitting = false`. |
 | `transportError` | Refused connection, opening deadline, wrong endpoint path or subprotocol, TLS/browser rejection, lost connection, malformed transport frame, or queue overflow. |
-| `timeout` | The session's own connecting, handshake, or bootstrap deadline expired, for example while the baseline's components were still loading, or an idle timeout found a peer silent. |
+| `timeout` | The session's own connecting, handshake, or bootstrap deadline expired, for example while admission was pending or the baseline's components were still loading, or an idle timeout found a peer silent. |
 | `bootstrapFailed` | A spawn handler, such as a spawner's factory, failed for an entity of the joining client's baseline. |
 | `schemaMismatch` / `versionMismatch` | The peers registered different definitions or use incompatible protocol versions. |
 | `protocolViolation` | A received session message failed protocol validation. |
@@ -920,8 +993,9 @@ conditional imports. Browser builds do not import the native implementation.
   or independent channels are rejected.
 - Clients must be able to reach the host directly. NAT traversal and relays
   are not provided.
-- Peer identities are assigned by the host. Player accounts and authentication
-  are left to the application.
+- Peer identities are assigned by the host. Admission handlers can check
+  application credentials; player accounts and authentication services are
+  left to the application.
 - Sessions are not resumed. Rejoining starts a fresh bootstrap with a new peer
   ID, so an application that wants a player to keep their entities must
   transfer them itself.
