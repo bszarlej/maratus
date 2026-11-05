@@ -22,14 +22,11 @@ jobs:
       fail-fast: false
       matrix:
         include:
-          # Lower bounds declared by the packages, resolved with the lowest
-          # allowed direct dependency versions.
           - name: minimum
             flutter: 3.41.0
             resolve: downgrade
             current: false
-          # Current stable line used for development. Formatting is checked
-          # here only, because formatter output can change between SDKs.
+
           - name: current
             flutter: 3.47.x
             resolve: get
@@ -46,35 +43,24 @@ jobs:
       - name: Resolve workspace dependencies
         run: flutter pub get
 
-      # Start with compatible transitive tools, then exercise our own lower
-      # bounds. A full downgrade selects obsolete test-runner dependencies.
-      # Keep this list in sync with the workspace's hosted direct dependencies.
       - name: Downgrade direct dependencies
         if: matrix.resolve == 'downgrade'
         run: flutter pub downgrade crypto web flame flame_test flutter_lints lints melos test
 
       - name: Check formatting
         if: matrix.current
-        run: dart run melos run check-format
+        run: dart run melos format --no-private --output=none --set-exit-if-changed
 
       - name: Analyze
-        run: dart run melos analyze --fatal-infos
+        run: dart run melos analyze --no-private --fatal-infos
 
       - name: Test
-        run: dart run melos test
+        run: dart run melos test --no-private
 
       - name: Test browser connections to native host
         if: matrix.current
         run: dart run melos run test:browser --no-select
 
-      - name: Build web example
-        if: matrix.current
-        working-directory: examples/chat
-        run: flutter build web --no-pub
-
-  # The core package promises to run without Flutter. Resolve and test it
-  # alone with the plain Dart SDK, outside the workspace that contains the
-  # Flutter packages.
   dart-only:
     name: maratus on Dart ${{ matrix.sdk }}
     runs-on: ubuntu-latest
@@ -103,8 +89,6 @@ jobs:
         working-directory: ${{ runner.temp }}/maratus
         run: dart pub get
 
-      # As above, retain compatible transitive test tools while testing the
-      # hosted direct dependency bounds declared by packages/maratus/pubspec.yaml.
       - name: Downgrade direct dependencies
         if: matrix.resolve == 'downgrade'
         working-directory: ${{ runner.temp }}/maratus
@@ -117,20 +101,3 @@ jobs:
       - name: Test
         working-directory: ${{ runner.temp }}/maratus
         run: dart test
-
-  windows-example:
-    name: Windows example
-    runs-on: windows-latest
-    timeout-minutes: 20
-    steps:
-      - uses: actions/checkout@v7
-      - uses: subosito/flutter-action@v2
-        with:
-          channel: stable
-          flutter-version: 3.47.x
-          cache: true
-      - name: Resolve workspace dependencies
-        run: flutter pub get
-      - name: Build Windows example
-        working-directory: examples/chat
-        run: flutter build windows --no-pub

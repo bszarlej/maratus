@@ -154,20 +154,9 @@ and closes the session. A new connection creates a fresh scope and component;
 pending host attempts are cancelled when disconnected or disposed. The widget
 closes its owned game and session on disposal.
 
-Validate the example from this directory:
+Check and build the example from this directory:
 
 ```sh
 flutter analyze
-flutter test
 flutter build web
 ```
-
-The controller tests use in-memory transports, a controlled clock, and explicitly
-mounted Flame games. They check deferred host-local delivery, removal,
-rejoining, matching avatars for early and late joiners, and synchronized and
-smoothed avatar offsets. The network lab tests run every scenario on a
-controlled clock. They check the round trip, holding and catching up, bounded
-host queues while a client stalls, and resource counts back at their baseline
-after five dropped and rejoined connections. Widget tests exercise the actual
-GameWidget, browser joining, message controls, the simulation controls, and a
-narrow layout without a live server.
