@@ -61,6 +61,10 @@ jobs:
         if: matrix.current
         run: dart run melos run test:browser --no-select
 
+      - name: Validate packages for publishing
+        if: matrix.current
+        run: dart run melos publish --no-private --dry-run --yes
+
   dart-only:
     name: maratus on Dart ${{ matrix.sdk }}
     runs-on: ubuntu-latest

@@ -50,6 +50,12 @@ can host or join, and browsers join a native host. A simulated network inside
 the app reproduces latency spikes, stalls, and dropped connections, with a
 diagnostics overlay to inspect them.
 
+Each package also has a short example.
+[`maratus`](packages/maratus/example/main.dart) hosts and joins a session in
+one process over the in-memory transport, and
+[`maratus_flame`](packages/maratus_flame/example/main.dart) runs a host and a
+client side by side in one Flame game.
+
 ## Compatibility
 
 | Dependency | Supported versions |
