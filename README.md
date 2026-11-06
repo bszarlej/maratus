@@ -7,68 +7,63 @@
 </p>
 
 <p align="center">
-  Godot-inspired multiplayer for Dart-based games.
+  Godot-inspired multiplayer for Dart and Flame.
 </p>
 
-## Packages
+Add multiplayer to your game with typed RPCs, replicated spawning, synchronized
+properties, and late joining. Use Flame components on the client and run a host
+in your game or in a separate Dart process.
+
+Documentation (coming soon) ·
+[Try the demo](examples/chat) ·
+[Report an issue](https://github.com/bszarlej/maratus/issues)
+
+## Get started
+
+For a Flame game:
+
+```sh
+flutter pub add maratus_flame
+```
+
+```dart
+import 'package:maratus_flame/maratus_flame.dart';
+```
 
 | Package | Use it for |
 | ------- | ---------- |
-| [`maratus`](packages/maratus) | The multiplayer core in pure Dart: sessions and admission control, schemas and codecs, RPCs, spawning, property synchronization and interpolation, late joining, diagnostics, and the WebSocket and in-memory transports. Runs without Flutter, for example in a dedicated host. |
-| [`maratus_flame`](packages/maratus_flame) | Flame games: `MultiplayerScope`, `NetworkedComponent`, `MultiplayerSpawner`, and synchronized, smoothed `Vector2` values. Re-exports `maratus`, so a game needs only this package. |
-
-A Flame game depends on `maratus_flame`. Shared protocol definitions,
-dedicated hosts, and other Dart code that must run without Flutter depend on
-`maratus`.
-
-## How it works
-
-- **One host, many clients.** Clients connect to a host that runs the
-  authoritative simulation. The host assigns peer identities, validates every
-  message, and routes calls between clients.
-- **Explicit schemas.** Spawn types, RPCs, and synchronized fields are
-  registered with stable identifiers and codecs that validate everything
-  received. Host and clients must register the same schema to connect.
-- **Admission control.** Hosts can accept or reject a joining client using
-  validated application data, complete checks asynchronously, or close a
-  match to new players. Clients receive the world only after acceptance.
-- **Authority and ownership.** Each entity's authority writes its state, and
-  its owner may send it input, such as movement RPCs for a player's avatar.
-- **Late joining.** A joining client installs the host's current world before
-  it takes part in gameplay, and fails clearly if it cannot.
-
-See the [`maratus` README](packages/maratus/README.md) for the full contract
-and the [`maratus_flame` README](packages/maratus_flame/README.md) for the Flame
-integration.
+| [maratus_flame](packages/maratus_flame) | Networked Flame components, spawning, and position smoothing. Includes the core APIs. |
+| [maratus](packages/maratus) | Shared game protocols and standalone Dart hosts, without Flutter. Install with `dart pub add maratus`. |
 
 ## Examples
 
-[`examples/chat`](examples/chat) is a Flutter app that hosts or joins a session
-over WebSockets, exchanges typed chat RPCs, and gives every participant a
-replicated avatar with host-simulated movement that clients smooth. Windows
-can host or join, and browsers join a native host. A simulated network inside
-the app reproduces latency spikes, stalls, and dropped connections, with a
-diagnostics overlay to inspect them.
+- [Chat demo](examples/chat): host or join over WebSockets, see replicated
+  avatars, and try simulated latency and disconnects.
+- [Flame example](packages/maratus_flame/example/main.dart): steer replicated
+  avatars with a host and client running side by side.
+- [Dart example](packages/maratus/example/main.dart): run a session, send input,
+  and synchronize movement without Flutter.
 
-Each package also has a short example.
-[`maratus`](packages/maratus/example/main.dart) hosts and joins a session in
-one process over the in-memory transport, and
-[`maratus_flame`](packages/maratus_flame/example/main.dart) runs a host and a
-client side by side in one Flame game.
+## Current scope
 
-## Compatibility
+The initial release focuses on small sessions, such as 2–4 players, over
+reliable, ordered WebSockets. Desktop apps can host or join; browsers can join.
+Clients currently need a directly reachable host.
 
-| Dependency | Supported versions |
-| ---------- | ------------------ |
-| Dart       | `>=3.11.0 <4.0.0`  |
-| Flutter    | `>=3.41.0` (`maratus_flame` only) |
-| Flame      | `^1.38.2` (`maratus_flame` only)  |
+Requires Dart `>=3.11.0 <4.0.0`; Flame integration also requires Flutter
+`>=3.41.0` and Flame `^1.38.2`.
 
-## Development
+Planned work:
 
-The repository is a [pub workspace](https://dart.dev/tools/pub/workspaces)
-managed with [Melos](https://melos.invertase.dev). With a Flutter SDK in the
-supported range, run from the repository root:
+- Android/iOS support and larger-session tuning: compatibility and performance
+  validation are still pending.
+- Additional transports, unreliable delivery, relays/NAT traversal,
+  built-in client-side prediction and reconciliation, interest management, and state
+  compression: **not implemented yet**.
+
+## Contributing
+
+From the repository root, with Flutter installed:
 
 ```sh
 flutter pub get
@@ -78,32 +73,8 @@ dart run melos test
 dart run melos run test:browser --no-select
 ```
 
-`melos test` runs `dart test` for `maratus` and `flutter test` for the Flutter
-packages. The browser tests start a native loopback host and run Chrome clients
-against it; Chrome must be installed, and `CHROME_EXECUTABLE` must point to it
-when it is outside its default location. See
-[`examples/chat`](examples/chat/README.md) for running and building the example.
-
-CI runs these checks on the minimum supported SDK with the lowest allowed
-direct dependency versions and compatible transitive dependencies, and on the
-current stable SDK with the newest. It also resolves and tests `maratus` alone
-with the plain Dart SDK, so the core cannot gain a Flutter dependency; see
-[.github/workflows/ci.yaml](.github/workflows/ci.yaml).
-
-### Repository layout
-
-| Path | Contents |
-| ---- | -------- |
-| `packages/maratus/lib/src/core/` | Sessions, peer identity, entities, RPCs, clocks |
-| `packages/maratus/lib/src/protocol/` | Message envelopes, codecs, schema, validation |
-| `packages/maratus/lib/src/transport/` | Transport contract, in-memory and WebSocket adapters |
-| `packages/maratus/lib/src/replication/` | Spawning, property synchronization, bootstrap |
-| `packages/maratus_flame/lib/src/` | Flame component bindings |
-| `examples/` | Runnable examples |
-
-`packages/maratus/test/package_layout_test.dart` keeps the core within these
-areas and free of Flutter and Flame.
+Browser tests require Chrome. Set `CHROME_EXECUTABLE` if it is not found.
 
 ## License
 
-MIT. See [LICENSE](LICENSE).
+[MIT](LICENSE).
