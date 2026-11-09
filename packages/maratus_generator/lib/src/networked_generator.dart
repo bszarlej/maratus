@@ -442,7 +442,8 @@ final class _NetworkedClass {
     }
 
     for (final field in element.fields) {
-      if (!field.isOriginDeclaration) continue;
+      // Skip the fields that getters and setters imply.
+      if (field.nonSynthetic != field) continue;
       final annotation = syncedFieldChecker.firstAnnotationOf(field);
       if (annotation == null) continue;
       await add(
@@ -454,7 +455,8 @@ final class _NetworkedClass {
       );
     }
     for (final getter in element.getters) {
-      if (!getter.isOriginDeclaration) continue;
+      // Skip the getters that fields imply.
+      if (getter.nonSynthetic != getter) continue;
       final annotation = syncedFieldChecker.firstAnnotationOf(getter);
       if (annotation == null) continue;
       await add(

@@ -20,7 +20,7 @@ environment:
 resolution: workspace
 
 dependencies:
-  analyzer: '>=10.0.0 <15.0.0'
+  analyzer: '>=8.4.0 <15.0.0'
   build: '>=4.0.4 <6.0.0'
   maratus_annotations: ^0.1.0
   source_gen: ^4.2.4
