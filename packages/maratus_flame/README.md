@@ -65,6 +65,13 @@ Add the component beneath a `MultiplayerScope(session: session)` after hosting
 or joining. Changes made by the entity's authority are synchronized to other
 peers; the scope handles applying incoming state and capturing outgoing changes.
 
+You can also annotate the component instead, with
+[`maratus_annotations`](https://pub.dev/packages/maratus_annotations): mark
+fields with `@SyncedField` and methods with `@RpcMethod`, and
+[`maratus_generator`](https://pub.dev/packages/maratus_generator) generates the
+handles, binds them on every attachment, and adds typed senders such as
+`player.rpc.hit(25)`.
+
 See the [Flame example](example/main.dart) for a complete host/client game with
 spawned avatars, input RPCs, and smooth movement. The
 [chat demo](https://github.com/bszarlej/maratus/tree/master/examples/chat)
