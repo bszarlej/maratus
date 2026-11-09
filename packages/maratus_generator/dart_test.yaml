@@ -1,3 +1,8 @@
 # The first generation in each test file resolves every library the test can
 # import, which can take most of the default timeout on a cold start.
 timeout: 4x
+
+# Test files that generate code share an analyzer summary of the SDK, which
+# the first one writes to .dart_tool. Running them one at a time keeps a fresh
+# checkout from writing it twice at once.
+concurrency: 1
