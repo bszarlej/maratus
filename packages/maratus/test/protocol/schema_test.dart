@@ -168,6 +168,131 @@ void main() {
       expect(builder.build().fieldDefinition(health.id), same(health));
     });
 
+    test('registers and retains existing handles', () {
+      const player = SpawnType(
+        id: SpawnTypeId('player'),
+        codec: StringCodec(maxLength: 16),
+      );
+      const move = Rpc(id: RpcId('player.move'), codec: MoveInputCodec());
+      const health = SyncField(
+        id: FieldId('player.health'),
+        codec: IntCodec(min: 0, max: 100),
+      );
+      const name = SyncField(
+        id: FieldId('player.name'),
+        codec: StringCodec(maxLength: 16),
+      );
+      final builder = ProtocolSchemaBuilder();
+
+      expect(builder.addSpawnTypeDefinition(player), same(player));
+      expect(builder.addRpcDefinition(move), same(move));
+      expect(builder.addFieldDefinition(health), same(health));
+      expect(builder.addFieldDefinition(name), same(name));
+      final schema = builder.build();
+
+      expect(schema.spawnTypeDefinition(player.id), same(player));
+      expect(schema.spawnType(player.id)?.codec, same(player.codec));
+      expect(schema.rpcDefinition(move.id), same(move));
+      expect(schema.rpc(move.id)?.codec, same(move.codec));
+      expect(schema.fieldDefinition(health.id), same(health));
+      expect(schema.field(health.id)?.codec, same(health.codec));
+      expect(schema.fingerprint, buildTestSchema().fingerprint);
+    });
+
+    test('fingerprints a registered RPC handle with its policies', () {
+      final byArguments = ProtocolSchemaBuilder()
+        ..addRpc(
+          const RpcId('hit'),
+          const IntCodec(min: 1, max: 100),
+          caller: RpcCaller.host,
+          target: RpcTarget.all,
+          local: RpcLocal.include,
+        );
+      final byHandle = ProtocolSchemaBuilder()
+        ..addRpcDefinition(
+          const Rpc(
+            id: RpcId('hit'),
+            codec: IntCodec(min: 1, max: 100),
+            caller: RpcCaller.host,
+            target: RpcTarget.all,
+            local: RpcLocal.include,
+          ),
+        );
+      final withDefaults = ProtocolSchemaBuilder()
+        ..addRpcDefinition(
+          const Rpc(id: RpcId('hit'), codec: IntCodec(min: 1, max: 100)),
+        );
+
+      expect(byHandle.build().fingerprint, byArguments.build().fingerprint);
+      expect(
+        withDefaults.build().fingerprint,
+        isNot(byArguments.build().fingerprint),
+      );
+    });
+
+    test(
+      'rejects existing handles with duplicate or malformed identifiers',
+      () {
+        final builder = ProtocolSchemaBuilder();
+        final ping = builder.addRpc(const RpcId('ping'), const BoolCodec());
+        final player = builder.addSpawnType(
+          const SpawnTypeId('player'),
+          const BoolCodec(),
+        );
+        final health = builder.addField(
+          const FieldId('player.health'),
+          const BoolCodec(),
+        );
+        final fingerprint = builder.build().fingerprint;
+
+        expect(
+          () => builder.addRpcDefinition(
+            const Rpc(id: RpcId('ping'), codec: IntCodec()),
+          ),
+          throwsArgumentError,
+        );
+        expect(
+          () => builder.addSpawnTypeDefinition(
+            const SpawnType(id: SpawnTypeId('player'), codec: IntCodec()),
+          ),
+          throwsArgumentError,
+        );
+        expect(
+          () => builder.addFieldDefinition(
+            const SyncField(id: FieldId('player.health'), codec: IntCodec()),
+          ),
+          throwsArgumentError,
+        );
+        expect(
+          () => builder.addRpcDefinition(
+            const Rpc(id: RpcId('Bad.ID'), codec: BoolCodec()),
+          ),
+          throwsArgumentError,
+        );
+        expect(
+          () => builder.addSpawnTypeDefinition(
+            const SpawnType(id: SpawnTypeId(''), codec: BoolCodec()),
+          ),
+          throwsArgumentError,
+        );
+        expect(
+          () => builder.addFieldDefinition(
+            const SyncField(id: FieldId('player.'), codec: BoolCodec()),
+          ),
+          throwsArgumentError,
+        );
+
+        final schema = builder.build();
+        expect(schema.rpcDefinition(ping.id), same(ping));
+        expect(schema.spawnTypeDefinition(player.id), same(player));
+        expect(schema.fieldDefinition(health.id), same(health));
+        expect(schema.rpcDefinition(const RpcId('Bad.ID')), isNull);
+        expect(schema.spawnTypeDefinition(const SpawnTypeId('')), isNull);
+        expect(schema.fieldDefinition(const FieldId('player.')), isNull);
+        expect(schema.fingerprint, fingerprint);
+      },
+    );
+
     test('lists static entities in identifier order', () {
       final builder = ProtocolSchemaBuilder();
       final level = builder.addStaticEntity(const StaticEntityId('level'));

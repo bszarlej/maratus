@@ -62,9 +62,11 @@ enum RpcLocal {
 
 /// An immutable description and typed handle for an entity-addressed RPC.
 ///
-/// Obtain registered handles from `ProtocolSchemaBuilder.addRpc`. Sessions
-/// accept the handles retained by their schema, so constructing another handle
-/// with the same identifier does not replace a registered RPC's permissions.
+/// Create and register a handle with `ProtocolSchemaBuilder.addRpc`, or
+/// register an existing one, such as a `const` handle, with
+/// `ProtocolSchemaBuilder.addRpcDefinition`. Sessions accept only the handles
+/// retained by their schema, so constructing another handle with the same
+/// identifier does not replace a registered RPC's permissions.
 final class Rpc<T> {
   /// Describes the RPC [id] and its payload [codec].
   ///
