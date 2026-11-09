@@ -3,9 +3,11 @@ import 'value_codec.dart';
 
 /// An immutable description and typed handle for a synchronized field.
 ///
-/// Obtain registered handles from `ProtocolSchemaBuilder.addField`. Sessions
-/// accept the handles retained by their schema, so constructing another
-/// handle with the same identifier does not register a field.
+/// Create and register a handle with `ProtocolSchemaBuilder.addField`, or
+/// register an existing one, such as a `const` handle, with
+/// `ProtocolSchemaBuilder.addFieldDefinition`. Sessions accept only the
+/// handles retained by their schema, so constructing another handle with the
+/// same identifier does not register a field.
 final class SyncField<T> {
   /// Describes field [id] and the [codec] for its values.
   const SyncField({required this.id, required this.codec});

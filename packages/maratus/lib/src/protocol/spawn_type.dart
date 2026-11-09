@@ -3,9 +3,11 @@ import 'value_codec.dart';
 
 /// An immutable description and typed handle for a spawnable entity type.
 ///
-/// Obtain registered handles from `ProtocolSchemaBuilder.addSpawnType`.
-/// Sessions accept the handles retained by their schema, so constructing
-/// another handle with the same identifier does not register a type.
+/// Create and register a handle with `ProtocolSchemaBuilder.addSpawnType`, or
+/// register an existing one, such as a `const` handle, with
+/// `ProtocolSchemaBuilder.addSpawnTypeDefinition`. Sessions accept only the
+/// handles retained by their schema, so constructing another handle with the
+/// same identifier does not register a type.
 final class SpawnType<T> {
   /// Describes spawn type [id] and the [codec] for its construction data.
   const SpawnType({required this.id, required this.codec});

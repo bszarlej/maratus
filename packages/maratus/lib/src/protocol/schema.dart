@@ -209,10 +209,21 @@ final class ProtocolSchemaBuilder {
   ///
   /// Throws an [ArgumentError] if [id] is not a valid identifier or is
   /// already registered as a spawn type.
-  SpawnType<T> addSpawnType<T>(SpawnTypeId id, ValueCodec<T> codec) {
-    _add(_spawnTypes, 'spawn type', id.value, codec);
-    final type = SpawnType<T>(id: id, codec: codec);
-    _spawnTypeDefinitions[id.value] = type;
+  SpawnType<T> addSpawnType<T>(SpawnTypeId id, ValueCodec<T> codec) =>
+      addSpawnTypeDefinition(SpawnType<T>(id: id, codec: codec));
+
+  /// Registers an existing spawn type handle, such as a `const` one, and
+  /// returns it.
+  ///
+  /// The schema retains [type] itself, so sessions accept exactly this
+  /// handle. Registering a handle has the same effect on the fingerprint as
+  /// passing its identifier and codec to [addSpawnType].
+  ///
+  /// Throws an [ArgumentError] if the identifier of [type] is not valid or
+  /// is already registered as a spawn type.
+  SpawnType<T> addSpawnTypeDefinition<T>(SpawnType<T> type) {
+    _add(_spawnTypes, 'spawn type', type.id.value, type.codec);
+    _spawnTypeDefinitions[type.id.value] = type;
     return type;
   }
 
@@ -230,16 +241,22 @@ final class ProtocolSchemaBuilder {
     RpcCaller caller = RpcCaller.anyPeer,
     RpcTarget target = RpcTarget.host,
     RpcLocal local = RpcLocal.exclude,
-  }) {
-    _add(_rpcs, 'RPC', id.value, codec);
-    final rpc = Rpc<T>(
-      id: id,
-      codec: codec,
-      caller: caller,
-      target: target,
-      local: local,
-    );
-    _rpcDefinitions[id.value] = rpc;
+  }) => addRpcDefinition(
+    Rpc<T>(id: id, codec: codec, caller: caller, target: target, local: local),
+  );
+
+  /// Registers an existing RPC handle, such as a `const` one, and returns it.
+  ///
+  /// The schema retains [rpc] itself, with its payload codec and routing
+  /// policies, so sessions accept exactly this handle. Registering a handle
+  /// has the same effect on the fingerprint as passing its identifier, codec,
+  /// and policies to [addRpc].
+  ///
+  /// Throws an [ArgumentError] if the identifier of [rpc] is not valid or is
+  /// already registered as an RPC.
+  Rpc<T> addRpcDefinition<T>(Rpc<T> rpc) {
+    _add(_rpcs, 'RPC', rpc.id.value, rpc.codec);
+    _rpcDefinitions[rpc.id.value] = rpc;
     return rpc;
   }
 
@@ -248,10 +265,21 @@ final class ProtocolSchemaBuilder {
   ///
   /// Throws an [ArgumentError] if [id] is not a valid identifier or is
   /// already registered as a field.
-  SyncField<T> addField<T>(FieldId id, ValueCodec<T> codec) {
-    _add(_fields, 'field', id.value, codec);
-    final field = SyncField<T>(id: id, codec: codec);
-    _fieldDefinitions[id.value] = field;
+  SyncField<T> addField<T>(FieldId id, ValueCodec<T> codec) =>
+      addFieldDefinition(SyncField<T>(id: id, codec: codec));
+
+  /// Registers an existing synchronized field handle, such as a `const` one,
+  /// and returns it.
+  ///
+  /// The schema retains [field] itself, so sessions accept exactly this
+  /// handle. Registering a handle has the same effect on the fingerprint as
+  /// passing its identifier and codec to [addField].
+  ///
+  /// Throws an [ArgumentError] if the identifier of [field] is not valid or
+  /// is already registered as a field.
+  SyncField<T> addFieldDefinition<T>(SyncField<T> field) {
+    _add(_fields, 'field', field.id.value, field.codec);
+    _fieldDefinitions[field.id.value] = field;
     return field;
   }
 

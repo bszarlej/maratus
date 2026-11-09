@@ -66,15 +66,18 @@ final class _Harness {
     bool bind = true,
     QueueLimits hostOutgoingLimits = const QueueLimits(),
     QueueLimits clientOutgoingLimits = const QueueLimits(),
+    Rpc<int>? definition,
   }) {
     final builder = ProtocolSchemaBuilder();
-    rpc = builder.addRpc(
-      _rpcId,
-      codec,
-      caller: caller,
-      target: target,
-      local: local,
-    );
+    rpc = definition == null
+        ? builder.addRpc(
+            _rpcId,
+            codec,
+            caller: caller,
+            target: target,
+            local: local,
+          )
+        : builder.addRpcDefinition(definition);
     schema = builder.build();
     network = InMemoryNetwork(clock: clock);
     host = _session()..host(network.host(outgoingLimits: hostOutgoingLimits));
@@ -813,6 +816,32 @@ void main() {
         throwsArgumentError,
       );
       expect(harness.invocations, isEmpty);
+    });
+
+    test('a registered const handle is accepted with its policies', () {
+      const definition = Rpc<int>(
+        id: _rpcId,
+        codec: IntCodec(min: 0, max: 10),
+        caller: RpcCaller.owner,
+      );
+      final harness = _Harness(definition: definition);
+
+      expect(harness.rpc, same(definition));
+      expect(
+        harness.first.callRpc(harness.entity(harness.first), definition, 4),
+        isTrue,
+      );
+      harness.run();
+      expect(harness.invocations.single.payload, 4);
+      expect(harness.invocations.single.context.sender, _owner);
+
+      harness.second.callRpc(harness.entity(harness.second), definition, 5);
+      harness.run();
+      expect(harness.invocations, hasLength(1));
+      expect(
+        _drain(harness.host).whereType<RpcRejected>().single.reason,
+        RpcRejection.notAllowed,
+      );
     });
 
     test('RPC policy differences reject the handshake', () {
