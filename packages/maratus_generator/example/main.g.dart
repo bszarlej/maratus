@@ -46,8 +46,8 @@ mixin _$Avatar {
   /// The synchronizer of the synchronized fields of this [Avatar] while its
   /// attachment is live, or `null`.
   ///
-  /// Read interpolated values from it, as in
-  /// `networkSynchronizer?.interpolated(AvatarNet.x)`.
+  /// Read the latest values from it, as in
+  /// `networkSynchronizer?.snapshot(AvatarNet.x)`.
   MultiplayerSynchronizer? get networkSynchronizer {
     final attachment = _$networkAttachment;
     return attachment == null || attachment.isDisposed
