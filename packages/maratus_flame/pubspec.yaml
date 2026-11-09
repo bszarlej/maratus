@@ -2,7 +2,7 @@ name: maratus_flame
 description: >-
   Flame bindings for maratus: multiplayer scopes, networked components, and
   replicated spawning for Godot-style multiplayer Flame games.
-version: 0.1.0
+version: 0.1.1
 repository: https://github.com/bszarlej/maratus/tree/master/packages/maratus_flame
 issue_tracker: https://github.com/bszarlej/maratus/issues
 topics:
@@ -23,7 +23,7 @@ dependencies:
   flame: ^1.38.2
   flutter:
     sdk: flutter
-  maratus: ^0.1.0
+  maratus: ^0.1.1
 
 dev_dependencies:
   build_runner: ^2.15.1
