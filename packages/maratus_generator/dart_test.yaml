@@ -1,0 +1,3 @@
+# The first generation in each test file resolves every library the test can
+# import, which can take most of the default timeout on a cold start.
+timeout: 4x
