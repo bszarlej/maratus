@@ -139,7 +139,8 @@ final class $codecName extends ${maratus}ValueCodec<$self> {
     final fields = <_WireField>[];
     final keys = <String>{};
     for (final field in element.fields) {
-      if (!field.isOriginDeclaration) continue;
+      // Skip the fields that getters and setters imply.
+      if (field.nonSynthetic != field) continue;
       final key = wireKeyChecker.firstAnnotationOf(field);
       if (key == null) {
         if (!field.isStatic && _hasCodecAnnotation(field)) {
