@@ -361,6 +361,59 @@ final class WireObject {
       _decodeWithin(key, codec, this[key]);
 }
 
+/// Reads a list-shaped wire value with a fixed number of elements.
+///
+/// Use it in [ValueCodec.decode] for values encoded as positional lists, to
+/// reject lists of another length and to report where an invalid element is
+/// located:
+///
+/// ```dart
+/// @override
+/// MoveInput decode(Object? wire) {
+///   final list = WireList(wire, 2);
+///   return MoveInput(list.read(0, _axis), list.read(1, _axis));
+/// }
+/// ```
+final class WireList {
+  /// Validates that [wire] is a list of exactly [length] elements.
+  ///
+  /// Throws a [ProtocolException] if [wire] is not a list or has another
+  /// length.
+  factory WireList(Object? wire, int length) {
+    if (wire is! List<Object?>) {
+      throw const ProtocolException(
+        ProtocolErrorCode.invalidValue,
+        'expected a list',
+      );
+    }
+    if (wire.length != length) {
+      throw ProtocolException(
+        ProtocolErrorCode.invalidValue,
+        'expected $length elements, got ${wire.length}',
+      );
+    }
+    return WireList._(wire);
+  }
+
+  const WireList._(this._values);
+
+  final List<Object?> _values;
+
+  /// The number of elements.
+  int get length => _values.length;
+
+  /// The raw wire value at [index].
+  ///
+  /// Throws a [RangeError] if [index] is not a valid index.
+  Object? operator [](int index) => _values[index];
+
+  /// Decodes the element at [index] with [codec].
+  ///
+  /// A [ProtocolException] thrown by [codec] is reported at [index].
+  T read<T>(int index, ValueCodec<T> codec) =>
+      _decodeWithin('$index', codec, this[index]);
+}
+
 T _decodeWithin<T>(String segment, ValueCodec<T> codec, Object? wire) {
   try {
     return codec.decode(wire);
