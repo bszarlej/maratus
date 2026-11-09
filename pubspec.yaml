@@ -9,6 +9,7 @@ workspace:
   - packages/maratus
   - packages/maratus_annotations
   - packages/maratus_flame
+  - packages/maratus_generator
   - examples/chat
 
 dev_dependencies:

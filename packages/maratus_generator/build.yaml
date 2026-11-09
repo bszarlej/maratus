@@ -1,0 +1,18 @@
+builders:
+  maratus:
+    import: "package:maratus_generator/builder.dart"
+    builder_factories: ["maratus"]
+    build_extensions: {".dart": [".maratus.g.part"]}
+    auto_apply: dependents
+    build_to: cache
+    applies_builders: ["source_gen:combining_builder"]
+
+# The package's own example and integration fixtures use the builder too.
+targets:
+  $default:
+    builders:
+      maratus_generator:maratus:
+        enabled: true
+        generate_for:
+          - example/**
+          - test/integration/**
