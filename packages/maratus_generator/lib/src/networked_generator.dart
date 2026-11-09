@@ -701,8 +701,7 @@ ${maratus}MultiplayerSynchronizer? _\$networkSynchronizer;
 /// The synchronizer of the synchronized fields of this [$self] while its
 /// attachment is live, or `null`.
 ///
-/// Read interpolated values from it, as in
-/// `networkSynchronizer?.interpolated($netName.${fields.first.name})`.
+/// ${_synchronizerUse(fields)}
 ${maratus}MultiplayerSynchronizer? get networkSynchronizer {
   final attachment = _\$networkAttachment;
   return attachment == null || attachment.isDisposed
@@ -750,6 +749,17 @@ void bindNetworkMembers(${maratus}EntityAttachment attachment) {
 mixin $mixinName$on {
   ${body.join('\n\n')}
 }''';
+  }
+
+  /// How to read the values of [fields] from their synchronizer, for its
+  /// documentation.
+  String _synchronizerUse(List<_Field> fields) {
+    final interpolated = fields.where((field) => field.interpolator != null);
+    return interpolated.isEmpty
+        ? 'Read the latest values from it, as in\n'
+              '/// `networkSynchronizer?.snapshot($netName.${fields.first.name})`.'
+        : 'Read interpolated values from it, as in\n'
+              '/// `networkSynchronizer?.interpolated($netName.${interpolated.first.name})`.';
   }
 
   /// Calls each of [calls] on [target], with a cascade if there are several.
