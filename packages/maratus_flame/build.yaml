@@ -1,0 +1,8 @@
+# Only the tests use generated code: components annotated for
+# maratus_generator.
+targets:
+  $default:
+    builders:
+      maratus_generator:maratus:
+        generate_for:
+          - test/support/**
