@@ -24,6 +24,7 @@ focus on your game.
 - Replicated spawning and selected property synchronization.
 - Late joining with the current world state.
 - WebSockets for real connections and an in-memory network for testing.
+- Optional code generation from annotations.
 
 The core is pure Dart, with no Flutter dependency, so it can also run your
 dedicated server. Using Flame? Start with
@@ -40,11 +41,67 @@ dart pub add maratus
 import 'package:maratus/maratus.dart';
 ```
 
+## Define the protocol
+
+The host and every client register the same schema: your game's spawn types,
+RPCs, and synchronized fields, each with an explicit identifier and a codec
+that validates its values. Peers whose schemas differ cannot connect.
+
+Register them by hand:
+
+```dart
+final builder = ProtocolSchemaBuilder();
+final avatar = builder.addSpawnType(
+  const SpawnTypeId('example.avatar'),
+  const StringCodec(maxLength: 32), // The player's name.
+);
+final x = builder.addField(
+  const FieldId('example.avatar.x'),
+  const DoubleCodec(min: -100, max: 100),
+);
+final steer = builder.addRpc(
+  const RpcId('example.avatar.steer'),
+  const IntCodec(min: -1, max: 1),
+  caller: RpcCaller.owner,
+);
+final schema = builder.build();
+```
+
+Or declare them with
+[`maratus_annotations`](https://pub.dev/packages/maratus_annotations), and let
+[`maratus_generator`](https://pub.dev/packages/maratus_generator) write the
+handles, the code that binds them, and codecs for your data classes:
+
+```dart
+@Networked(spawnType: 'example.avatar')
+final class Avatar with _$Avatar {
+  Avatar(@MaxLength(32) SpawnContext<String> context) : name = context.data;
+
+  final String name;
+
+  @SyncedField('example.avatar.x')
+  @Range(min: -100, max: 100)
+  double x = 0;
+
+  int direction = 0;
+
+  @RpcMethod('example.avatar.steer', caller: RpcCaller.owner)
+  void steer(@Range(min: -1, max: 1) int direction) =>
+      this.direction = direction;
+}
+
+final builder = ProtocolSchemaBuilder();
+AvatarNet.register(builder); // Generated.
+final schema = builder.build();
+```
+
+Both declare the same schema, with the same fingerprint, and they mix freely
+in one schema.
+
 ## Connect your game
 
-Define the same protocol schema on the host and clients, then bind your game's
-entities, RPCs, and synchronized properties. A native host fits into your game
-loop like this, using your prepared `session`:
+Bind your game's entities, RPCs, and synchronized properties to the session. A
+native host fits into your game loop like this, using your prepared `session`:
 
 ```dart
 session.host(await WebSocketHost.bind(port: 8080));
@@ -60,7 +117,9 @@ Call `tick()` each frame and `session.close()` when the game ends.
 Clients join using `session.join(WebSocketClient.connect(uri))`.
 
 The [runnable Dart example](example/main.dart) shows the complete flow: a client
-steers an avatar, the host moves it, and its position is synchronized back.
+steers an avatar, the host moves it, and its position is synchronized back. The
+[generator example](https://github.com/bszarlej/maratus/tree/master/packages/maratus_generator/example/main.dart)
+does the same with annotations.
 For a playable Flutter app and a dedicated Dart host, see the
 [chat example](https://github.com/bszarlej/maratus/tree/master/examples/chat).
 
