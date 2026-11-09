@@ -287,6 +287,59 @@ void main() {
     });
   });
 
+  group('WireList', () {
+    test('reads elements by position', () {
+      final list = WireList([1, 'x'], 2);
+
+      expect(list.length, 2);
+      expect(list.read(0, const IntCodec()), 1);
+      expect(list[1], 'x');
+    });
+
+    test('accepts an empty list of length zero', () {
+      expect(WireList(<Object?>[], 0).length, 0);
+    });
+
+    test('rejects values that are not lists', () {
+      for (final wire in [null, <String, Object?>{}, 'a', 1]) {
+        expect(
+          () => WireList(wire, 1),
+          throwsProtocolException(ProtocolErrorCode.invalidValue),
+          reason: '$wire',
+        );
+      }
+    });
+
+    test('rejects lists of another length', () {
+      for (final wire in [
+        <Object?>[],
+        [1, 2, 3],
+      ]) {
+        expect(
+          () => WireList(wire, 2),
+          throwsProtocolException(ProtocolErrorCode.invalidValue),
+          reason: '$wire',
+        );
+      }
+    });
+
+    test('reports the index of an invalid element', () {
+      final list = WireList([1, 'x'], 2);
+
+      expect(
+        () => list.read(1, const IntCodec()),
+        throwsProtocolException(ProtocolErrorCode.invalidValue, path: ['1']),
+      );
+    });
+
+    test('refuses to read outside the list', () {
+      final list = WireList([1], 1);
+
+      expect(() => list[1], throwsRangeError);
+      expect(() => list.read(-1, const IntCodec()), throwsRangeError);
+    });
+  });
+
   group('custom codecs', () {
     const codec = MoveInputCodec();
 
