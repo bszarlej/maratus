@@ -7,7 +7,8 @@ part of 'multiplayer_scope.dart';
 /// session has started. A [MultiplayerSpawner] creates components for
 /// replicated entities instead, through a factory that receives the entity.
 /// Override [onNetworkAttach] to bind RPCs and synchronize properties through
-/// the supplied attachment.
+/// the supplied attachment. Components annotated for `maratus_generator` also
+/// bind their annotated members, through [bindNetworkMembers], just before.
 /// When overriding [onLoad], call `super.onLoad()` before any asynchronous work
 /// so RPCs can wait safely while assets load. Never await a child's mounting
 /// from an ancestor's load path.
@@ -86,6 +87,18 @@ mixin NetworkedComponent on Component {
   /// not retain attachments from earlier mounts.
   void onNetworkAttach(EntityAttachment attachment) {}
 
+  /// Binds the members that code generation declares for this component,
+  /// such as annotated RPC handlers and synchronized fields, once per
+  /// attachment lifetime.
+  ///
+  /// Each attachment calls this just before [onNetworkAttach]. The mixins
+  /// that `maratus_generator` writes override it and call `super`, so
+  /// overriding [onNetworkAttach] never drops their bindings. Bind
+  /// hand-written handlers and properties in [onNetworkAttach] instead.
+  @protected
+  @mustCallSuper
+  void bindNetworkMembers(EntityAttachment attachment) {}
+
   /// Called after this scope's gameplay updates while the attachment is ready.
   ///
   /// Use this optional hook to prepare values before the scope automatically
@@ -156,6 +169,7 @@ mixin NetworkedComponent on Component {
     _networkAttachment = attachment;
     scope._components.add(this);
     try {
+      bindNetworkMembers(attachment);
       onNetworkAttach(attachment);
     } on Object {
       _detachNetwork();

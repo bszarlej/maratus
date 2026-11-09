@@ -106,6 +106,29 @@ final class _Probe extends Component with NetworkedComponent {
   }
 }
 
+/// Stands in for a mixin that `maratus_generator` writes.
+mixin _GeneratedMembers on NetworkedComponent {
+  final memberAttachments = <EntityAttachment>[];
+  final order = <String>[];
+
+  @override
+  void bindNetworkMembers(EntityAttachment attachment) {
+    super.bindNetworkMembers(attachment);
+    memberAttachments.add(attachment);
+    order.add('members');
+  }
+}
+
+final class _GeneratedProbe extends _Probe with _GeneratedMembers {
+  _GeneratedProbe(super.networkEntity, super.rpc);
+
+  @override
+  void onNetworkAttach(EntityAttachment attachment) {
+    order.add('attach');
+    super.onNetworkAttach(attachment);
+  }
+}
+
 final class _LoadingParent extends Component {
   _LoadingParent(this.child, this.gate);
 
@@ -438,6 +461,36 @@ void main() {
       expect(component.isNetworkReady, isFalse);
       expect(component.attachments.single.isDisposed, isTrue);
       expect(harness.host.state, SessionState.hosting);
+    },
+  );
+
+  test(
+    'binds generated members before onNetworkAttach on each mount',
+    () async {
+      final harness = _Harness();
+      final game = await _game();
+      final scope = MultiplayerScope(session: harness.host);
+      final component = _GeneratedProbe(harness.entity, harness.rpc);
+      await _mount(game, game, scope);
+      await _mount(game, scope, component);
+
+      expect(component.order, ['members', 'attach']);
+      expect(
+        component.memberAttachments.single,
+        same(component.attachments.single),
+      );
+
+      component.removeFromParent();
+      game.update(0);
+      await _mount(game, scope, component);
+
+      expect(component.order, ['members', 'attach', 'members', 'attach']);
+      expect(component.memberAttachments, hasLength(2));
+      expect(
+        component.memberAttachments.last,
+        same(component.attachments.last),
+      );
+      expect(component.memberAttachments.first.isDisposed, isTrue);
     },
   );
 
