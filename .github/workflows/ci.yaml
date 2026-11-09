@@ -45,7 +45,7 @@ jobs:
 
       - name: Downgrade direct dependencies
         if: matrix.resolve == 'downgrade'
-        run: flutter pub downgrade crypto web flame flame_test flutter_lints lints melos test
+        run: flutter pub downgrade analyzer build build_runner build_test crypto web flame flame_test flutter_lints lints melos meta source_gen test
 
       - name: Check formatting
         if: matrix.current
@@ -60,6 +60,13 @@ jobs:
       - name: Test browser connections to native host
         if: matrix.current
         run: dart run melos run test:browser --no-select
+
+      - name: Check generated code
+        if: matrix.current
+        run: |
+          dart run melos run generate --no-select
+          git add --intent-to-add --all
+          git diff --exit-code
 
       - name: Validate packages for publishing
         if: matrix.current
