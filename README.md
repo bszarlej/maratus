@@ -81,6 +81,8 @@ dart run melos run test:browser --no-select
 ```
 
 Browser tests require Chrome. Set `CHROME_EXECUTABLE` if it is not found.
+After changing `maratus_generator` or annotated code, regenerate the committed
+`.g.dart` files with `dart run melos run generate --no-select`.
 
 ## License
 
