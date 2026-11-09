@@ -34,6 +34,11 @@ import 'package:maratus_flame/maratus_flame.dart';
 | ------- | ---------- |
 | [maratus_flame](packages/maratus_flame) | Networked Flame components, spawning, and position smoothing. Includes the core APIs. |
 | [maratus](packages/maratus) | Shared game protocols and standalone Dart hosts, without Flutter. Install with `dart pub add maratus`. |
+| [maratus_annotations](packages/maratus_annotations) | Annotations that declare RPC handlers, synchronized fields, spawn types, and data codecs. |
+| [maratus_generator](packages/maratus_generator) | Generates handles, bindings, typed RPC senders, and codecs from those annotations, as a dev dependency. |
+
+Declare your protocol by registering it with `ProtocolSchemaBuilder`, or with
+annotations: both produce the same schema.
 
 ## Examples
 
@@ -43,6 +48,8 @@ import 'package:maratus_flame/maratus_flame.dart';
   avatars with a host and client running side by side.
 - [Dart example](packages/maratus/example/main.dart): run a session, send input,
   and synchronize movement without Flutter.
+- [Generator example](packages/maratus_generator/example/main.dart): the same
+  session, with the avatar declared through annotations.
 
 ## Current scope
 
