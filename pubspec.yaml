@@ -23,6 +23,16 @@ melos:
       description: Fail if any Dart file in the workspace is not formatted.
       run: dart run melos format --output=none --set-exit-if-changed
 
+    generate:
+      description: >-
+        Regenerate the code that maratus_generator writes for the packages'
+        examples and tests.
+      exec:
+        command: dart run build_runner build
+        concurrency: 1
+      packageFilters:
+        dependsOn: build_runner
+
     test:browser:
       description: >-
         Run the browser WebSocket tests against a native loopback host.
