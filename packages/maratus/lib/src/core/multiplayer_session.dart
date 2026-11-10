@@ -691,6 +691,12 @@ final class MultiplayerSession {
   /// on, the host checks [RpcCaller.authority] and selects
   /// [RpcTarget.authority] with the new authority.
   ///
+  /// When a client that is the authority of an entity leaves, and the
+  /// entity's [OwnerLeftPolicy] keeps it, the host takes the authority back
+  /// with a transfer to itself. This includes a new authority that leaves
+  /// before acknowledging its transfer. A previous authority that leaves
+  /// during a transfer does not affect it.
+  ///
   /// [authority] must be the host or a ready client. Returns `false`,
   /// changing nothing, if it is already the entity's authority.
   ///
@@ -886,8 +892,9 @@ final class MultiplayerSession {
 
   /// Closes the session and its peer.
   ///
-  /// A host removes every client, without despawning their entities for
-  /// each other first. Closing a disconnected session has no effect.
+  /// A host removes every client, without despawning their entities or
+  /// taking back their authority for each other first. Closing a
+  /// disconnected session has no effect.
   void close() {
     if (_peer == null) return;
     if (_isHost) {
@@ -1366,8 +1373,9 @@ final class MultiplayerSession {
   /// [notify] is set and the reason can be stated in a goodbye.
   ///
   /// On a client, this disconnects the session. On a host, it then applies
-  /// the departed client's [OwnerLeftPolicy] to its entities, unless
-  /// [release] is false because the whole session is closing.
+  /// the departed client's [OwnerLeftPolicy] to its entities and takes the
+  /// authority of the remaining entities that the client was the authority
+  /// of, unless [release] is false because the whole session is closing.
   void _drop(
     _Remote remote,
     DisconnectReason reason, {
@@ -1393,8 +1401,11 @@ final class MultiplayerSession {
     if (peer != null) {
       _peers.remove(peer);
       _emit(PeerLeft(peer, reason));
-      _authorities.peerLeft(peer);
-      if (release) _spawns.peerLeft(peer);
+      _authorities.forget(peer);
+      if (release) {
+        _spawns.peerLeft(peer);
+        _authorities.reclaim(peer);
+      }
     }
   }
 

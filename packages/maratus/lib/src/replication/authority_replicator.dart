@@ -87,7 +87,7 @@ final class _AuthorityReplicator {
   }
 
   /// Forgets the acknowledgements awaited from [peer], which left.
-  void peerLeft(PeerId peer) {
+  void forget(PeerId peer) {
     for (final awaited in _awaited.values) {
       awaited.remove(peer);
     }
@@ -95,6 +95,25 @@ final class _AuthorityReplicator {
       (entity, awaited) =>
           awaited.isEmpty || entity.state == EntityState.removed,
     );
+  }
+
+  /// Transfers the authority of the live replicated and static entities
+  /// whose authority was [peer], which left, to the host.
+  ///
+  /// This includes an entity whose transfer to [peer] it never
+  /// acknowledged. The host continues from the latest values it accepted.
+  void reclaim(PeerId peer) {
+    final entities = [
+      for (final record in session._spawns._records.values) record.entity,
+      ...session._staticEntities.values,
+    ];
+    for (final entity in entities) {
+      // A departure during an earlier transfer may have despawned the
+      // entity or reclaimed it already.
+      if (entity.authority == peer && _isTransferable(entity)) {
+        _transfer(entity, PeerId.host);
+      }
+    }
   }
 
   /// Sends the authority of each static entity that the host no longer

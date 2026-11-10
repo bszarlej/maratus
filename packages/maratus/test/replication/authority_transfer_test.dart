@@ -827,4 +827,178 @@ void main() {
       }
     });
   });
+
+  group('departure', () {
+    test(
+      'returns the authority of a departed client\'s entities to the host',
+      () {
+        final harness = _Harness();
+        final first = harness.join();
+        final second = harness.join();
+        final peer = first.localPeer!;
+        final owned = harness.host.spawn(
+          harness.schema.ball,
+          true,
+          owner: peer,
+          authority: peer,
+        );
+        final given = harness.host.spawn(harness.schema.ball, true);
+        harness.run();
+        harness.host.transferAuthority(given, peer);
+        final boards = harness.attachBoard();
+        final board = harness.host.staticEntity(harness.schema.board);
+        harness.host.transferAuthority(board, peer);
+        harness.run();
+        for (final ball in [owned, given]) {
+          harness.model(first, ball).x = 3;
+        }
+        boards[first]!.x = 3;
+        harness.tick();
+        harness.sessions.forEach(_drain);
+
+        first.close();
+        harness.run();
+        harness.sessions.remove(first);
+
+        for (final session in [harness.host, second]) {
+          expect(_drain(session).whereType<AuthorityChanged>(), [
+            for (final entity in [owned, given, board])
+              AuthorityChanged(
+                entity: entity.id,
+                previous: peer,
+                authority: PeerId.host,
+              ),
+          ]);
+        }
+        harness.expectAgreement(owned, x: 3);
+        harness.expectAgreement(given, x: 3);
+        expect(
+          second.staticEntity(harness.schema.board).authority,
+          PeerId.host,
+        );
+
+        harness.model(harness.host, owned).x = 4;
+        boards[harness.host]!.x = 4;
+        harness.tick();
+        harness.expectAgreement(owned, x: 4);
+        expect(boards[second]!.x, 4);
+      },
+    );
+
+    test('despawns an entity whose owner leaves by policy instead', () {
+      final harness = _Harness();
+      final first = harness.join();
+      final peer = first.localPeer!;
+      final ball = harness.host.spawn(
+        harness.schema.ball,
+        true,
+        owner: peer,
+        authority: peer,
+        onOwnerLeft: OwnerLeftPolicy.despawn,
+      );
+      harness.run();
+      _drain(harness.host);
+
+      first.close();
+      harness.run();
+
+      expect(ball.state, EntityState.removed);
+      expect(_drain(harness.host).whereType<AuthorityChanged>(), isEmpty);
+    });
+
+    test('undoes a transfer whose new authority leaves before applying it', () {
+      final harness = _Harness();
+      final first = harness.join();
+      final second = harness.join();
+      final ball = harness.host.spawn(harness.schema.ball, true);
+      harness.run();
+      harness.model(harness.host, ball).x = 1;
+      harness.tick();
+      final peer = first.localPeer!;
+      harness.sessions.forEach(_drain);
+
+      harness.host.transferAuthority(ball, peer);
+      first.close();
+      harness.run();
+      harness.sessions.remove(first);
+
+      expect(ball.authority, PeerId.host);
+      expect(_drain(second).whereType<AuthorityChanged>(), [
+        AuthorityChanged(
+          entity: ball.id,
+          previous: PeerId.host,
+          authority: peer,
+        ),
+        AuthorityChanged(
+          entity: ball.id,
+          previous: peer,
+          authority: PeerId.host,
+        ),
+      ]);
+      harness.model(harness.host, ball).x = 2;
+      harness.tick();
+      harness.expectAgreement(ball, x: 2);
+    });
+
+    test('completes a transfer whose previous authority leaves during it', () {
+      final harness = _Harness();
+      final first = harness.join();
+      final second = harness.join();
+      final peer = first.localPeer!;
+      final ball = harness.host.spawn(
+        harness.schema.ball,
+        true,
+        owner: peer,
+        authority: peer,
+      );
+      harness.run();
+      harness.model(first, ball).x = 1;
+      harness.tick();
+      harness.sessions.forEach(_drain);
+
+      // The previous authority samples, then leaves before the transfer
+      // reaches it.
+      harness.model(first, ball).x = 2;
+      harness.clock.advance(_interval);
+      first.captureState();
+      harness.host.transferAuthority(ball, second.localPeer!);
+      first.close();
+      harness.run();
+      harness.sessions.remove(first);
+
+      expect(_drain(harness.host).whereType<AuthorityChanged>(), [
+        AuthorityChanged(
+          entity: ball.id,
+          previous: peer,
+          authority: second.localPeer!,
+        ),
+      ]);
+      harness.expectAgreement(ball, x: 1);
+      harness.model(second, ball).x = 3;
+      harness.tick();
+      harness.expectAgreement(ball, x: 3);
+    });
+
+    test('lets a client that joins afterward agree', () {
+      final harness = _Harness();
+      final first = harness.join();
+      final peer = first.localPeer!;
+      final ball = harness.host.spawn(
+        harness.schema.ball,
+        true,
+        owner: peer,
+        authority: peer,
+      );
+      harness.run();
+      harness.model(first, ball).x = 5;
+      harness.tick();
+      first.close();
+      harness.run();
+      harness.sessions.remove(first);
+
+      harness.join();
+
+      harness.expectAgreement(ball, x: 5);
+    });
+  });
 }
