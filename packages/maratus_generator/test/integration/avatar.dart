@@ -23,7 +23,12 @@ final class Avatar with _$Avatar {
   double x = 0;
 
   /// The latest input, sent at every interval.
-  @SyncedField('test.avatar.input', mode: SyncMode.always)
+  @SyncedField(
+    'test.avatar.input',
+    mode: SyncMode.always,
+    deliveryMode: DeliveryMode.unreliable,
+    channel: 2,
+  )
   MoveInput input = const MoveInput(0, 0);
 
   /// The direction of movement: -1, 0, or 1.
@@ -41,7 +46,12 @@ final class Avatar with _$Avatar {
   String get label => 'Avatar of $name';
 
   /// Steers the avatar in [direction].
-  @RpcMethod('test.avatar.steer', caller: RpcCaller.owner)
+  @RpcMethod(
+    'test.avatar.steer',
+    caller: RpcCaller.owner,
+    deliveryMode: DeliveryMode.unreliableOrdered,
+    channel: 1,
+  )
   void steer(@Range(min: -1, max: 1) int direction) =>
       this.direction = direction;
 

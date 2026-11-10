@@ -71,6 +71,8 @@ final class _Rpc {
     required this.caller,
     required this.target,
     required this.local,
+    required this.deliveryMode,
+    required this.channel,
     required this.version,
     required this.parameters,
   });
@@ -80,6 +82,8 @@ final class _Rpc {
   final String caller;
   final String target;
   final String local;
+  final String deliveryMode;
+  final int channel;
   final int version;
   final List<_Parameter> parameters;
 
@@ -112,6 +116,8 @@ final class _Field {
     required this.type,
     required this.id,
     required this.mode,
+    required this.deliveryMode,
+    required this.channel,
     required this.interpolator,
     required this.isWritable,
     required this.codec,
@@ -121,6 +127,8 @@ final class _Field {
   final DartType type;
   final String id;
   final String mode;
+  final String deliveryMode;
+  final int channel;
   final CopiedExpression? interpolator;
   final bool isWritable;
   final CodecSource codec;
@@ -333,6 +341,8 @@ final class _NetworkedClass {
         caller: _enumName(reader.read('caller').objectValue),
         target: _enumName(reader.read('target').objectValue),
         local: _enumName(reader.read('local').objectValue),
+        deliveryMode: _enumName(reader.read('deliveryMode').objectValue),
+        channel: _channel(reader, method),
         version: reader.peek('version')?.intValue ?? 1,
         parameters: parameters,
       );
@@ -411,6 +421,16 @@ final class _NetworkedClass {
         );
       }
       CopiedExpression? interpolator;
+      final mode = _enumName(reader.read('mode').objectValue);
+      final deliveryMode = _enumName(reader.read('deliveryMode').objectValue);
+      if (deliveryMode != 'reliable' && mode != 'always') {
+        throw InvalidGenerationSourceError(
+          'Unreliable delivery of $description requires SyncMode.always '
+          'so later samples can repair packet loss.',
+          todo: 'Use mode: SyncMode.always or DeliveryMode.reliable.',
+          element: member,
+        );
+      }
       final interpolatorValue = reader.peek('interpolator')?.objectValue;
       if (interpolatorValue != null) {
         final blended = interpolatedType(interpolatorValue.type);
@@ -433,7 +453,9 @@ final class _NetworkedClass {
           member: member,
           type: type,
           id: id,
-          mode: _enumName(reader.read('mode').objectValue),
+          mode: mode,
+          deliveryMode: deliveryMode,
+          channel: _channel(reader, member),
           interpolator: interpolator,
           isWritable: isWritable,
           codec: await codecs.resolve(member, type, description),
@@ -503,6 +525,22 @@ final class _NetworkedClass {
 
   static String _enumName(DartObject value) =>
       value.variable?.name ?? value.getField('_name')!.toStringValue()!;
+
+  static int _channel(ConstantReader reader, Element at) {
+    final channel = reader.read('channel').intValue;
+    if (channel < 0) {
+      throw InvalidGenerationSourceError(
+        'The transport channel must be nonnegative.',
+        element: at,
+      );
+    }
+    return channel;
+  }
+
+  List<String> _delivery(String mode, int channel) => [
+    if (mode != 'reliable') 'deliveryMode: ${maratus}DeliveryMode.$mode,',
+    if (channel != 0) 'channel: $channel,',
+  ];
 
   // Writing the generated code.
 
@@ -579,6 +617,7 @@ static const spawnType = ${maratus}SpawnType(
           'caller: ${maratus}RpcCaller.${rpc.caller},',
         if (rpc.target != 'host') 'target: ${maratus}RpcTarget.${rpc.target},',
         if (rpc.local != 'exclude') 'local: ${maratus}RpcLocal.${rpc.local},',
+        ..._delivery(rpc.deliveryMode, rpc.channel),
       ];
       members.add('''
 /// The RPC that [$self.${rpc.name}] handles.
@@ -595,6 +634,7 @@ static const ${rpc.name} = ${maratus}Rpc(
 static const ${field.name} = ${maratus}SyncField(
   id: ${maratus}FieldId(${stringLiteral(field.id)}),
   codec: ${constant('${publicPart(field.name)}Codec', field.codec.expression, field.codec.freeNames)},
+  ${_delivery(field.deliveryMode, field.channel).join('\n')}
 );''');
       registrations.add('addFieldDefinition(${field.name})');
       final interpolator = field.interpolator;

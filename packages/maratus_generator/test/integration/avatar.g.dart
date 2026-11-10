@@ -21,6 +21,8 @@ abstract final class AvatarNet {
     id: RpcId('test.avatar.steer'),
     codec: IntCodec(min: -1, max: 1),
     caller: RpcCaller.owner,
+    deliveryMode: DeliveryMode.unreliableOrdered,
+    channel: 1,
   );
 
   /// The RPC that [Avatar.say] handles.
@@ -49,6 +51,8 @@ abstract final class AvatarNet {
   static const input = SyncField(
     id: FieldId('test.avatar.input'),
     codec: MoveInputCodec(),
+    deliveryMode: DeliveryMode.unreliable,
+    channel: 2,
   );
 
   /// The synchronized field of [Avatar.label].
