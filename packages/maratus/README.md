@@ -125,6 +125,61 @@ does the same with annotations.
 For a playable Flutter app and a dedicated Dart host, see the
 [chat example](https://github.com/bszarlej/maratus/tree/master/examples/chat).
 
+## Choose delivery per RPC and field
+
+RPCs and synchronized fields default to reliable delivery on channel zero.
+Set `deliveryMode` and `channel` on their handles, builder registrations, or
+annotations to use an ENet connection's other delivery options:
+
+```dart
+final position = builder.addField(
+  const FieldId('player.position'),
+  const DoubleCodec(),
+  deliveryMode: DeliveryMode.unreliableOrdered,
+  channel: 1,
+);
+attachment.synchronize([
+  position.property(
+    get: () => player.x,
+    set: (value) => player.x = value,
+    mode: SyncMode.always,
+  ),
+]);
+```
+
+`addRpc` accepts the same delivery options. `unreliableOrdered` can lose
+messages and discards packets that arrive after a newer packet on that lane;
+`unreliable` can also reorder them. RPC requests and host relays use the
+method's configuration. Unreliable RPCs are not retried automatically.
+
+Unreliable fields require `SyncMode.always`, so later samples can recover a
+lost value even when it stops changing. State sequences prevent older samples
+from overwriting newer values of each field. Fields with different modes or
+channels travel in separate packets. Use separate channels for independent
+streams, especially when combining ordered unreliable fields and RPCs.
+
+Session control, spawning, authority transfers, initial snapshots, and late-join
+catch-up remain reliable on channel zero. Packets on other lanes can arrive
+before the control changes they need: unreliable packets are discarded, while
+reliable packets wait within `pendingDeliveryLimits` and the bootstrap timeout.
+There is no global ordering between channels or modes.
+
+Use the optional [`maratus_enet`](../maratus_enet) package and configure both
+peers with enough channels (`channelCount: 2` for channel one). `host` and
+`join` throw `UnsupportedError` before taking ownership of a peer that cannot
+provide the schema's modes and channels. WebSockets support only reliable
+channel zero. Delivery settings are part of the schema fingerprint.
+
+ENet limits each unreliable message to 1,000 encoded bytes, including the
+session envelope. Oversized state groups are split into individual fields;
+an individual field that still cannot fit reports `PropertySyncFailed`.
+An oversized outgoing client RPC throws `ArgumentError`; a host delivery
+reports `RpcRejected` with `invalidPayload`.
+
+For deterministic tests, configure `InMemoryNetwork` with `deliveryModes`
+and `channelCount`, then use `dropNextUnreliable` or `delayNextUnreliable`.
+The default in-memory transport mirrors reliable-only WebSockets.
+
 ## Follow who is playing
 
 The host and every client report players joining, becoming ready, and
@@ -197,13 +252,14 @@ Requires Dart `>=3.11.0 <4.0.0`. Windows, macOS, and Linux can host and join;
 browsers can join.
 
 The initial release focuses on small sessions, such as 2–4 players. Connections
-use reliable, ordered WebSockets and currently require a directly reachable host.
+use WebSockets or the optional native ENet transport and currently require a
+directly reachable host.
 
 Planned work:
 
 - Android/iOS support and larger-session tuning: compatibility and performance
   validation are still pending.
-- Additional transports, unreliable delivery, relays/NAT traversal,
+- Relays/NAT traversal,
   built-in client-side prediction and reconciliation, interest management, and state
   compression: **not implemented yet**.
 
