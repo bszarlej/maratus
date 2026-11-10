@@ -2,10 +2,12 @@ part of '../core/multiplayer_session.dart';
 
 /// What the host does with a spawned entity when its owner leaves.
 enum OwnerLeftPolicy {
-  /// Keep the entity for the remaining peers, with its original metadata.
+  /// Keep the entity for the remaining peers, with its original owner.
   ///
   /// Peer IDs are never reused within a session, so no other peer can act
-  /// as the entity's owner afterward.
+  /// as the entity's owner afterward. If the owner was also the entity's
+  /// authority, the host takes the authority, as it does whenever an
+  /// entity's authority leaves.
   keep,
 
   /// Despawn the entity and its descendants for the remaining peers.
