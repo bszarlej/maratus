@@ -49,11 +49,11 @@ Matcher _closed(PeerConnection connection, CloseReason reason) =>
 final class _Harness {
   _Harness({
     bool isHost = true,
-    int channelCount = 1,
+    this.channelCount = 1,
     int maxConnections = 64,
     QueueLimits incomingLimits = const QueueLimits(),
     QueueLimits outgoingLimits = const QueueLimits(),
-  }) : channelCount = channelCount {
+  }) {
     peer = EnetPeerBase(
       driver: driver,
       isHost: isHost,
