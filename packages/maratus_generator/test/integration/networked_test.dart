@@ -57,6 +57,8 @@ void _registerByHand(ProtocolSchemaBuilder builder) => builder
     const RpcId('test.avatar.steer'),
     const IntCodec(min: -1, max: 1),
     caller: RpcCaller.owner,
+    deliveryMode: DeliveryMode.unreliableOrdered,
+    channel: 1,
   )
   ..addRpc(
     const RpcId('test.avatar.say'),
@@ -69,7 +71,12 @@ void _registerByHand(ProtocolSchemaBuilder builder) => builder
     const FieldId('test.avatar.x'),
     const DoubleCodec(min: -100, max: 100),
   )
-  ..addField(const FieldId('test.avatar.input'), const MoveInputCodec())
+  ..addField(
+    const FieldId('test.avatar.input'),
+    const MoveInputCodec(),
+    deliveryMode: DeliveryMode.unreliable,
+    channel: 2,
+  )
   ..addField(
     const FieldId('test.avatar.label'),
     const StringCodec(maxLength: 40),
@@ -132,6 +139,10 @@ void main() {
     expect(schema.fieldDefinition(AvatarNet.x.id), same(AvatarNet.x));
     expect(schema.fieldDefinition(AvatarNet.label.id), same(AvatarNet.label));
     expect(AvatarNet.steer.caller, RpcCaller.owner);
+    expect(AvatarNet.steer.deliveryMode, DeliveryMode.unreliableOrdered);
+    expect(AvatarNet.steer.channel, 1);
+    expect(AvatarNet.input.deliveryMode, DeliveryMode.unreliable);
+    expect(AvatarNet.input.channel, 2);
     expect(AvatarNet.say.target, RpcTarget.all);
     expect(AvatarNet.say.local, RpcLocal.include);
     expect(AvatarNet.jump.caller, RpcCaller.anyPeer);
@@ -202,7 +213,11 @@ void main() {
 
     setUp(() {
       clock = ManualClock();
-      final network = InMemoryNetwork(clock: clock);
+      final network = InMemoryNetwork(
+        clock: clock,
+        deliveryModes: DeliveryMode.values.toSet(),
+        channelCount: 3,
+      );
       final schema = _schema([AvatarNet.register]);
       host = _Peer(MultiplayerSession(schema: schema, clock: clock));
       client = _Peer(MultiplayerSession(schema: schema, clock: clock));

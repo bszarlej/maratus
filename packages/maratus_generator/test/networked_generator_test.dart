@@ -48,6 +48,8 @@ final class Avatar with _\$Avatar {
     expect(output, contains('caller: RpcCaller.host,'));
     expect(output, contains('target: RpcTarget.all,'));
     expect(output, isNot(contains('local:')));
+    expect(output, isNot(contains('deliveryMode:')));
+    expect(output, isNot(contains('channel:')));
     expect(output, contains("id: FieldId('test.avatar.health'),"));
     expect(output, contains('..addSpawnTypeDefinition(spawnType)'));
     expect(output, contains('..addRpcDefinition(hit)'));
@@ -143,8 +145,87 @@ final class Mover with _\$Mover {
     expect(output, contains('MoverNet.name.property(get: () => self.name)'));
   });
 
+  test(
+    'preserves delivery modes and channels with a prefixed import',
+    () async {
+      final generation = await generate('''
+import 'package:maratus/maratus.dart' as m;
+import 'package:maratus_annotations/maratus_annotations.dart';
+
+@Networked()
+final class Mover with _\$Mover {
+  @RpcMethod(
+    'test.mover.steer',
+    deliveryMode: m.DeliveryMode.unreliableOrdered,
+    channel: 1,
+  )
+  void steer(double direction) {}
+
+  @SyncedField(
+    'test.mover.x',
+    mode: m.SyncMode.always,
+    deliveryMode: m.DeliveryMode.unreliable,
+    channel: 2,
+  )
+  double x = 0;
+
+  @SyncedField('test.mover.health', channel: 3)
+  int health = 100;
+}
+''');
+
+      expect(generation.errors, isEmpty);
+      final output = generation.output!;
+      expect(
+        output,
+        contains('deliveryMode: m.DeliveryMode.unreliableOrdered,'),
+      );
+      expect(output, contains('channel: 1,'));
+      expect(output, contains('deliveryMode: m.DeliveryMode.unreliable,'));
+      expect(output, contains('channel: 2,'));
+      expect(output, contains('channel: 3,'));
+      expect(output, contains('mode: m.SyncMode.always'));
+    },
+  );
+
   group('rejects', () {
+    for (final mode in ['unreliable', 'unreliableOrdered']) {
+      for (final syncMode in ['', 'mode: SyncMode.onChange,']) {
+        test(
+          '$mode with ${syncMode.isEmpty ? 'default mode' : 'SyncMode.onChange'}',
+          () => expectError('''
+$_imports
+@Networked()
+final class Avatar with _\$Avatar {
+  @SyncedField(
+    'test.avatar.x',
+    deliveryMode: DeliveryMode.$mode,
+    $syncMode
+  )
+  double x = 0;
+}''', 'requires SyncMode.always'),
+        );
+      }
+    }
     for (final (description, declaration, message) in [
+      (
+        'negative RPC channels',
+        '''
+@Networked()
+final class Avatar with _\$Avatar {
+  @RpcMethod('test.avatar.jump', channel: -1) void jump() {}
+}''',
+        'channel must be nonnegative',
+      ),
+      (
+        'negative field channels',
+        '''
+@Networked()
+final class Avatar with _\$Avatar {
+  @SyncedField('test.avatar.x', channel: -1) double x = 0;
+}''',
+        'channel must be nonnegative',
+      ),
       (
         'classes that do not mix in their binding mixin',
         '''
