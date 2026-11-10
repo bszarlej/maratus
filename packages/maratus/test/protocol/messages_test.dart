@@ -16,6 +16,8 @@ void main() {
         'pong': 'pong',
         'spawn': 'spawn',
         'despawn': 'despawn',
+        'authority': 'authority',
+        'authorityAck': 'authority_ack',
         'rpc': 'rpc',
         'rpcDelivery': 'rpc_delivery',
         'state': 'state',

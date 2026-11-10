@@ -26,13 +26,16 @@ import 'wire_codec.dart';
 ///   optionally a detail `m`; synced and ready bodies are empty. Ping and
 ///   pong bodies hold the ping's sequence `n`. The other bodies hold the
 ///   entity ID `e`: spawn bodies add the spawn type `t`, construction data
-///   `d`, owner `o`, authority `a`, and optionally a parent entity `p`. RPC
-///   request bodies add the RPC `m`, its payload `p`, and optionally a target
-///   peer `t`. RPC deliveries require both sender `s` and target `t`; state
-///   bodies add the authority's sample time `t`, in microseconds, and an
-///   object `f` of field values. The session validates the origin of RPC
-///   deliveries and the consistency of spawn metadata, and decodes join
-///   requests once the schema fingerprints match.
+///   `d`, owner `o`, authority `a`, and optionally a parent entity `p`;
+///   authority bodies add the new authority `a`, and authority
+///   acknowledgements hold only the entity. RPC request bodies add the RPC
+///   `m`, its payload `p`, and optionally a target peer `t`. RPC deliveries
+///   require both sender `s` and target `t`; state bodies add an object `f`
+///   of field values and, optionally, the authority's sample time `t`, in
+///   microseconds. The session validates the origin of RPC deliveries, the
+///   consistency of spawn and authority metadata, and the presence of
+///   sample times, and decodes join requests once the schema fingerprints
+///   match.
 final class ProtocolCodec {
   /// Creates a codec for the messages of [schema].
   ProtocolCodec(
@@ -43,9 +46,9 @@ final class ProtocolCodec {
 
   /// The protocol version that this codec writes and accepts.
   ///
-  /// RPC routing, spawn metadata, pings, and state sample times extend
-  /// version 1; the schema fingerprint includes RPC routing metadata so
-  /// earlier schemas fail the session handshake.
+  /// RPC routing, spawn metadata, pings, state sample times, and authority
+  /// transfers extend version 1; the schema fingerprint includes RPC routing
+  /// metadata so earlier schemas fail the session handshake.
   static const int version = 1;
 
   /// The registrations that message bodies are validated against.
@@ -201,7 +204,12 @@ final class ProtocolCodec {
             'a': _peerCodec.encode(authority.value),
             if (parent != null) 'p': _checkEntity(parent),
           },
-        DespawnMessage(:final entity) => {'e': _checkEntity(entity)},
+        DespawnMessage(:final entity) ||
+        AuthorityAckMessage(:final entity) => {'e': _checkEntity(entity)},
+        AuthorityMessage(:final entity, :final authority) => {
+          'e': _checkEntity(entity),
+          'a': _peerCodec.encode(authority.value),
+        },
         RpcMessage(:final entity, :final rpc, :final payload, :final target) =>
           {
             'e': _checkEntity(entity),
@@ -225,7 +233,8 @@ final class ProtocolCodec {
           },
         StateMessage(:final entity, :final values, :final sampledAt) => {
           'e': _checkEntity(entity),
-          't': _checkCounter(sampledAt.inMicroseconds, 'sampledAt'),
+          if (sampledAt != null)
+            't': _checkCounter(sampledAt.inMicroseconds, 'sampledAt'),
           'f': _encodeFields(values),
         },
       };
@@ -322,6 +331,15 @@ final class ProtocolCodec {
       case MessageKind.despawn:
         final body = WireObject(value, const {'e'});
         return DespawnMessage(entity: _readEntity(body));
+      case MessageKind.authority:
+        final body = WireObject(value, const {'e', 'a'});
+        return AuthorityMessage(
+          entity: _readEntity(body),
+          authority: PeerId(body.read('a', _peerCodec)),
+        );
+      case MessageKind.authorityAck:
+        final body = WireObject(value, const {'e'});
+        return AuthorityAckMessage(entity: _readEntity(body));
       case MessageKind.rpc:
         final hasTarget =
             value is Map<String, Object?> && value.containsKey('t');
@@ -349,10 +367,16 @@ final class ProtocolCodec {
           target: PeerId(body.read('t', _peerCodec)),
         );
       case MessageKind.state:
-        final body = WireObject(value, const {'e', 't', 'f'});
+        final hasTime = value is Map<String, Object?> && value.containsKey('t');
+        final body = WireObject(
+          value,
+          hasTime ? const {'e', 't', 'f'} : const {'e', 'f'},
+        );
         return StateMessage(
           entity: _readEntity(body),
-          sampledAt: Duration(microseconds: body.read('t', _counterCodec)),
+          sampledAt: hasTime
+              ? Duration(microseconds: body.read('t', _counterCodec))
+              : null,
           values: _within('f', () => _decodeFields(body['f'])),
         );
     }

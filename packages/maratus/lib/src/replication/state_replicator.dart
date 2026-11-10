@@ -299,15 +299,18 @@ final class _StateReplicator {
 
   /// Adds a received value of [field] to [synchronizer]'s presentation, if
   /// it interpolates the field. The value arrived [at] this peer's time.
+  ///
+  /// A value without a sample time on the current authority's clock is
+  /// never blended, as its time is not comparable with the others.
   void _buffer(
     MultiplayerSynchronizer synchronizer,
     FieldId field,
     Uint8List bytes,
     Duration at,
-    Duration sampledAt,
+    Duration? sampledAt,
   ) {
     final samples = synchronizer._samples[field];
-    if (samples == null) return;
+    if (samples == null || sampledAt == null) return;
     final Object? value;
     try {
       value = _decode(field, bytes);
@@ -483,21 +486,33 @@ final class _StateReplicator {
 
   /// Sends the retained values as part of [remote]'s baseline. Returns
   /// `false` if its transport refused one, which removes [remote].
+  ///
+  /// Values that the entity's current authority sampled keep its latest
+  /// sample time; values that a previous authority sampled are sent
+  /// without one.
   bool sendBaseline(_Remote remote) {
     _prune();
     for (final MapEntry(key: entity, value: fields)
         in _values.entries.toList()) {
-      final values = {
-        for (final MapEntry(key: field, :value) in fields.entries)
-          field: value.bytes,
-      };
-      // Each capture samples every property of the entity, and a field it
-      // did not send was unchanged, so all retained values were current at
-      // the latest sample.
-      final sampledAt = fields.values
-          .map((value) => value.sampledAt)
-          .reduce((a, b) => a > b ? a : b);
-      for (final message in _messages(entity, values, sampledAt: sampledAt)) {
+      final settled = <FieldId, Uint8List>{};
+      final sampled = <FieldId, Uint8List>{};
+      Duration? sampledAt;
+      for (final MapEntry(key: field, :value) in fields.entries) {
+        final time = value.sampledAt;
+        if (time == null) {
+          settled[field] = value.bytes;
+          continue;
+        }
+        sampled[field] = value.bytes;
+        // Each capture samples every property of the entity, and a field it
+        // did not send was unchanged, so all values that the authority
+        // sampled were current at its latest sample.
+        if (sampledAt == null || time > sampledAt) sampledAt = time;
+      }
+      for (final message in [
+        ..._messages(entity, settled, sampledAt: null),
+        ..._messages(entity, sampled, sampledAt: sampledAt),
+      ]) {
         if (!session._send(remote, message, revision: session._revision)) {
           return false;
         }
@@ -603,7 +618,7 @@ final class _StateReplicator {
     NetworkEntity entity,
     Map<FieldId, Uint8List> fields,
     Duration at, {
-    required Duration sampledAt,
+    required Duration? sampledAt,
   }) {
     if (fields.isEmpty) return;
     final values = _values.putIfAbsent(entity, () => {});
@@ -613,12 +628,12 @@ final class _StateReplicator {
   }
 
   /// Splits [fields] into state messages within the wire limits, stamped
-  /// with the authority's [sampledAt]: one for all of them when possible,
-  /// otherwise one for each field.
+  /// with the authority's [sampledAt], if any: one for all of them when
+  /// possible, otherwise one for each field.
   List<StateMessage> _messages(
     NetworkEntity entity,
     Map<FieldId, Uint8List> fields, {
-    required Duration sampledAt,
+    required Duration? sampledAt,
   }) {
     if (fields.isEmpty) return const [];
     final lifetime = _lifetime;
@@ -735,6 +750,7 @@ final class _FieldValue {
   /// When this peer sent or received the value.
   final Duration time;
 
-  /// When the entity's authority sampled the value, on its own clock.
-  final Duration sampledAt;
+  /// When the entity's authority sampled the value, on its own clock, or
+  /// `null` if the current authority did not sample it.
+  final Duration? sampledAt;
 }
