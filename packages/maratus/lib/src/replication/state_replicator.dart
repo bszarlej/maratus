@@ -39,9 +39,15 @@ final class SyncProperty<T> {
 
   /// Writes a received value. Peers other than the authority call it.
   ///
+  /// A peer that becomes the entity's authority also calls it, with the
+  /// values it received before, ahead of its first sample. A peer that
+  /// stops being the authority calls it with the latest values that the
+  /// host accepted, which replace any local changes since then.
+  ///
   /// A thrown error produces [PropertySyncFailed]. The same encoded value
-  /// is not applied again until it changes or a replacement synchronizer
-  /// is attached, avoiding repeated failures on every update.
+  /// is not applied again until it changes, a replacement synchronizer is
+  /// attached, or this peer stops being the authority, avoiding repeated
+  /// failures on every update.
   final void Function(T value)? set;
 
   /// When the authority sends this property.
@@ -121,6 +127,13 @@ final class SyncSnapshot<T> {
 ///
 /// Properties with a [SyncProperty.interpolator] also keep their recent
 /// samples, so [interpolated] can present smoothed values between them.
+///
+/// When [MultiplayerSession.transferAuthority] moves the entity's
+/// authority, synchronizers switch roles as each peer applies the transfer.
+/// The previous authority stops sampling and applies the values it
+/// receives: first the latest ones the host accepted, then the new
+/// authority's. The new authority applies the values it received before,
+/// then samples its local state from the next capture.
 final class MultiplayerSynchronizer {
   MultiplayerSynchronizer._(
     this._replicator,
@@ -186,6 +199,10 @@ final class MultiplayerSynchronizer {
   /// without extrapolating; a teleport shows as a jump. The presentation
   /// time never moves backwards. See [InterpolationState].
   ///
+  /// Samples from different authorities are never blended, as their clocks
+  /// are not comparable: an authority transfer restarts the timeline, and
+  /// until the new authority's first sample arrives, the latest value holds.
+  ///
   /// Returns `null` on the entity's authority, which presents its own
   /// state, before any value of [field] was received, and once this
   /// synchronizer is disposed. The value is a copy that the caller may
@@ -200,6 +217,16 @@ final class MultiplayerSynchronizer {
     _disposed = true;
     _replicator._unbind(this);
   }
+
+  /// Forgets the samples of the previous authority, whose clock the next
+  /// authority's sample times are not comparable with.
+  void _restartPresentation() {
+    if (_timeline == null) return;
+    _timeline = _Timeline(interpolationDelay);
+    for (final field in _samples.keys) {
+      _samples[field] = _Samples();
+    }
+  }
 }
 
 final class _StateReplicator {
@@ -211,6 +238,11 @@ final class _StateReplicator {
   /// The latest authoritative values of each entity, by field: the last ones
   /// sent on the authority, and the last ones received elsewhere.
   final _values = <NetworkEntity, Map<FieldId, _FieldValue>>{};
+
+  /// The entities that this peer became the authority of, whose
+  /// synchronizers apply the values received before that ahead of their
+  /// first sample.
+  final _catchingUp = <NetworkEntity>{};
   var _lifetime = 0;
   var _capturing = false;
 
@@ -220,17 +252,73 @@ final class _StateReplicator {
   void clear() {
     _lifetime++;
     _values.clear();
+    _catchingUp.clear();
   }
 
   /// Forgets the values of a despawned entity.
-  void forget(EntityId entity) =>
-      _values.removeWhere((key, _) => key.id == entity);
+  void forget(EntityId entity) {
+    _values.removeWhere((key, _) => key.id == entity);
+    _catchingUp.removeWhere((key) => key.id == entity);
+  }
 
-  void _prune() => _values.removeWhere(
-    (entity, _) =>
+  void _prune() {
+    bool gone(NetworkEntity entity) =>
         entity.state == EntityState.removed ||
-        !identical(session.registry[entity.id], entity),
-  );
+        !identical(session.registry[entity.id], entity);
+    _values.removeWhere((entity, _) => gone(entity));
+    _catchingUp.removeWhere(gone);
+  }
+
+  /// Switches the roles of [entity]'s synchronizer after its authority
+  /// moved from [previous] on this peer.
+  void transferred(NetworkEntity entity, PeerId previous) {
+    final local = session._localPeer;
+    final values = _values[entity];
+    if (!session._isHost && previous == local) {
+      // The host may have rejected values that this client sent, and it
+      // follows the transfer with the values it accepted. Held values
+      // would be rejected too.
+      _values.remove(entity);
+      session._peers[PeerId.host]?.held.remove(entity.id);
+    } else if (values != null) {
+      // The values were sampled on the previous authority's clock.
+      values.updateAll(
+        (_, value) => _FieldValue(value.bytes, value.time, null),
+      );
+    }
+    if (entity.authority == local) {
+      _catchingUp.add(entity);
+    } else {
+      _catchingUp.remove(entity);
+    }
+    final synchronizer = _synchronizers[entity.id];
+    if (synchronizer == null || !identical(synchronizer.entity, entity)) {
+      return;
+    }
+    // A new authority samples at its next capture.
+    synchronizer._due = null;
+    // Values this peer sent replace the ones it applied before, so apply
+    // the replicated values again.
+    if (previous == local) synchronizer._applied.clear();
+    synchronizer._restartPresentation();
+  }
+
+  /// Sends [remote], the previous authority of [entity], the values that
+  /// the host accepted from it, without sample times, to replace any values
+  /// it sent after the transfer. Returns `false` if its transport refused
+  /// one, which removes [remote].
+  bool resync(_Remote remote, NetworkEntity entity) {
+    final fields = _values[entity];
+    if (fields == null) return true;
+    final values = {
+      for (final MapEntry(key: field, :value) in fields.entries)
+        field: value.bytes,
+    };
+    for (final message in _messages(entity, values, sampledAt: null)) {
+      if (!session._sendChange(remote, message)) return false;
+    }
+    return true;
+  }
 
   MultiplayerSynchronizer synchronize(
     EntityAttachment attachment,
@@ -363,6 +451,15 @@ final class _StateReplicator {
             !synchronizer._attachment._isReady() ||
             !_isCurrent(synchronizer, lifetime)) {
           continue;
+        }
+        final entity = synchronizer.entity;
+        if (_catchingUp.contains(entity)) {
+          // Continue from the values received before this peer became the
+          // authority, rather than from older local state.
+          final caughtUp = _applyValues(synchronizer, lifetime);
+          if (_lifetime != lifetime || session._peer == null) return;
+          if (!caughtUp) continue;
+          _catchingUp.remove(entity);
         }
         final due = synchronizer._due;
         if (due != null && now < due) continue;
@@ -527,44 +624,57 @@ final class _StateReplicator {
   }
 
   /// Passes the latest authoritative values to the setters of ready
-  /// synchronizers on peers other than the entity's authority.
+  /// synchronizers on peers other than the entity's authority, and on an
+  /// authority that has not applied the values it received before it
+  /// became the authority.
   void apply() {
     _prune();
     final lifetime = _lifetime;
     final local = session._localPeer;
     for (final synchronizer in _synchronizers.values.toList()) {
       if (_lifetime != lifetime) return;
+      final entity = synchronizer.entity;
       if (!_isCurrent(synchronizer, lifetime) ||
-          synchronizer.entity.authority == local) {
+          (entity.authority == local && !_catchingUp.contains(entity))) {
         continue;
       }
-      final values = _values[synchronizer.entity];
-      if (values == null) continue;
-      for (final property in synchronizer.properties) {
-        if (!_isCurrent(synchronizer, lifetime) ||
-            !synchronizer._attachment._isReady() ||
-            !_isCurrent(synchronizer, lifetime)) {
-          break;
-        }
-        final field = property.field.id;
-        final value = values[field];
-        if (value == null ||
-            _sameBytes(synchronizer._applied[field], value.bytes)) {
-          continue;
-        }
-        synchronizer._applied[field] = value.bytes;
-        if (!property._hasSetter) continue;
-        try {
-          property._set(_decode(field, value.bytes));
-        } on Object catch (error, stackTrace) {
-          if (_lifetime == lifetime) {
-            _fail(synchronizer.entity.id, field, error, stackTrace);
-          }
-        }
-        if (session._peer == null) return;
-        if (!_isLive(synchronizer)) break;
-      }
+      final completed = _applyValues(synchronizer, lifetime);
+      if (_lifetime != lifetime || session._peer == null) return;
+      if (completed && entity.authority == local) _catchingUp.remove(entity);
     }
+  }
+
+  /// Passes the retained values of [synchronizer]'s entity that it has not
+  /// applied yet to its setters. Returns whether every property was
+  /// handled while the synchronizer stayed live and ready.
+  bool _applyValues(MultiplayerSynchronizer synchronizer, int lifetime) {
+    final values = _values[synchronizer.entity];
+    if (values == null) return true;
+    for (final property in synchronizer.properties) {
+      if (!_isCurrent(synchronizer, lifetime) ||
+          !synchronizer._attachment._isReady() ||
+          !_isCurrent(synchronizer, lifetime)) {
+        return false;
+      }
+      final field = property.field.id;
+      final value = values[field];
+      if (value == null ||
+          _sameBytes(synchronizer._applied[field], value.bytes)) {
+        continue;
+      }
+      synchronizer._applied[field] = value.bytes;
+      if (!property._hasSetter) continue;
+      try {
+        property._set(_decode(field, value.bytes));
+      } on Object catch (error, stackTrace) {
+        if (_lifetime == lifetime) {
+          _fail(synchronizer.entity.id, field, error, stackTrace);
+        }
+      }
+      if (session._peer == null || _lifetime != lifetime) return false;
+      if (!_isLive(synchronizer)) return false;
+    }
+    return true;
   }
 
   SyncSnapshot<T>? _snapshot<T>(NetworkEntity entity, SyncField<T> field) {
@@ -605,9 +715,22 @@ final class _StateReplicator {
       );
     }
     if (synchronizer.isDisposed ||
-        synchronizer.entity.authority == session._localPeer ||
-        samples.isEmpty) {
+        synchronizer.entity.authority == session._localPeer) {
       return null;
+    }
+    if (samples.isEmpty) {
+      // After a transfer, the latest value holds until the new authority's
+      // first sample arrives.
+      final latest = _values[synchronizer.entity]?[field.id];
+      if (latest == null) return null;
+      try {
+        return InterpolatedValue._(
+          _decode(field.id, latest.bytes) as T,
+          InterpolationState.holding,
+        );
+      } on Object {
+        return null;
+      }
     }
     final time = synchronizer._timeline!.presentationAt(session._clock.now);
     if (time == null) return null;

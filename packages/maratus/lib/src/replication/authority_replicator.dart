@@ -44,8 +44,9 @@ final class _AuthorityReplicator {
     return true;
   }
 
-  /// Makes [authority] the authority of [entity] on the host, and
-  /// replicates the transfer to every joined client.
+  /// Makes [authority] the authority of [entity] on the host, replicates
+  /// the transfer to every joined client, and sends a previous client
+  /// authority the values that the host accepted from it.
   void _transfer(NetworkEntity entity, PeerId authority) {
     session._checkRevisionsLeft();
     final previous = entity.authority;
@@ -60,6 +61,8 @@ final class _AuthorityReplicator {
       if (peer == PeerId.host || !session._peers.containsKey(peer)) continue;
       (_awaited[entity] ??= {})[peer] = revision;
     }
+    final remote = session._peers[previous];
+    if (remote != null) session._states.resync(remote, entity);
   }
 
   /// Whether the host awaits [peer]'s acknowledgement of a transfer of
@@ -151,6 +154,7 @@ final class _AuthorityReplicator {
   void _change(NetworkEntity entity, PeerId authority) {
     final previous = entity.authority;
     changeAuthority(entity, authority);
+    session._states.transferred(entity, previous);
     session._emit(
       AuthorityChanged(
         entity: entity.id,
