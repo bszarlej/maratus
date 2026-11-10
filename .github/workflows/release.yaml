@@ -94,6 +94,38 @@ jobs:
     permissions:
       contents: write
     steps:
+      - uses: actions/checkout@v7
+        with:
+          persist-credentials: false
+
+      - name: Extract package changelog for the published version
+        env:
+          PACKAGE: ${{ needs.publish.outputs.package }}
+          VERSION: ${{ needs.publish.outputs.version }}
+        shell: python
+        run: |
+          import os
+          import re
+          from pathlib import Path
+
+          package = os.environ['PACKAGE']
+          version = os.environ['VERSION']
+          changelog = Path(f'packages/{package}/CHANGELOG.md').read_text(encoding='utf-8')
+          sections = re.split(r'^##[ \t]+([^\r\n]+)\r?\n', changelog, flags=re.MULTILINE)
+          notes = next(
+              (sections[index + 1].strip()
+               for index in range(1, len(sections), 2)
+               if sections[index].strip() == version),
+              None,
+          )
+          if not notes:
+              raise SystemExit(f'Missing or empty changelog entry for {package} {version}')
+          Path(os.environ['RUNNER_TEMP'], 'release-notes.md').write_text(
+              f'Published [{package} {version}]'
+              f'(https://pub.dev/packages/{package}/versions/{version}).\n\n{notes}\n',
+              encoding='utf-8',
+          )
+
       - name: Create release for the published package
         env:
           GH_TOKEN: ${{ github.token }}
@@ -113,6 +145,5 @@ jobs:
           gh release create "$RELEASE_TAG" \
             --verify-tag \
             --title "$PACKAGE v$VERSION" \
-            --notes "Published [$PACKAGE $VERSION](https://pub.dev/packages/$PACKAGE/versions/$VERSION)." \
-            --generate-notes \
+            --notes-file "$RUNNER_TEMP/release-notes.md" \
             "${flags[@]}"
