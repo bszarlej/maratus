@@ -18,8 +18,10 @@ abstract interface class MultiplayerPeer {
   /// there is none.
   ///
   /// The events of each connection are reported in order: first
-  /// [ConnectionOpened], then a [MessageReceived] for each message in the
-  /// order it was sent, and finally [ConnectionClosed]. A client's
+  /// [ConnectionOpened], then [MessageReceived] events according to each
+  /// message's delivery mode and channel, and finally [ConnectionClosed].
+  /// Ordering is guaranteed within a reliable channel; independent channels
+  /// and unreliable delivery do not guarantee global send order. A client's
   /// connection that cannot be established is reported only by
   /// [ConnectionClosed] with [CloseReason.connectFailed].
   PeerEvent? poll();
@@ -45,12 +47,13 @@ abstract interface class PeerConnection {
   /// [MultiplayerPeer.poll] yet.
   QueueDepth get incoming;
 
-  /// The messages sent on this connection that the remote peer has not
-  /// consumed yet.
+  /// The messages sent on this connection that remain outstanding.
   ///
-  /// The provided transports count a message until the remote peer polls
-  /// it and their acknowledgement arrives, so a remote peer that stops
-  /// polling fills this queue. A closed connection counts nothing.
+  /// Reliable messages count until the remote peer polls them and its
+  /// acknowledgement arrives, so a remote peer that stops polling fills
+  /// this queue. Transports supporting unreliable delivery document when
+  /// sent or dropped packets release their credit. A closed connection
+  /// counts nothing.
   QueueDepth get outgoing;
 
   /// Sends [message] to the remote peer.
@@ -63,7 +66,8 @@ abstract interface class PeerConnection {
   /// copied, so it can be reused once this method returns.
   ///
   /// Throws an [UnsupportedError] if the transport does not support [mode]
-  /// on [channel].
+  /// on [channel], or an [ArgumentError] if an unreliable message exceeds
+  /// [TransportCapabilities.maxUnreliableMessageBytes].
   bool send(
     Uint8List message, {
     DeliveryMode mode = DeliveryMode.reliable,
@@ -101,10 +105,21 @@ final class ConnectionOpened extends PeerEvent {
 /// A [message] arrived on [connection].
 final class MessageReceived extends PeerEvent {
   /// Creates an event reporting that [message] arrived on [connection].
-  const MessageReceived(super.connection, this.message);
+  const MessageReceived(
+    super.connection,
+    this.message, {
+    this.mode = DeliveryMode.reliable,
+    this.channel = 0,
+  });
 
   /// The received bytes.
   final Uint8List message;
+
+  /// The delivery guarantee used for this message.
+  final DeliveryMode mode;
+
+  /// The logical channel on which this message arrived.
+  final int channel;
 
   @override
   String toString() => 'MessageReceived($connection, ${message.length} bytes)';
@@ -141,7 +156,9 @@ enum CloseReason {
   /// This side closed the connection because a message did not fit within
   /// the [QueueLimits] of its incoming or outgoing queue.
   ///
-  /// A reliable connection cannot drop a message, so it closes instead.
+  /// A reliable message cannot be dropped, so the connection closes instead.
+  /// The provided transports discard a received unreliable message that does
+  /// not fit the incoming queue, without closing.
   overflow,
 }
 
@@ -170,7 +187,11 @@ final class TransportCapabilities {
     required this.canHost,
     this.deliveryModes = const {DeliveryMode.reliable},
     this.channelCount = 1,
-  }) : assert(channelCount > 0);
+    this.maxUnreliableMessageBytes,
+  }) : assert(channelCount > 0),
+       assert(
+         maxUnreliableMessageBytes == null || maxUnreliableMessageBytes > 0,
+       );
 
   /// Whether the transport can host sessions on the current platform.
   final bool canHost;
@@ -181,6 +202,10 @@ final class TransportCapabilities {
   /// The number of channels, numbered from 0. Ordering guarantees apply
   /// within each channel.
   final int channelCount;
+
+  /// The largest unreliable payload in bytes, or `null` for no separate
+  /// size cap beyond the connection's queue limits.
+  final int? maxUnreliableMessageBytes;
 
   /// Whether messages can be sent with [mode] on [channel].
   bool supports(DeliveryMode mode, {int channel = 0}) =>
