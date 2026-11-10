@@ -192,7 +192,7 @@ final class _Harness {
     run();
     client.send(HelloMessage(fingerprint: schema.schema.fingerprint));
     run();
-    client.send(const ReadyMessage());
+    client.ready();
     run();
     return client;
   }
@@ -261,6 +261,9 @@ final class _RawClient {
   PeerConnection? connection;
   PeerId? id;
   var generation = 0;
+
+  /// The revision of the baseline that the host welcomed this client with.
+  var baseline = 0;
   final received = <MessageEnvelope>[];
 
   void update() {
@@ -273,6 +276,7 @@ final class _RawClient {
           if (envelope.message case WelcomeMessage(:final peer)) {
             id = peer;
             generation = envelope.generation;
+            baseline = envelope.revision;
           }
           received.add(envelope);
         case ConnectionClosed():
@@ -299,6 +303,9 @@ final class _RawClient {
       sampledAt: Duration.zero,
     ),
   );
+
+  /// Reports ready, acknowledging the baseline.
+  void ready() => send(const ReadyMessage(), revision: baseline);
 }
 
 void main() {

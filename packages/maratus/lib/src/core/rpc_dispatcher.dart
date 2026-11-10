@@ -213,6 +213,13 @@ final class _RpcDispatcher {
     // remove the entity, or close the session.
     var accepted = true;
     for (final target in targets.where((peer) => peer != PeerId.host)) {
+      // A refused delivery removes its target, and the host replicates that
+      // departure, which may remove a later target whose queue is full too.
+      final remote = session._peers[target];
+      if (remote == null) {
+        accepted = false;
+        continue;
+      }
       final delivery = RpcDeliveryMessage(
         entity: entity.id,
         rpc: rpc.id,
@@ -221,7 +228,7 @@ final class _RpcDispatcher {
         target: target,
       );
       try {
-        if (!session._send(session._peers[target]!, delivery)) accepted = false;
+        if (!session._send(remote, delivery)) accepted = false;
       } on ArgumentError {
         accepted = _reject(
           entity.id,

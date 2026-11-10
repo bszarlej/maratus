@@ -164,8 +164,9 @@ final class SessionDiagnostics {
   /// over all peers.
   final int coalescedStates;
 
-  /// The peers this session exchanges messages with, in the order of
-  /// [MultiplayerSession.peers].
+  /// The peers this session exchanges messages with: on a host, its
+  /// clients, in the order of [MultiplayerSession.peers]; on a client, the
+  /// host.
   final List<PeerDiagnostics> peers;
 }
 
