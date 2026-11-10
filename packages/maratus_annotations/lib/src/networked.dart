@@ -92,6 +92,8 @@ final class RpcMethod {
     this.caller = RpcCaller.anyPeer,
     this.target = RpcTarget.host,
     this.local = RpcLocal.exclude,
+    this.deliveryMode = DeliveryMode.reliable,
+    this.channel = 0,
     this.version,
   });
 
@@ -107,6 +109,14 @@ final class RpcMethod {
 
   /// Whether the caller executes the RPC when [target] selects it.
   final RpcLocal local;
+
+  /// How this call is delivered, including when the host forwards it.
+  final DeliveryMode deliveryMode;
+
+  /// The transport channel for this RPC, numbered from zero.
+  ///
+  /// The transport must support [deliveryMode] on this channel.
+  final int channel;
 
   /// The version of the generated codec for a payload of zero or several
   /// parameters, or `null` for version 1.
@@ -134,6 +144,8 @@ final class SyncedField {
   const SyncedField(
     this.id, {
     this.mode = SyncMode.onChange,
+    this.deliveryMode = DeliveryMode.reliable,
+    this.channel = 0,
     this.interpolator,
   });
 
@@ -143,6 +155,17 @@ final class SyncedField {
 
   /// When the entity's authority sends the value.
   final SyncMode mode;
+
+  /// How incremental updates are delivered.
+  ///
+  /// Unreliable delivery requires [SyncMode.always] so later samples can
+  /// repair packet loss. Initial state and late-join snapshots are reliable.
+  final DeliveryMode deliveryMode;
+
+  /// The transport channel for incremental updates, numbered from zero.
+  ///
+  /// The transport must support [deliveryMode] on this channel.
+  final int channel;
 
   /// Blends received values for [MultiplayerSynchronizer.interpolated], or
   /// `null` if the value is not interpolated.
