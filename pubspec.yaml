@@ -18,6 +18,10 @@ dev_dependencies:
 melos:
   repository: https://github.com/bszarlej/maratus
 
+  command:
+    version:
+      includeScopes: false
+
   scripts:
     check-format:
       description: Fail if any Dart file in the workspace is not formatted.
