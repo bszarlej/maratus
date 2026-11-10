@@ -490,6 +490,414 @@ void main() {
     });
   });
 
+  group('configured delivery', () {
+    InMemoryNetwork networkWithModes() => InMemoryNetwork(
+      clock: clock,
+      deliveryModes: DeliveryMode.values.toSet(),
+      channelCount: 3,
+    );
+
+    test('reports configured capabilities and received metadata', () {
+      final modes = DeliveryMode.values.toSet();
+      final network = InMemoryNetwork(
+        clock: clock,
+        deliveryModes: modes,
+        channelCount: 3,
+      );
+      final host = network.host();
+      final pair = _connect(clock, network, host);
+      modes.clear();
+
+      expect(host.capabilities.deliveryModes, DeliveryMode.values.toSet());
+      expect(pair.client.capabilities, same(host.capabilities));
+      expect(host.capabilities.channelCount, 3);
+      expect(
+        () => host.capabilities.deliveryModes.clear(),
+        throwsUnsupportedError,
+      );
+      for (final mode in DeliveryMode.values) {
+        pair.atClient.send(_bytes([mode.index]), mode: mode, channel: 2);
+      }
+      clock.advance(Duration.zero);
+
+      for (final mode in DeliveryMode.values) {
+        final event = host.poll()! as MessageReceived;
+        expect(event.message, [mode.index]);
+        expect(event.mode, mode);
+        expect(event.channel, 2);
+      }
+      expect(host.poll(), isNull);
+      expect(
+        () => pair.atClient.send(_bytes([1]), channel: 3),
+        throwsUnsupportedError,
+      );
+    });
+
+    test('validates capabilities and fault controls', () {
+      expect(
+        () => InMemoryNetwork(clock: clock, deliveryModes: {}),
+        throwsArgumentError,
+      );
+      expect(
+        () => InMemoryNetwork(clock: clock, channelCount: 0),
+        throwsArgumentError,
+      );
+      expect(
+        () => InMemoryNetwork(clock: clock, maxUnreliableMessageBytes: 0),
+        throwsArgumentError,
+      );
+      expect(
+        () => InMemoryNetwork(clock: clock, maxUnreliableMessageBytes: -1),
+        throwsArgumentError,
+      );
+      final network = networkWithModes();
+      expect(() => network.dropNextUnreliable(count: 0), throwsArgumentError);
+      expect(
+        () => network.dropNextUnreliable(channel: -1),
+        throwsArgumentError,
+      );
+      expect(() => network.dropNextUnreliable(channel: 3), throwsArgumentError);
+      expect(() => network.delayNextUnreliable(-_ms), throwsArgumentError);
+      expect(
+        () => network.delayNextUnreliable(_ms, count: -1),
+        throwsArgumentError,
+      );
+    });
+
+    test('reliable channels advance and acknowledge independently', () {
+      final network = networkWithModes();
+      final host = network.host();
+      final pair = _connect(clock, network, host, latency: _ms * 30);
+      pair.atClient.send(_bytes([1, 1, 1]), channel: 1);
+      pair.client.link.latency = _ms * 5;
+      pair.atClient.send(_bytes([2, 2]), channel: 1);
+      pair.atClient.send(_bytes([3]), channel: 2);
+
+      clock.advance(_ms * 5);
+      expect(_drain(host), [
+        _isMessage(pair.atHost, [3]),
+      ]);
+      clock.advance(_ms * 5);
+      expect(pair.atClient.outgoing, (messages: 2, bytes: 5));
+      clock.advance(_ms * 20);
+      expect(_drain(host), [
+        _isMessage(pair.atHost, [1, 1, 1]),
+        _isMessage(pair.atHost, [2, 2]),
+      ]);
+      clock.advance(_ms * 5);
+      expect(pair.atClient.outgoing, _empty);
+    });
+
+    test(
+      'enforces the unreliable size limit without consuming faults or credit',
+      () {
+        final network = InMemoryNetwork(
+          clock: clock,
+          deliveryModes: DeliveryMode.values.toSet(),
+          maxUnreliableMessageBytes: 2,
+        );
+        final host = network.host();
+        final pair = _connect(clock, network, host);
+        expect(host.capabilities.maxUnreliableMessageBytes, 2);
+        expect(pair.client.capabilities.maxUnreliableMessageBytes, 2);
+
+        for (final mode in [
+          DeliveryMode.unreliable,
+          DeliveryMode.unreliableOrdered,
+        ]) {
+          network.dropNextUnreliable();
+          expect(
+            () => pair.atClient.send(_bytes([1, 2, 3]), mode: mode),
+            throwsArgumentError,
+          );
+          expect(pair.atClient.isOpen, isTrue);
+          expect(pair.atClient.outgoing, _empty);
+          expect(pair.atClient.send(_bytes([1, 2]), mode: mode), isTrue);
+          clock.advance(Duration.zero);
+          expect(host.poll(), isNull);
+          expect(pair.atClient.outgoing, _empty);
+          expect(pair.atClient.send(_bytes([3, 4]), mode: mode), isTrue);
+          clock.advance(Duration.zero);
+          expect(_drain(host), [
+            _isMessage(pair.atHost, [3, 4]),
+          ]);
+        }
+
+        expect(pair.atClient.send(_bytes([1, 2, 3])), isTrue);
+        clock.advance(Duration.zero);
+        expect(_drain(host), [
+          _isMessage(pair.atHost, [1, 2, 3]),
+        ]);
+        pair.atClient.close();
+        expect(
+          () => pair.atClient.send(
+            _bytes([1, 2, 3]),
+            mode: DeliveryMode.unreliable,
+          ),
+          throwsArgumentError,
+        );
+      },
+    );
+
+    test('leaves unreliable message size unlimited by default', () {
+      final network = networkWithModes();
+      final host = network.host();
+      final pair = _connect(clock, network, host);
+      expect(host.capabilities.maxUnreliableMessageBytes, isNull);
+      final message = Uint8List(4096);
+      expect(
+        pair.atClient.send(message, mode: DeliveryMode.unreliable),
+        isTrue,
+      );
+      clock.advance(Duration.zero);
+      expect(_drain(host), [_isMessage(pair.atHost, message)]);
+    });
+
+    test('loss affects only matching unreliable sends and releases credit', () {
+      final network = networkWithModes();
+      final host = network.host();
+      final pair = _connect(clock, network, host, latency: _ms * 5);
+      network.dropNextUnreliable(count: 2, channel: 1, fromHost: false);
+      pair.atClient.send(_bytes([0]), channel: 1);
+      pair.atHost.send(_bytes([1]), mode: DeliveryMode.unreliable, channel: 1);
+      pair.atClient.send(
+        _bytes([2]),
+        mode: DeliveryMode.unreliable,
+        channel: 2,
+      );
+      pair.atClient.send(
+        _bytes([3]),
+        mode: DeliveryMode.unreliable,
+        channel: 1,
+      );
+      pair.atClient.send(
+        _bytes([4]),
+        mode: DeliveryMode.unreliableOrdered,
+        channel: 1,
+      );
+      pair.atClient.send(
+        _bytes([5]),
+        mode: DeliveryMode.unreliable,
+        channel: 1,
+      );
+      expect(pair.atClient.outgoing, (messages: 5, bytes: 5));
+
+      clock.advance(_ms * 5);
+      expect(pair.atClient.outgoing, (messages: 1, bytes: 1));
+      expect(pair.atHost.outgoing, _empty);
+      expect(_drain(host), [
+        _isMessage(pair.atHost, [0]),
+        _isMessage(pair.atHost, [2]),
+        _isMessage(pair.atHost, [5]),
+      ]);
+      expect(_drain(pair.client), [
+        _isMessage(pair.atClient, [1]),
+      ]);
+      clock.advance(_ms * 5);
+      expect(pair.atClient.outgoing, _empty);
+      expect(pair.atClient.isOpen, isTrue);
+    });
+
+    test('reorders unreliable sends without delaying reliable traffic', () {
+      final network = networkWithModes();
+      final host = network.host();
+      final pair = _connect(clock, network, host);
+      network.delayNextUnreliable(_ms * 20, channel: 1, fromHost: false);
+      pair.atClient.send(
+        _bytes([1]),
+        mode: DeliveryMode.unreliable,
+        channel: 1,
+      );
+      pair.atClient.send(_bytes([2]), channel: 1);
+      pair.atClient.send(
+        _bytes([3]),
+        mode: DeliveryMode.unreliable,
+        channel: 1,
+      );
+      clock.advance(Duration.zero);
+
+      expect(_drain(host), [
+        _isMessage(pair.atHost, [2]),
+        _isMessage(pair.atHost, [3]),
+      ]);
+      clock.advance(_ms * 20);
+      expect(_drain(host), [
+        _isMessage(pair.atHost, [1]),
+      ]);
+      expect(pair.atClient.outgoing, _empty);
+    });
+
+    test('ordered unreliable rejects stale messages only on their channel', () {
+      final network = networkWithModes();
+      final host = network.host();
+      final pair = _connect(clock, network, host);
+      network.delayNextUnreliable(_ms * 20, count: 2, fromHost: false);
+      pair.atClient.send(
+        _bytes([1]),
+        mode: DeliveryMode.unreliableOrdered,
+        channel: 1,
+      );
+      pair.atClient.send(
+        _bytes([2]),
+        mode: DeliveryMode.unreliableOrdered,
+        channel: 2,
+      );
+      pair.atClient.send(
+        _bytes([3]),
+        mode: DeliveryMode.unreliableOrdered,
+        channel: 1,
+      );
+      clock.advance(Duration.zero);
+      expect(_drain(host), [
+        _isMessage(pair.atHost, [3]),
+      ]);
+      clock.advance(_ms * 20);
+      expect(_drain(host), [
+        _isMessage(pair.atHost, [2]),
+      ]);
+      expect(pair.atClient.outgoing, _empty);
+      expect(pair.atHost.incoming, _empty);
+    });
+
+    test('clearing faults preserves assignments already in transit', () {
+      final network = networkWithModes();
+      final host = network.host();
+      final pair = _connect(clock, network, host);
+      network.delayNextUnreliable(_ms * 10);
+      network.dropNextUnreliable();
+      pair.atClient.send(_bytes([1]), mode: DeliveryMode.unreliable);
+      network.clearUnreliableFaults();
+      pair.atClient.send(_bytes([2]), mode: DeliveryMode.unreliable);
+
+      clock.advance(Duration.zero);
+      expect(_drain(host), [
+        _isMessage(pair.atHost, [2]),
+      ]);
+      clock.advance(_ms * 10);
+      expect(_drain(host), [
+        _isMessage(pair.atHost, [1]),
+      ]);
+    });
+
+    test('unreliable in-flight messages still obey outgoing limits', () {
+      final network = networkWithModes();
+      final host = network.host();
+      final pair = _connect(
+        clock,
+        network,
+        host,
+        latency: _ms * 10,
+        outgoingLimits: const QueueLimits(maxMessages: 1),
+      );
+      network.dropNextUnreliable();
+      expect(
+        pair.atClient.send(_bytes([1]), mode: DeliveryMode.unreliable),
+        isTrue,
+      );
+      expect(
+        pair.atClient.send(_bytes([2]), mode: DeliveryMode.unreliable),
+        isFalse,
+      );
+      expect(pair.atClient.closeReason, CloseReason.overflow);
+      expect(pair.atClient.outgoing, _empty);
+      clock.advance(_ms * 10);
+      expect(_drain(host), [_isClosed(pair.atHost, CloseReason.remote)]);
+      expect(clock.pendingTimerCount, 0);
+    });
+
+    for (final mode in [
+      DeliveryMode.unreliable,
+      DeliveryMode.unreliableOrdered,
+    ]) {
+      test('${mode.name} messages that overflow the incoming queue are '
+          'discarded', () {
+        final network = networkWithModes();
+        final host = network.host(
+          incomingLimits: const QueueLimits(maxMessages: 1),
+        );
+        final pair = _connect(clock, network, host);
+        pair.atClient.send(_bytes([1]), mode: mode);
+        clock.advance(Duration.zero);
+        expect(pair.atClient.outgoing, _empty);
+        expect(pair.atHost.incoming, (messages: 1, bytes: 1));
+        pair.atClient.send(_bytes([2]), mode: mode);
+        clock.advance(Duration.zero);
+
+        expect(pair.atHost.isOpen, isTrue);
+        expect(pair.atHost.incoming, (messages: 1, bytes: 1));
+        expect(pair.atClient.outgoing, _empty);
+        expect(_drain(host), [
+          _isMessage(pair.atHost, [1]),
+        ]);
+        pair.atClient.send(_bytes([3]), mode: mode);
+        clock.advance(Duration.zero);
+        expect(_drain(host), [
+          _isMessage(pair.atHost, [3]),
+        ]);
+
+        pair.atClient
+          ..send(_bytes([4]))
+          ..send(_bytes([5]));
+        clock.advance(Duration.zero);
+
+        expect(pair.atHost.closeReason, CloseReason.overflow);
+        expect(pair.atHost.incoming, _empty);
+      });
+    }
+
+    test('delayed messages precede a graceful close across channels', () {
+      final network = networkWithModes();
+      final host = network.host();
+      final pair = _connect(clock, network, host);
+      network.delayNextUnreliable(_ms * 20);
+      pair.atClient.send(
+        _bytes([1]),
+        mode: DeliveryMode.unreliable,
+        channel: 1,
+      );
+      pair.atClient.send(_bytes([2]), channel: 2);
+      pair.atClient.close();
+      clock.advance(Duration.zero);
+      expect(_drain(host), [
+        _isMessage(pair.atHost, [2]),
+      ]);
+      clock.advance(_ms * 20);
+      expect(_drain(host), [
+        _isMessage(pair.atHost, [1]),
+        _isClosed(pair.atHost, CloseReason.remote),
+      ]);
+      expect(network.links, isEmpty);
+      expect(clock.pendingTimerCount, 0);
+    });
+
+    test(
+      'disconnect clears delayed packets and a new link resets ordering',
+      () {
+        final network = networkWithModes();
+        final host = network.host();
+        final first = _connect(clock, network, host);
+        first.atClient.send(_bytes([1]), mode: DeliveryMode.unreliableOrdered);
+        clock.advance(Duration.zero);
+        _drain(host);
+        network.delayNextUnreliable(_ms * 100);
+        first.atClient.send(_bytes([2]), mode: DeliveryMode.unreliableOrdered);
+        first.client.link.disconnect();
+        expect(first.atClient.outgoing, _empty);
+        expect(network.links, isEmpty);
+        expect(clock.pendingTimerCount, 0);
+        _drain(host);
+        final second = _connect(clock, network, host);
+        second.atClient.send(_bytes([3]), mode: DeliveryMode.unreliableOrdered);
+        clock.advance(Duration.zero);
+        expect(_drain(host), [
+          _isMessage(second.atHost, [3]),
+        ]);
+        clock.advance(_ms * 100);
+        expect(host.poll(), isNull);
+      },
+    );
+  });
+
   group('closing', () {
     test('delivers what was sent before a close, then the close', () {
       final network = InMemoryNetwork(clock: clock);

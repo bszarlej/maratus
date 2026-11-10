@@ -15,20 +15,143 @@ import 'multiplayer_peer.dart';
 /// until the clock is advanced, so the same steps always produce the same
 /// events.
 ///
-/// Delivery is reliable and ordered. Loss and reordering are not simulated.
-/// As over WebSockets, a sent message counts in its connection's
-/// [PeerConnection.outgoing] queue until the receiver polls it and an
-/// acknowledgement crosses the link back, so a receiver that stops polling
-/// fills its sender's queue.
+/// By default, delivery is reliable on one channel. Additional delivery modes
+/// and channels can be enabled for simulations. [dropNextUnreliable] and
+/// [delayNextUnreliable] deterministically simulate loss and reordering.
+/// Reliable messages stay in [PeerConnection.outgoing] until the receiver
+/// polls them and their acknowledgement crosses the link back. Unreliable
+/// messages release their outgoing credit when they arrive or are dropped.
+/// Received messages of every mode count against the incoming queue limit:
+/// an unreliable message that does not fit is discarded, and a reliable one
+/// closes the connection with [CloseReason.overflow].
 final class InMemoryNetwork {
   /// Creates a network timed by [clock], whose links have [latency] unless
   /// [connect] is given another.
-  InMemoryNetwork({required this.clock, this.latency = Duration.zero}) {
+  ///
+  /// [maxUnreliableMessageBytes] optionally limits the size accepted by
+  /// unreliable sends, as a datagram transport does. Oversized sends throw
+  /// [ArgumentError] without closing the connection or consuming queue space.
+  InMemoryNetwork({
+    required this.clock,
+    this.latency = Duration.zero,
+    Set<DeliveryMode> deliveryModes = const {DeliveryMode.reliable},
+    int channelCount = 1,
+    int? maxUnreliableMessageBytes,
+  }) {
     _checkLatency(latency);
+    if (!deliveryModes.contains(DeliveryMode.reliable)) {
+      throw ArgumentError.value(
+        deliveryModes,
+        'deliveryModes',
+        'must include reliable delivery',
+      );
+    }
+    if (channelCount < 1) {
+      throw ArgumentError.value(
+        channelCount,
+        'channelCount',
+        'must be positive',
+      );
+    }
+    if (maxUnreliableMessageBytes != null && maxUnreliableMessageBytes < 1) {
+      throw ArgumentError.value(
+        maxUnreliableMessageBytes,
+        'maxUnreliableMessageBytes',
+        'must be positive',
+      );
+    }
+    _capabilities =
+        deliveryModes.length == 1 &&
+            channelCount == 1 &&
+            maxUnreliableMessageBytes == null
+        ? capabilities
+        : TransportCapabilities(
+            canHost: true,
+            deliveryModes: Set.unmodifiable(deliveryModes),
+            channelCount: channelCount,
+            maxUnreliableMessageBytes: maxUnreliableMessageBytes,
+          );
   }
 
-  /// The capabilities of in-memory peers.
+  /// The default capabilities of in-memory peers.
   static const capabilities = TransportCapabilities(canHost: true);
+
+  late final TransportCapabilities _capabilities;
+  final _unreliableFaults = <_UnreliableFault>[];
+
+  /// Drops the next [count] matching unreliable messages accepted for sending.
+  ///
+  /// Both unreliable modes are eligible. [channel] restricts matching to one
+  /// channel, and [fromHost] restricts it to sends from the host or its clients.
+  /// Reliable messages and connection events are never affected. Faults are
+  /// matched in the order they were added, with one fault applied per message.
+  /// Dropped messages release outgoing credit after the link's latency.
+  void dropNextUnreliable({int count = 1, int? channel, bool? fromHost}) {
+    _addFault(
+      _UnreliableFault(
+        count: count,
+        channel: channel,
+        fromHost: fromHost,
+        drop: true,
+      ),
+    );
+  }
+
+  /// Adds [delay] to the next [count] matching unreliable messages' latency.
+  ///
+  /// Send a delayed message followed by another to simulate reordering.
+  /// Filtering and matching follow [dropNextUnreliable]. Reliable messages
+  /// and other channels proceed independently of the delayed messages.
+  void delayNextUnreliable(
+    Duration delay, {
+    int count = 1,
+    int? channel,
+    bool? fromHost,
+  }) {
+    _checkLatency(delay);
+    _addFault(
+      _UnreliableFault(
+        count: count,
+        channel: channel,
+        fromHost: fromHost,
+        delay: delay,
+      ),
+    );
+  }
+
+  /// Clears faults that have not yet been assigned to an accepted message.
+  /// Messages already in transit keep their assigned delay or loss.
+  void clearUnreliableFaults() => _unreliableFaults.clear();
+
+  void _addFault(_UnreliableFault fault) {
+    if (fault.count < 1) {
+      throw ArgumentError.value(fault.count, 'count', 'must be positive');
+    }
+    final channel = fault.channel;
+    if (channel != null &&
+        (channel < 0 || channel >= _capabilities.channelCount)) {
+      throw ArgumentError.value(
+        channel,
+        'channel',
+        'must be a supported channel',
+      );
+    }
+    _unreliableFaults.add(fault);
+  }
+
+  _UnreliableFault? _takeFault(_Message message) {
+    if (message.mode == DeliveryMode.reliable) return null;
+    for (var index = 0; index < _unreliableFaults.length; index++) {
+      final fault = _unreliableFaults[index];
+      if ((fault.channel == null || fault.channel == message.channel) &&
+          (fault.fromHost == null ||
+              fault.fromHost == message.sender._peer.isHost)) {
+        if (--fault.count == 0) _unreliableFaults.removeAt(index);
+        return fault;
+      }
+    }
+    return null;
+  }
 
   /// The clock that times deliveries.
   final MonotonicClock clock;
@@ -78,7 +201,7 @@ final class InMemoryNetwork {
   }) {
     final linkLatency = latency ?? this.latency;
     _checkLatency(linkLatency);
-    final client = InMemoryClient._(incomingLimits, outgoingLimits);
+    final client = InMemoryClient._(this, incomingLimits, outgoingLimits);
     _links.add(InMemoryLink._(this, _nextLinkId++, linkLatency, client));
     return client;
   }
@@ -92,14 +215,15 @@ void _checkLatency(Duration latency) {
 
 /// A peer on an [InMemoryNetwork].
 sealed class InMemoryPeer implements MultiplayerPeer {
-  InMemoryPeer._(this.incomingLimits, this.outgoingLimits);
+  InMemoryPeer._(this._network, this.incomingLimits, this.outgoingLimits);
+
+  final InMemoryNetwork _network;
 
   /// The limits on each connection's received messages that have not been
   /// polled.
   final QueueLimits incomingLimits;
 
-  /// The limits on each connection's sent messages that the receiver has not
-  /// polled and acknowledged.
+  /// The limits on each connection's outstanding sent messages.
   final QueueLimits outgoingLimits;
 
   final _events = Queue<PeerEvent>();
@@ -109,7 +233,7 @@ sealed class InMemoryPeer implements MultiplayerPeer {
   bool get isClosed => _closed;
 
   @override
-  TransportCapabilities get capabilities => InMemoryNetwork.capabilities;
+  TransportCapabilities get capabilities => _network._capabilities;
 
   @override
   PeerEvent? poll() {
@@ -133,7 +257,7 @@ sealed class InMemoryPeer implements MultiplayerPeer {
   }
 
   void _release(MessageReceived event) =>
-      (event.connection as InMemoryConnection)._taken(event.message.length);
+      (event.connection as InMemoryConnection)._taken(event);
 
   /// Called when [connection] closes.
   void _removed(InMemoryConnection connection) {}
@@ -141,10 +265,9 @@ sealed class InMemoryPeer implements MultiplayerPeer {
 
 /// The host of an [InMemoryNetwork].
 final class InMemoryHost extends InMemoryPeer {
-  InMemoryHost._(this._network, super.incomingLimits, super.outgoingLimits)
+  InMemoryHost._(super._network, super.incomingLimits, super.outgoingLimits)
     : super._();
 
-  final InMemoryNetwork _network;
   final _connections = <InMemoryConnection>{};
 
   @override
@@ -173,7 +296,8 @@ final class InMemoryHost extends InMemoryPeer {
 
 /// A client on an [InMemoryNetwork].
 final class InMemoryClient extends InMemoryPeer {
-  InMemoryClient._(super.incomingLimits, super.outgoingLimits) : super._();
+  InMemoryClient._(super._network, super.incomingLimits, super.outgoingLimits)
+    : super._();
 
   late final InMemoryConnection _connection;
 
@@ -213,9 +337,11 @@ final class InMemoryConnection implements PeerConnection {
   var _incomingMessages = 0;
   var _incomingBytes = 0;
 
-  /// The sizes of the sent messages that the receiver has not acknowledged,
-  /// oldest first.
-  final _unacknowledged = Queue<int>();
+  /// Outstanding message IDs and their sizes; channels can finish independently.
+  final _unacknowledged = <int, int>{};
+  final _receivedIds = Map<MessageReceived, int>.identity();
+  final _lastOrderedSequence = <int, int>{};
+  var _nextMessageId = 0;
   var _outgoingBytes = 0;
 
   @override
@@ -238,10 +364,20 @@ final class InMemoryConnection implements PeerConnection {
     DeliveryMode mode = DeliveryMode.reliable,
     int channel = 0,
   }) {
-    if (!InMemoryNetwork.capabilities.supports(mode, channel: channel)) {
+    if (!_peer.capabilities.supports(mode, channel: channel)) {
       throw UnsupportedError(
         'In-memory connections do not support ${mode.name} delivery on '
         'channel $channel.',
+      );
+    }
+    final maximum = _peer.capabilities.maxUnreliableMessageBytes;
+    if (mode != DeliveryMode.reliable &&
+        maximum != null &&
+        message.length > maximum) {
+      throw ArgumentError.value(
+        message.length,
+        'message.length',
+        'unreliable payloads must not exceed $maximum bytes',
       );
     }
     if (!isOpen) return false;
@@ -249,9 +385,12 @@ final class InMemoryConnection implements PeerConnection {
       _closeLocally(CloseReason.overflow);
       return false;
     }
-    _unacknowledged.add(message.length);
+    final id = _nextMessageId++;
+    _unacknowledged[id] = message.length;
     _outgoingBytes += message.length;
-    _outbox.send(_Message(Uint8List.fromList(message)));
+    _outbox.send(
+      _Message(Uint8List.fromList(message), this, id, mode, channel),
+    );
     return true;
   }
 
@@ -264,31 +403,48 @@ final class InMemoryConnection implements PeerConnection {
     _peer._report(ConnectionOpened(this));
   }
 
-  void _receive(Uint8List message) {
+  void _receive(_Message packet) {
     if (!isOpen) return;
+    if (packet.mode == DeliveryMode.unreliableOrdered) {
+      final previous = _lastOrderedSequence[packet.channel];
+      if (previous != null && packet.id <= previous) return;
+      _lastOrderedSequence[packet.channel] = packet.id;
+    }
+    final message = packet.bytes;
     if (!_peer.incomingLimits.accepts(incoming, message.length)) {
-      _closeLocally(CloseReason.overflow);
+      // Only a reliable message has to arrive, so only it closes.
+      if (packet.mode == DeliveryMode.reliable) {
+        _closeLocally(CloseReason.overflow);
+      }
       return;
     }
     _incomingMessages++;
     _incomingBytes += message.length;
-    _peer._report(MessageReceived(this, message));
+    final event = MessageReceived(
+      this,
+      message,
+      mode: packet.mode,
+      channel: packet.channel,
+    );
+    if (packet.mode == DeliveryMode.reliable) _receivedIds[event] = packet.id;
+    _peer._report(event);
   }
 
-  /// Called when a received message of [size] bytes is polled, or
-  /// discarded.
-  void _taken(int size) {
+  /// Called when a received message is polled or discarded.
+  void _taken(MessageReceived event) {
     _incomingMessages--;
-    _incomingBytes -= size;
+    _incomingBytes -= event.message.length;
+    final id = _receivedIds.remove(event);
     // Tell the sender it no longer needs to count a polled message. A
     // closed end has nobody to tell.
-    if (isOpen) _outbox.send(_Signal.acknowledge);
+    if (isOpen && id != null) {
+      _outbox.send(_Acknowledgement(id, event.channel));
+    }
   }
 
-  /// Called when the receiver acknowledges the oldest sent message.
-  void _acknowledged() {
-    if (_unacknowledged.isEmpty) return;
-    _outgoingBytes -= _unacknowledged.removeFirst();
+  /// Releases one message's credit, including when channels arrive out of order.
+  void _acknowledged(int id) {
+    _outgoingBytes -= _unacknowledged.remove(id) ?? 0;
   }
 
   /// Stops counting sent messages, which a closed end is never told about.
@@ -376,8 +532,8 @@ final class InMemoryLink {
   /// direction.
   ///
   /// A change applies to what is sent afterwards, which still arrives after
-  /// everything sent before it, as on a real connection whose latency
-  /// changes.
+  /// earlier reliable messages on the same channel. Independent channels
+  /// and unreliable messages can overtake earlier messages.
   Duration get latency => _latency;
 
   set latency(Duration value) {
@@ -406,8 +562,13 @@ final class InMemoryLink {
   void _arrive(_Packet packet, {required bool atHost}) {
     final end = atHost ? _host : _client;
     switch (packet) {
-      case _Message(:final bytes):
-        end?._receive(bytes);
+      case _Message():
+        if (packet.mode != DeliveryMode.reliable) {
+          packet.sender._acknowledged(packet.id);
+        }
+        end?._receive(packet);
+      case _Acknowledgement(:final id):
+        end?._acknowledged(id);
       case _Signal.close:
         end?._closeRemotely(CloseReason.remote);
       case _Signal.connect:
@@ -417,8 +578,6 @@ final class InMemoryLink {
         _client._open();
       case _Signal.refuse:
         _client._closeRemotely(CloseReason.connectFailed);
-      case _Signal.acknowledge:
-        end?._acknowledged();
     }
   }
 
@@ -464,9 +623,20 @@ final class InMemoryLink {
 sealed class _Packet {}
 
 final class _Message implements _Packet {
-  _Message(this.bytes);
+  _Message(this.bytes, this.sender, this.id, this.mode, this.channel);
 
   final Uint8List bytes;
+  final InMemoryConnection sender;
+  final int id;
+  final DeliveryMode mode;
+  final int channel;
+}
+
+final class _Acknowledgement implements _Packet {
+  _Acknowledgement(this.id, this.channel);
+
+  final int id;
+  final int channel;
 }
 
 enum _Signal implements _Packet {
@@ -481,46 +651,106 @@ enum _Signal implements _Packet {
 
   /// Tells the other end that this end closed.
   close,
-
-  /// Tells the other end that this end polled the oldest message it sent.
-  acknowledge,
 }
 
-/// One direction of a link, which delivers packets in the order they were
-/// sent, once the link's latency has elapsed.
+final class _UnreliableFault {
+  _UnreliableFault({
+    required this.count,
+    this.channel,
+    this.fromHost,
+    this.drop = false,
+    this.delay = Duration.zero,
+  });
+
+  int count;
+  final int? channel;
+  final bool? fromHost;
+  final bool drop;
+  final Duration delay;
+}
+
+final class _Delivery {
+  _Delivery(this.due, this.sequence, this.packet, this.drop);
+
+  final Duration due;
+  final int sequence;
+  final _Packet packet;
+  final bool drop;
+
+  static int compare(_Delivery first, _Delivery second) {
+    final byDue = first.due.compareTo(second.due);
+    return byDue != 0 ? byDue : first.sequence.compareTo(second.sequence);
+  }
+}
+
+/// One direction of a link, preserving reliable order within each channel.
 final class _Pipe {
   _Pipe(this._link, this._arrive);
 
   final InMemoryLink _link;
   final void Function(_Packet packet) _arrive;
-  final _queue = Queue<({Duration due, _Packet packet})>();
+  final _queue = SplayTreeSet<_Delivery>(_Delivery.compare);
+  final _reliableDue = <int, Duration>{};
+  var _controlDue = Duration.zero;
+  var _nextSequence = 0;
   Timer? _timer;
+  Duration? _timerDue;
 
   MonotonicClock get _clock => _link._network.clock;
 
   void send(_Packet packet) {
     final now = _clock.now;
-    var due = now + _link._latency;
-    // A packet never overtakes one sent before it.
-    if (_queue.isNotEmpty && _queue.last.due > due) due = _queue.last.due;
-    _queue.add((due: due, packet: packet));
-    _timer ??= _clock.schedule(_queue.first.due - now, _deliver);
+    final fault = packet is _Message ? _link._network._takeFault(packet) : null;
+    var due = now + _link._latency + (fault?.delay ?? Duration.zero);
+    // Opening and closing a connection are barriers across all channels.
+    if (due < _controlDue) due = _controlDue;
+    switch (packet) {
+      case _Message(mode: DeliveryMode.reliable, :final channel):
+      case _Acknowledgement(:final channel):
+        final previous = _reliableDue[channel];
+        if (previous != null && previous > due) due = previous;
+        _reliableDue[channel] = due;
+      case _Message():
+        break;
+      case _Signal():
+        if (_queue.isNotEmpty && _queue.last.due > due) due = _queue.last.due;
+        _controlDue = due;
+    }
+    _queue.add(_Delivery(due, _nextSequence++, packet, fault?.drop ?? false));
+    _schedule();
+  }
+
+  void _schedule() {
+    if (_queue.isEmpty) return;
+    final due = _queue.first.due;
+    if (_timer != null && _timerDue == due) return;
+    _timer?.cancel();
+    _timerDue = due;
+    _timer = _clock.schedule(due - _clock.now, _deliver);
   }
 
   void _deliver() {
     _timer = null;
+    _timerDue = null;
     while (_queue.isNotEmpty && _queue.first.due <= _clock.now) {
-      _arrive(_queue.removeFirst().packet);
+      final delivery = _queue.first;
+      _queue.remove(delivery);
+      if (delivery.drop) {
+        final message = delivery.packet as _Message;
+        message.sender._acknowledged(message.id);
+      } else {
+        _arrive(delivery.packet);
+      }
     }
-    if (_queue.isNotEmpty) {
-      _timer ??= _clock.schedule(_queue.first.due - _clock.now, _deliver);
-    }
+    _schedule();
   }
 
   /// Drops everything in transit.
   void clear() {
     _queue.clear();
+    _reliableDue.clear();
     _timer?.cancel();
     _timer = null;
+    _timerDue = null;
   }
 }
