@@ -28,7 +28,7 @@ final class SpawnContext<T> {
     required this.parent,
   });
 
-  /// The spawned entity, with its owner and fixed authority.
+  /// The spawned entity, with its owner and current authority.
   ///
   /// Like other registry entities, it starts pending until an attachment or
   /// [EntityRegistry.markReady] makes it ready.
@@ -235,15 +235,23 @@ final class _SpawnReplicator {
   }
 
   /// Sends the live entities, parents first, as part of [remote]'s
-  /// baseline. Returns `false` if its transport refused one, which removes
-  /// [remote].
+  /// baseline, each with its current authority. Returns `false` if its
+  /// transport refused one, which removes [remote].
   bool sendBaseline(_Remote remote) {
     for (final record in _records.values.toList()) {
-      if (!session._send(
-        remote,
-        _decode(record.bytes),
-        revision: session._revision,
-      )) {
+      var message = _decode(record.bytes);
+      final authority = record.entity.authority;
+      if (message.authority != authority) {
+        message = SpawnMessage(
+          entity: message.entity,
+          type: message.type,
+          data: message.data,
+          owner: message.owner,
+          authority: authority,
+          parent: message.parent,
+        );
+      }
+      if (!session._send(remote, message, revision: session._revision)) {
         return false;
       }
     }
@@ -253,12 +261,16 @@ final class _SpawnReplicator {
   /// Applies a spawn record from the host, part of this client's [baseline]
   /// or a later change. Returns `false` if it conflicts with the replicated
   /// entities, which is a protocol violation.
+  ///
+  /// A new entity's authority is the host or its owner. A baseline entity's
+  /// authority may have been transferred to any peer since.
   bool applySpawn(SpawnMessage message, {bool baseline = false}) {
     final parentId = message.parent;
     final parent = parentId == null ? null : _records[parentId];
     if (session.registry[message.entity] != null ||
         (parentId != null && parent == null) ||
-        (message.authority != PeerId.host &&
+        (!baseline &&
+            message.authority != PeerId.host &&
             message.authority != message.owner)) {
       return false;
     }

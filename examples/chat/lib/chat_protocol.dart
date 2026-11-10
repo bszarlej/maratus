@@ -119,4 +119,6 @@ String describeEvent(SessionEvent event) => switch (event) {
         '${reason.name}',
   PropertySyncFailed(:final entity, :final field, :final error) =>
     'Entity ${entity.value} could not sync ${field.value}: $error',
+  AuthorityChanged(:final entity, :final authority) =>
+    'Entity ${entity.value} is now written by peer ${authority.value}',
 };
