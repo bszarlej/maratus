@@ -150,17 +150,40 @@ final class _Harness {
       onSpawn: (context) {
         final entity = context.entity;
         (spawnedWith[session] ??= {})[entity.id] = entity.authority;
-        (_models[session] ??= {})[entity.id] = _Model(session, entity, schema);
+        (_models[session] ??= {})[entity.id] = _Model(session, entity, schema)
+          ..ready = !_loading.contains(session);
       },
     );
     return session;
   }
+
+  /// The sessions whose models start loading, so they are not ready.
+  final _loading = <MultiplayerSession>{};
 
   /// Joins a new client and waits until it is ready.
   MultiplayerSession join() {
     final session = _session()..join(network.connect());
     run();
     return session;
+  }
+
+  /// Joins a new client whose models of baseline entities stay loading, so
+  /// it keeps installing the baseline until [finishLoading].
+  MultiplayerSession joinLoading() {
+    final session = _session();
+    _loading.add(session);
+    session.join(network.connect());
+    run();
+    return session;
+  }
+
+  /// Makes every model of [session] ready, and lets it finish joining.
+  void finishLoading(MultiplayerSession session) {
+    _loading.remove(session);
+    for (final model in _models[session]!.values) {
+      model.ready = true;
+    }
+    run();
   }
 
   _RawClient rawClient() {
@@ -676,6 +699,71 @@ void main() {
       harness.tick();
 
       expect(synchronizer.interpolated(harness.schema.position)?.value, 20);
+    });
+  });
+
+  group('a client still installing its baseline', () {
+    test('applies transfers made while it installs', () {
+      final harness = _Harness();
+      final first = harness.join();
+      final peer = first.localPeer!;
+      final ball = harness.host.spawn(
+        harness.schema.ball,
+        true,
+        owner: peer,
+        authority: peer,
+      );
+      harness.run();
+      harness.model(first, ball).x = 1;
+      harness.tick();
+
+      final late = harness.joinLoading();
+      expect(late.state, SessionState.synchronizing);
+      harness.model(first, ball).x = 2;
+      harness.clock.advance(_interval);
+      first.captureState();
+      harness.host.transferAuthority(ball, PeerId.host);
+      harness.run();
+      harness.finishLoading(late);
+
+      expect(late.state, SessionState.ready);
+      expect(_drain(late).whereType<AuthorityChanged>(), [
+        AuthorityChanged(
+          entity: ball.id,
+          previous: peer,
+          authority: PeerId.host,
+        ),
+      ]);
+      harness.expectAgreement(ball, x: 1);
+      harness.model(harness.host, ball).x = 3;
+      harness.tick();
+      harness.expectAgreement(ball, x: 3);
+    });
+
+    test('acknowledges losing the authority of an entity it owns', () {
+      final harness = _Harness();
+      harness.host.spawn(harness.schema.ball, true);
+      final late = harness.joinLoading();
+      final peer = late.localPeer!;
+      final owned = harness.host.spawn(
+        harness.schema.ball,
+        true,
+        owner: peer,
+        authority: peer,
+      );
+      harness.run();
+      expect(late.state, SessionState.synchronizing);
+
+      harness.host.transferAuthority(owned, PeerId.host);
+      harness.run();
+      expect(late.diagnostics.sent[MessageKind.authorityAck].messages, 1);
+      harness.finishLoading(late);
+
+      expect(late.state, SessionState.ready);
+      expect(harness.host.isReady(peer), isTrue);
+      harness.model(harness.host, owned).x = 4;
+      harness.tick();
+      harness.expectAgreement(owned, x: 4);
     });
   });
 
