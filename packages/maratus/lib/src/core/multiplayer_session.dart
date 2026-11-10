@@ -1421,6 +1421,19 @@ final class MultiplayerSession {
     _spawns.release(ended);
   }
 
+  /// Sends a replicated [message] to [remote] alone, with a new revision,
+  /// removing [remote] if the transport refuses.
+  ///
+  /// State held for [remote] is sent first, and the revision is taken
+  /// afterward, so it exceeds the revisions of that state.
+  bool _sendChange(_Remote remote, ProtocolMessage message) {
+    final accepted =
+        _flush(remote, all: true) &&
+        _transmit(remote, message, revision: _nextRevision());
+    if (!accepted) _refused(remote);
+    return accepted;
+  }
+
   /// Sends [message] to [remote], removing it if the transport refuses.
   ///
   /// State held for [remote] is sent first, so the message follows it.

@@ -1,3 +1,5 @@
+import 'dart:async';
+
 import 'package:maratus/maratus.dart';
 import 'package:maratus/src/protocol/messages.dart';
 import 'package:maratus/src/protocol/protocol_codec.dart';
@@ -25,6 +27,10 @@ final class _Schema {
       const FieldId('test.label'),
       const StringCodec(maxLength: 16),
     );
+    position = builder.addField(
+      const FieldId('test.position'),
+      const DoubleCodec(min: -1000, max: 1000),
+    );
     kick = builder.addRpc(
       const RpcId('test.kick'),
       const IntCodec(min: 0, max: 9),
@@ -38,13 +44,30 @@ final class _Schema {
   late final SpawnType<bool> ball;
   late final SyncField<int> x;
   late final SyncField<String> label;
+  late final SyncField<double> position;
   late final Rpc<int> kick;
   late final StaticEntity board;
   late final ProtocolSchema schema;
 }
 
-/// One peer's copy of an entity, whose synchronizer writes [x] and [label]
-/// on the entity's authority and applies them elsewhere.
+/// A clock that runs [offset] ahead of [base], as another device's might.
+final class _OffsetClock implements MonotonicClock {
+  _OffsetClock(this.base, this.offset);
+
+  final MonotonicClock base;
+  final Duration offset;
+
+  @override
+  Duration get now => base.now + offset;
+
+  @override
+  Timer schedule(Duration delay, void Function() callback) =>
+      base.schedule(delay, callback);
+}
+
+/// One peer's copy of an entity, whose synchronizer writes [x], [label],
+/// and [position] on the entity's authority and applies [x] and [label]
+/// elsewhere. Other peers present [position] only through interpolation.
 final class _Model {
   _Model(MultiplayerSession session, NetworkEntity entity, _Schema schema) {
     attachment = session.attachEntity(
@@ -61,6 +84,10 @@ final class _Model {
         },
       ),
       schema.label.property(get: () => label, set: (value) => label = value),
+      schema.position.property(
+        get: () => position,
+        interpolator: const DoubleInterpolator(),
+      ),
     ], interval: _interval);
     attachment.bindRpc(schema.kick, (_, value) => kicks.add(value));
   }
@@ -70,6 +97,7 @@ final class _Model {
   var ready = true;
   var x = 0;
   var label = '';
+  var position = 0.0;
 
   /// The values of [x] that the synchronizer applied.
   final applied = <int>[];
@@ -79,11 +107,20 @@ final class _Model {
 /// A host and the clients that join it over an in-memory network, each
 /// with a model of every ball.
 final class _Harness {
-  _Harness() {
+  /// Creates a host whose clock runs [hostClockOffset] ahead of its
+  /// clients', with [backpressure] for every session.
+  _Harness({
+    Duration hostClockOffset = Duration.zero,
+    this.backpressure = const QueueLimits(
+      maxMessages: 256,
+      maxBytes: 1024 * 1024,
+    ),
+  }) {
     network = InMemoryNetwork(clock: clock);
-    host = _session()..host(network.host());
+    host = _session(clockOffset: hostClockOffset)..host(network.host());
   }
 
+  final QueueLimits backpressure;
   final clock = ManualClock();
   final schema = _Schema();
   late final InMemoryNetwork network;
@@ -97,8 +134,14 @@ final class _Harness {
   /// The authority that each session's spawn handler saw, by entity.
   final spawnedWith = <MultiplayerSession, Map<EntityId, PeerId>>{};
 
-  MultiplayerSession _session() {
-    final session = MultiplayerSession(schema: schema.schema, clock: clock);
+  MultiplayerSession _session({Duration clockOffset = Duration.zero}) {
+    final session = MultiplayerSession(
+      schema: schema.schema,
+      clock: clockOffset == Duration.zero
+          ? clock
+          : _OffsetClock(clock, clockOffset),
+      stateBackpressure: backpressure,
+    );
     addTearDown(session.close);
     sessions.add(session);
     _updates.add((session, session.update));
@@ -165,6 +208,24 @@ final class _Harness {
   /// [session]'s copy of [entity].
   NetworkEntity on(MultiplayerSession session, NetworkEntity entity) =>
       session.registry[entity.id]!;
+
+  /// Expects every session to agree on [entity]'s authority and on its
+  /// replicated values of `x` and `label`, and to hold [x] locally.
+  void expectAgreement(NetworkEntity entity, {required int x}) {
+    final authority = entity.authority;
+    for (final session in sessions) {
+      final model = this.model(session, entity);
+      final reason = 'on peer ${session.localPeer?.value}';
+      expect(on(session, entity).authority, authority, reason: reason);
+      expect(model.x, x, reason: reason);
+      expect(model.synchronizer.snapshot(schema.x)?.value, x, reason: reason);
+      expect(
+        model.synchronizer.snapshot(schema.label)?.value,
+        this.model(host, entity).synchronizer.snapshot(schema.label)?.value,
+        reason: reason,
+      );
+    }
+  }
 }
 
 /// A client that speaks the protocol directly, to send what a session would
@@ -365,7 +426,7 @@ void main() {
       () {
         final harness = _Harness();
         final first = harness.join();
-        final second = harness.join();
+        harness.join();
         final peer = first.localPeer!;
         final ball = harness.host.spawn(
           harness.schema.ball,
@@ -385,8 +446,9 @@ void main() {
         harness.host.transferAuthority(ball, PeerId.host);
         harness.run();
 
-        expect(harness.model(harness.host, ball).x, 1);
-        expect(harness.model(second, ball).x, 1);
+        // The previous authority takes back the value the host accepted.
+        harness.expectAgreement(ball, x: 1);
+        expect(harness.model(first, ball).applied, [1]);
         expect(_drain(harness.host), [
           AuthorityChanged(
             entity: ball.id,
@@ -576,6 +638,193 @@ void main() {
           authority: first.localPeer!,
         ),
       ]);
+    });
+
+    test('presents values of a previous authority without blending them', () {
+      // The host's samples carry times far ahead of its clients'.
+      final harness = _Harness(hostClockOffset: const Duration(minutes: 1));
+      final first = harness.join();
+      final ball = harness.host.spawn(harness.schema.ball, true);
+      harness.run();
+      harness.model(harness.host, ball)
+        ..x = 1
+        ..position = 10;
+      harness.tick();
+      harness.host.transferAuthority(ball, first.localPeer!);
+      harness.run();
+      harness.model(first, ball)
+        ..x = 2
+        ..position = 10;
+      harness.tick();
+
+      final late = harness.join();
+      final synchronizer = harness.model(late, ball).synchronizer;
+
+      harness.expectAgreement(ball, x: 2);
+      expect(
+        synchronizer.interpolated(harness.schema.position),
+        isA<InterpolatedValue<double>>()
+            .having((value) => value.value, 'value', 10)
+            .having(
+              (value) => value.state,
+              'state',
+              InterpolationState.holding,
+            ),
+      );
+
+      harness.model(first, ball).position = 20;
+      harness.tick();
+
+      expect(synchronizer.interpolated(harness.schema.position)?.value, 20);
+    });
+  });
+
+  group('synchronizers', () {
+    test('keep the host\'s values across a transfer away and back', () {
+      final harness = _Harness();
+      final first = harness.join();
+      harness.join();
+      final peer = first.localPeer!;
+      final ball = harness.host.spawn(
+        harness.schema.ball,
+        true,
+        owner: peer,
+        authority: peer,
+      );
+      harness.run();
+      harness.model(first, ball).x = 1;
+      harness.tick();
+
+      harness.model(first, ball).x = 2;
+      harness.clock.advance(_interval);
+      first.captureState();
+      harness.host
+        ..transferAuthority(ball, PeerId.host)
+        ..transferAuthority(ball, peer);
+      harness.run();
+      harness.tick();
+
+      harness.expectAgreement(ball, x: 1);
+
+      harness.model(first, ball).x = 4;
+      harness.tick();
+      harness.expectAgreement(ball, x: 4);
+    });
+
+    test('let a new authority continue from the values it received', () {
+      final harness = _Harness();
+      final client = harness.join();
+      final ball = harness.host.spawn(harness.schema.ball, true);
+      harness.run();
+      final model = harness.model(client, ball)..ready = false;
+      harness.model(harness.host, ball)
+        ..x = 5
+        ..label = 'host';
+      harness.tick();
+      expect(model.x, 0);
+
+      harness.host.transferAuthority(ball, client.localPeer!);
+      harness.run();
+      model.ready = true;
+      harness.tick();
+
+      harness.expectAgreement(ball, x: 5);
+      expect(model.applied, [5]);
+      expect(model.label, 'host');
+    });
+
+    test('apply values that arrive in the update that transfers them', () {
+      final harness = _Harness();
+      final client = harness.join();
+      final ball = harness.host.spawn(harness.schema.ball, true);
+      harness.run();
+
+      harness.model(harness.host, ball).x = 6;
+      harness.clock.advance(_interval);
+      harness.host
+        ..captureState()
+        ..transferAuthority(ball, client.localPeer!);
+      harness.run();
+      harness.tick();
+
+      harness.expectAgreement(ball, x: 6);
+      expect(harness.model(client, ball).applied, [6]);
+    });
+
+    test('deliver held state before a transfer to a congested client', () {
+      final harness = _Harness(backpressure: const QueueLimits(maxMessages: 2));
+      final writer = harness.join();
+      final stalled = harness.join();
+      final peer = writer.localPeer!;
+      final ball = harness.host.spawn(
+        harness.schema.ball,
+        true,
+        owner: peer,
+        authority: peer,
+      );
+      harness.run();
+      for (var x = 1; x <= 6; x++) {
+        harness.model(writer, ball).x = x;
+        harness.tick(stalled: {stalled});
+      }
+      PeerDiagnostics atHost() => harness.host.diagnostics.peers.singleWhere(
+        (diagnostics) => diagnostics.peer == stalled.localPeer,
+      );
+      expect(atHost().heldState.messages, 1);
+
+      harness.host.transferAuthority(ball, PeerId.host);
+      expect(atHost().heldState.messages, 0);
+      harness.run();
+      harness.model(harness.host, ball).x = 9;
+      harness.tick();
+
+      harness.expectAgreement(ball, x: 9);
+      expect(harness.model(stalled, ball).applied, containsAllInOrder([6, 9]));
+      expect(stalled.obsoleteMessageCount, 0);
+      expect(stalled.revision, harness.host.revision);
+    });
+
+    test('restart interpolation with the new authority\'s samples', () {
+      // The host's samples carry times far ahead of its clients'.
+      final harness = _Harness(hostClockOffset: const Duration(minutes: 1));
+      final first = harness.join();
+      final observer = harness.join();
+      final ball = harness.host.spawn(harness.schema.ball, true);
+      harness.run();
+      for (final position in [0.0, 10.0]) {
+        harness.model(harness.host, ball).position = position;
+        harness.tick();
+      }
+      InterpolatedValue<double>? shown(MultiplayerSession session) => harness
+          .model(session, ball)
+          .synchronizer
+          .interpolated(harness.schema.position);
+
+      harness.host.transferAuthority(ball, first.localPeer!);
+      harness.run();
+
+      for (final session in [harness.host, observer]) {
+        expect(
+          shown(session),
+          isA<InterpolatedValue<double>>()
+              .having((value) => value.value, 'value', 10)
+              .having(
+                (value) => value.state,
+                'state',
+                InterpolationState.holding,
+              ),
+        );
+      }
+      expect(shown(first), isNull);
+
+      // Presentation trails the newest sample by two intervals.
+      for (final position in [20.0, 30.0, 40.0, 50.0]) {
+        harness.model(first, ball).position = position;
+        harness.tick();
+      }
+      for (final session in [harness.host, observer]) {
+        expect(shown(session)!.value, 30);
+      }
     });
   });
 }
