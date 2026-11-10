@@ -31,6 +31,9 @@ const _fixtures = {
       '{"v":1,"k":"goodbye","g":0,"r":0,"b":{"c":"not_admitting"}}',
   'ping': '{"v":1,"k":"ping","g":5,"r":0,"b":{"n":3}}',
   'pong': '{"v":1,"k":"pong","g":5,"r":0,"b":{"n":3}}',
+  'peer joined': '{"v":1,"k":"peer_joined","g":5,"r":11,"b":{"p":3}}',
+  'peer ready': '{"v":1,"k":"peer_ready","g":5,"r":12,"b":{"p":3}}',
+  'peer left': '{"v":1,"k":"peer_left","g":5,"r":13,"b":{"p":3,"c":"kicked"}}',
   'spawn':
       '{"v":1,"k":"spawn","g":0,"r":0,'
       '"b":{"e":7,"t":"player","d":"Ada","o":2,"a":1}}',
@@ -87,6 +90,21 @@ final _envelopes = {
   ),
   'ping': const MessageEnvelope(PingMessage(3), generation: 5),
   'pong': const MessageEnvelope(PongMessage(3), generation: 5),
+  'peer joined': const MessageEnvelope(
+    PeerJoinedMessage(peer: PeerId(3)),
+    generation: 5,
+    revision: 11,
+  ),
+  'peer ready': const MessageEnvelope(
+    PeerReadyMessage(peer: PeerId(3)),
+    generation: 5,
+    revision: 12,
+  ),
+  'peer left': const MessageEnvelope(
+    PeerLeftMessage(peer: PeerId(3), reason: DepartureReason.kicked),
+    generation: 5,
+    revision: 13,
+  ),
   'spawn': const MessageEnvelope(
     SpawnMessage(
       entity: EntityId(7),
@@ -474,6 +492,54 @@ final _invalidInputs = <_InvalidInput>[
         path: ['b', 'n'],
       ),
   ],
+  for (final kind in ['peer_joined', 'peer_ready']) ...[
+    _invalid(
+      'a $kind message without a peer',
+      '{"v":1,"k":"$kind","g":5,"r":11,"b":{}}',
+      ProtocolErrorCode.invalidValue,
+      path: ['b'],
+    ),
+    _invalid(
+      'a $kind message with an unexpected key',
+      '{"v":1,"k":"$kind","g":5,"r":11,"b":{"p":3,"c":"kicked"}}',
+      ProtocolErrorCode.invalidValue,
+      path: ['b'],
+    ),
+  ],
+  for (final kind in ['peer_joined', 'peer_ready', 'peer_left'])
+    for (final (description, peer) in [
+      ('null', 'null'),
+      ("the host's", '1'),
+      ('zero', '0'),
+      ('fractional', '2.5'),
+      ('string', '"2"'),
+      ('web-unsafe', '9007199254740992'),
+    ])
+      _invalid(
+        'a $kind message with a $description peer ID',
+        '{"v":1,"k":"$kind","g":5,"r":11,'
+            '"b":{"p":$peer${kind == 'peer_left' ? ',"c":"left"' : ''}}}',
+        ProtocolErrorCode.invalidValue,
+        path: ['b', 'p'],
+      ),
+  _invalid(
+    'a departure without a reason',
+    '{"v":1,"k":"peer_left","g":5,"r":13,"b":{"p":3}}',
+    ProtocolErrorCode.invalidValue,
+    path: ['b'],
+  ),
+  _invalid(
+    'an unknown departure reason',
+    '{"v":1,"k":"peer_left","g":5,"r":13,"b":{"p":3,"c":"bored"}}',
+    ProtocolErrorCode.invalidValue,
+    path: ['b', 'c'],
+  ),
+  _invalid(
+    'a departure reason that is not a string',
+    '{"v":1,"k":"peer_left","g":5,"r":13,"b":{"p":3,"c":7}}',
+    ProtocolErrorCode.invalidValue,
+    path: ['b', 'c'],
+  ),
   _invalid(
     'an overlong RPC identifier',
     '{"v":1,"k":"rpc","g":0,"r":0,"b":{"e":7,"m":"${'a' * 65}","p":null}}',
@@ -949,6 +1015,52 @@ void main() {
       );
     });
 
+    test('decodes membership changes', () {
+      final joined = codec.decode(_bytes(_fixtures['peer joined']!));
+      final ready = codec.decode(_bytes(_fixtures['peer ready']!));
+      final left = codec.decode(_bytes(_fixtures['peer left']!));
+
+      expect(joined.revision, 11);
+      expect(
+        joined.message,
+        isA<PeerJoinedMessage>().having((m) => m.peer, 'peer', const PeerId(3)),
+      );
+      expect(ready.revision, 12);
+      expect(
+        ready.message,
+        isA<PeerReadyMessage>().having((m) => m.peer, 'peer', const PeerId(3)),
+      );
+      expect(left.revision, 13);
+      expect(
+        left.message,
+        isA<PeerLeftMessage>()
+            .having((m) => m.peer, 'peer', const PeerId(3))
+            .having((m) => m.reason, 'reason', DepartureReason.kicked),
+      );
+    });
+
+    test('decodes every departure reason and the largest safe peer ID', () {
+      for (final reason in DepartureReason.values) {
+        final message =
+            codec
+                    .decode(
+                      codec.encode(
+                        MessageEnvelope(
+                          PeerLeftMessage(
+                            peer: const PeerId(IntCodec.maxSafe),
+                            reason: reason,
+                          ),
+                        ),
+                      ),
+                    )
+                    .message
+                as PeerLeftMessage;
+
+        expect(message.peer, const PeerId(IntCodec.maxSafe));
+        expect(message.reason, reason);
+      }
+    });
+
     test('decodes ping sequences, including the largest safe one', () {
       for (final sequence in [0, 3, IntCodec.maxSafe]) {
         final ping = codec.decode(
@@ -1241,6 +1353,17 @@ void main() {
             authority: PeerId.host,
             parent: EntityId(value),
           ),
+        );
+      }
+    });
+
+    test('membership changes about the host or invalid peer IDs', () {
+      for (final value in [-1, 0, 1, IntCodec.maxSafe + 1]) {
+        final peer = PeerId(value);
+        expectRejected(PeerJoinedMessage(peer: peer));
+        expectRejected(PeerReadyMessage(peer: peer));
+        expectRejected(
+          PeerLeftMessage(peer: peer, reason: DepartureReason.left),
         );
       }
     });
