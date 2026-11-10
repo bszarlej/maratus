@@ -127,6 +127,34 @@ player.hit(25); // A plain call runs locally, without the network.
 The handles also work without components:
 `session.callRpc(entity, PlayerNet.hit, 25)`.
 
+## Configure delivery
+
+Annotations accept the same `deliveryMode` and `channel` settings as
+hand-written RPC and field handles. Both default to reliable channel zero:
+
+```dart
+@RpcMethod(
+  'player.input',
+  deliveryMode: DeliveryMode.unreliableOrdered,
+  channel: 1,
+)
+void input(int direction) => this.direction = direction;
+
+@SyncedField(
+  'player.x',
+  mode: SyncMode.always,
+  deliveryMode: DeliveryMode.unreliableOrdered,
+  channel: 2,
+)
+double x = 0;
+```
+
+Unreliable fields require `SyncMode.always`; generation rejects `onChange`
+because a lost final change would never be sent again. Initial snapshots
+remain reliable. Configure an ENet peer with enough channels (`channelCount: 3`
+here) on both ends. WebSockets support reliable channel zero only. The generated
+schema fingerprint includes delivery settings.
+
 ## Rules
 
 - **Identifiers are explicit.** Renaming a method or field never changes the
