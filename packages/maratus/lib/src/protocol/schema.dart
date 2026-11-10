@@ -2,6 +2,7 @@ import 'dart:convert';
 
 import 'package:crypto/crypto.dart';
 
+import '../transport/multiplayer_peer.dart';
 import 'identifiers.dart';
 import 'protocol_exception.dart';
 import 'rpc.dart';
@@ -84,7 +85,7 @@ final class ProtocolSchema {
       fingerprint = _fingerprint(
         _spawnTypes,
         _rpcDefinitions,
-        _fields,
+        _fieldDefinitions,
         _staticEntityDefinitions.keys,
         joinRequest,
       );
@@ -113,8 +114,8 @@ final class ProtocolSchema {
 
   /// A SHA-256 digest, in lowercase hexadecimal, of every identifier and
   /// codec descriptor in this schema, including each RPC's caller, target,
-  /// and local-invocation policies, the static entities, and the join request
-  /// codec.
+  /// and local-invocation policies, every RPC's and field's delivery mode and
+  /// channel, the static entities, and the join request codec.
   ///
   /// Equal registrations produce equal fingerprints on every platform,
   /// regardless of the order in which they were registered.
@@ -139,6 +140,9 @@ final class ProtocolSchema {
   /// its payload type, codec, and routing policies.
   Rpc<Object?>? rpcDefinition(RpcId id) => _rpcDefinitions[id.value];
 
+  /// All registered RPC handles, including their delivery settings.
+  Iterable<Rpc<Object?>> get rpcDefinitions => _rpcDefinitions.values;
+
   /// The registration for synchronized field [id], or `null` if there is
   /// none.
   SchemaEntry<Object?>? field(FieldId id) => _fields[id.value];
@@ -150,6 +154,9 @@ final class ProtocolSchema {
   SyncField<Object?>? fieldDefinition(FieldId id) =>
       _fieldDefinitions[id.value];
 
+  /// All registered synchronized field handles and their delivery settings.
+  Iterable<SyncField<Object?>> get fieldDefinitions => _fieldDefinitions.values;
+
   /// The declared static entity handle for [id], or `null` if there is
   /// none.
   ///
@@ -158,12 +165,12 @@ final class ProtocolSchema {
       _staticEntityDefinitions[id.value];
 
   /// The version of the canonical description that [fingerprint] digests.
-  static const _canonicalFormat = 4;
+  static const _canonicalFormat = 5;
 
   static String _fingerprint(
     Map<String, SchemaEntry<Object?>> spawnTypes,
     Map<String, Rpc<Object?>> rpcs,
-    Map<String, SchemaEntry<Object?>> fields,
+    Map<String, SyncField<Object?>> fields,
     Iterable<String> staticEntities,
     SchemaEntry<Object?>? joinRequest,
   ) {
@@ -183,9 +190,19 @@ final class ProtocolSchema {
             rpcs[id]!.caller.code,
             rpcs[id]!.target.code,
             rpcs[id]!.local.code,
+            rpcs[id]!.deliveryMode.name,
+            rpcs[id]!.channel,
           ],
       ],
-      'fields': describe(fields),
+      'fields': [
+        for (final id in fields.keys.toList()..sort())
+          [
+            id,
+            fields[id]!.codec.descriptor,
+            fields[id]!.deliveryMode.name,
+            fields[id]!.channel,
+          ],
+      ],
       'staticEntities': staticEntities.toList()..sort(),
       'joinRequest': joinRequest?.codec.descriptor,
     });
@@ -231,18 +248,29 @@ final class ProtocolSchemaBuilder {
   ///
   /// [caller] controls permission independently of the destinations selected by
   /// [target]. [local] controls execution when the caller is a selected target.
-  /// All three policies are included in the schema fingerprint.
+  /// All three policies, [deliveryMode], and [channel] are included in the
+  /// schema fingerprint.
   ///
   /// Throws an [ArgumentError] if [id] is not a valid identifier or is
-  /// already registered as an RPC.
+  /// already registered as an RPC, or [channel] is negative.
   Rpc<T> addRpc<T>(
     RpcId id,
     ValueCodec<T> codec, {
     RpcCaller caller = RpcCaller.anyPeer,
     RpcTarget target = RpcTarget.host,
     RpcLocal local = RpcLocal.exclude,
+    DeliveryMode deliveryMode = DeliveryMode.reliable,
+    int channel = 0,
   }) => addRpcDefinition(
-    Rpc<T>(id: id, codec: codec, caller: caller, target: target, local: local),
+    Rpc<T>(
+      id: id,
+      codec: codec,
+      caller: caller,
+      target: target,
+      local: local,
+      deliveryMode: deliveryMode,
+      channel: channel,
+    ),
   );
 
   /// Registers an existing RPC handle, such as a `const` one, and returns it.
@@ -253,20 +281,32 @@ final class ProtocolSchemaBuilder {
   /// and policies to [addRpc].
   ///
   /// Throws an [ArgumentError] if the identifier of [rpc] is not valid or is
-  /// already registered as an RPC.
+  /// already registered as an RPC, or its channel is negative.
   Rpc<T> addRpcDefinition<T>(Rpc<T> rpc) {
+    _checkChannel(rpc.channel);
     _add(_rpcs, 'RPC', rpc.id.value, rpc.codec);
     _rpcDefinitions[rpc.id.value] = rpc;
     return rpc;
   }
 
   /// Registers synchronized field [id] with the [codec] for its values and
-  /// returns its handle.
+  /// returns its handle. Incremental updates use [deliveryMode] on [channel].
   ///
   /// Throws an [ArgumentError] if [id] is not a valid identifier or is
-  /// already registered as a field.
-  SyncField<T> addField<T>(FieldId id, ValueCodec<T> codec) =>
-      addFieldDefinition(SyncField<T>(id: id, codec: codec));
+  /// already registered as a field, or [channel] is negative.
+  SyncField<T> addField<T>(
+    FieldId id,
+    ValueCodec<T> codec, {
+    DeliveryMode deliveryMode = DeliveryMode.reliable,
+    int channel = 0,
+  }) => addFieldDefinition(
+    SyncField<T>(
+      id: id,
+      codec: codec,
+      deliveryMode: deliveryMode,
+      channel: channel,
+    ),
+  );
 
   /// Registers an existing synchronized field handle, such as a `const` one,
   /// and returns it.
@@ -276,8 +316,9 @@ final class ProtocolSchemaBuilder {
   /// passing its identifier and codec to [addField].
   ///
   /// Throws an [ArgumentError] if the identifier of [field] is not valid or
-  /// is already registered as a field.
+  /// is already registered as a field, or its channel is negative.
   SyncField<T> addFieldDefinition<T>(SyncField<T> field) {
+    _checkChannel(field.channel);
     _add(_fields, 'field', field.id.value, field.codec);
     _fieldDefinitions[field.id.value] = field;
     return field;
@@ -355,5 +396,11 @@ final class ProtocolSchemaBuilder {
       throw ArgumentError.value(id, 'id', 'is already registered as a $kind');
     }
     entries[id] = SchemaEntry<T>._(id, codec);
+  }
+
+  static void _checkChannel(int channel) {
+    if (channel < 0) {
+      throw ArgumentError.value(channel, 'channel', 'must be nonnegative');
+    }
   }
 }

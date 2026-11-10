@@ -10,16 +10,17 @@ import 'protocol_test_utils.dart';
 /// The canonical description of the test schema that its fingerprint
 /// digests.
 const _canonicalTestSchema =
-    '{"format":4,'
+    '{"format":5,'
     '"spawnTypes":[["player","string(maxLength=16)"]],'
-    '"rpcs":[["player.move","test.move_input@1","any","host","exclude"]],'
-    '"fields":[["player.health","int(min=0,max=100)"],'
-    '["player.name","string(maxLength=16)"]],'
+    '"rpcs":[["player.move","test.move_input@1","any","host","exclude",'
+    '"reliable",0]],'
+    '"fields":[["player.health","int(min=0,max=100)","reliable",0],'
+    '["player.name","string(maxLength=16)","reliable",0]],'
     '"staticEntities":[],"joinRequest":null}';
 
 /// The SHA-256 digest of [_canonicalTestSchema], computed independently.
 const _testSchemaFingerprint =
-    '0154d70f952c90049550179f60ecf6779dab9efbe5ed9f5b75ee241ea777294d';
+    'b1c06ff7101f63487ad8ff3a1d8733e5e021cf4deae0ada45d00da9cedd8dbe0';
 
 void main() {
   group('ProtocolSchemaBuilder', () {
@@ -103,6 +104,8 @@ void main() {
       expect(rpc.caller, RpcCaller.anyPeer);
       expect(rpc.target, RpcTarget.host);
       expect(rpc.local, RpcLocal.exclude);
+      expect(rpc.deliveryMode, DeliveryMode.reliable);
+      expect(rpc.channel, 0);
       expect(schema.rpcDefinition(rpc.id), same(rpc));
       expect(schema.rpc(rpc.id)?.codec, same(rpc.codec));
     });
@@ -115,12 +118,16 @@ void main() {
         caller: RpcCaller.owner,
         target: RpcTarget.authority,
         local: RpcLocal.include,
+        deliveryMode: DeliveryMode.unreliableOrdered,
+        channel: 2,
       );
       final schema = builder.build();
 
       expect(rpc.caller, RpcCaller.owner);
       expect(rpc.target, RpcTarget.authority);
       expect(rpc.local, RpcLocal.include);
+      expect(rpc.deliveryMode, DeliveryMode.unreliableOrdered);
+      expect(rpc.channel, 2);
       expect(schema.rpcDefinition(rpc.id), same(rpc));
       expect(builder.build().rpcDefinition(rpc.id), same(rpc));
     });
@@ -157,6 +164,8 @@ void main() {
 
       expect(health.id, const FieldId('player.health'));
       expect(health.codec, isA<IntCodec>());
+      expect(health.deliveryMode, DeliveryMode.reliable);
+      expect(health.channel, 0);
       expect(schema.fieldDefinition(health.id), same(health));
       expect(schema.field(health.id)?.codec, same(health.codec));
       expect(schema.fieldDefinition(const FieldId('player.mana')), isNull);
@@ -199,6 +208,78 @@ void main() {
       expect(schema.fingerprint, buildTestSchema().fingerprint);
     });
 
+    test('retains field delivery settings and lists registered handles', () {
+      final builder = ProtocolSchemaBuilder();
+      final field = builder.addField(
+        const FieldId('player.x'),
+        const DoubleCodec(),
+        deliveryMode: DeliveryMode.unreliable,
+        channel: 3,
+      );
+      final rpc = builder.addRpc(const RpcId('ping'), const BoolCodec());
+      final schema = builder.build();
+      builder.addField(const FieldId('player.y'), const DoubleCodec());
+      builder.addRpc(const RpcId('pong'), const BoolCodec());
+
+      expect(field.deliveryMode, DeliveryMode.unreliable);
+      expect(field.channel, 3);
+      expect(schema.fieldDefinition(field.id), same(field));
+      expect(schema.fieldDefinitions, [field]);
+      expect(schema.rpcDefinitions, [rpc]);
+      expect(
+        schema.fingerprint,
+        (ProtocolSchemaBuilder()
+              ..addRpcDefinition(rpc)
+              ..addFieldDefinition(
+                const SyncField(
+                  id: FieldId('player.x'),
+                  codec: DoubleCodec(),
+                  deliveryMode: DeliveryMode.unreliable,
+                  channel: 3,
+                ),
+              ))
+            .build()
+            .fingerprint,
+      );
+    });
+
+    test('rejects negative channels without retaining any registration', () {
+      final builder = ProtocolSchemaBuilder();
+      final original = builder.build().fingerprint;
+      for (final register in <void Function()>[
+        () =>
+            builder.addRpc(const RpcId('ping'), const BoolCodec(), channel: -1),
+        () => builder.addRpcDefinition(
+          const Rpc(id: RpcId('ping'), codec: BoolCodec(), channel: -1),
+        ),
+        () => builder.addField(
+          const FieldId('health'),
+          const IntCodec(),
+          channel: -1,
+        ),
+        () => builder.addFieldDefinition(
+          const SyncField(
+            id: FieldId('health'),
+            codec: IntCodec(),
+            channel: -1,
+          ),
+        ),
+      ]) {
+        expect(register, throwsArgumentError);
+        expect(builder.build().rpcDefinitions, isEmpty);
+        expect(builder.build().fieldDefinitions, isEmpty);
+        expect(builder.build().fingerprint, original);
+      }
+      expect(
+        () => builder.addRpc(const RpcId('ping'), const BoolCodec()),
+        returnsNormally,
+      );
+      expect(
+        () => builder.addField(const FieldId('health'), const IntCodec()),
+        returnsNormally,
+      );
+    });
+
     test('fingerprints a registered RPC handle with its policies', () {
       final byArguments = ProtocolSchemaBuilder()
         ..addRpc(
@@ -207,6 +288,8 @@ void main() {
           caller: RpcCaller.host,
           target: RpcTarget.all,
           local: RpcLocal.include,
+          deliveryMode: DeliveryMode.unreliableOrdered,
+          channel: 4,
         );
       final byHandle = ProtocolSchemaBuilder()
         ..addRpcDefinition(
@@ -216,6 +299,8 @@ void main() {
             caller: RpcCaller.host,
             target: RpcTarget.all,
             local: RpcLocal.include,
+            deliveryMode: DeliveryMode.unreliableOrdered,
+            channel: 4,
           ),
         );
       final withDefaults = ProtocolSchemaBuilder()
@@ -580,6 +665,36 @@ void main() {
         isTrue,
         reason: 'local invocation',
       );
+    });
+
+    test('changes independently with each RPC and field delivery setting', () {
+      String forDelivery({
+        DeliveryMode rpcMode = DeliveryMode.reliable,
+        int rpcChannel = 0,
+        DeliveryMode fieldMode = DeliveryMode.reliable,
+        int fieldChannel = 0,
+      }) => fingerprintOf([
+        (b) => b.addRpc(
+          const RpcId('ping'),
+          const IntCodec(),
+          deliveryMode: rpcMode,
+          channel: rpcChannel,
+        ),
+        (b) => b.addField(
+          const FieldId('health'),
+          const IntCodec(),
+          deliveryMode: fieldMode,
+          channel: fieldChannel,
+        ),
+      ]);
+
+      final fingerprints = <String>{forDelivery()};
+      for (final mode in DeliveryMode.values.skip(1)) {
+        expect(fingerprints.add(forDelivery(rpcMode: mode)), isTrue);
+        expect(fingerprints.add(forDelivery(fieldMode: mode)), isTrue);
+      }
+      expect(fingerprints.add(forDelivery(rpcChannel: 1)), isTrue);
+      expect(fingerprints.add(forDelivery(fieldChannel: 1)), isTrue);
     });
   });
 
