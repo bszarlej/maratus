@@ -13,8 +13,8 @@ dependencies:
   flame: ^1.38.2
   flutter:
     sdk: flutter
-  maratus: ^0.1.1
-  maratus_flame: ^0.1.1
+  maratus: ^0.1.2
+  maratus_flame: ^0.1.2
 
 dev_dependencies:
   flutter_test:

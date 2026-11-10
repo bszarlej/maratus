@@ -2,7 +2,7 @@ name: maratus_annotations
 description: >-
   Annotations for maratus_generator: declare RPC handlers, synchronized fields,
   spawn types, and value codecs for maratus multiplayer games.
-version: 0.1.0
+version: 0.1.1
 repository: https://github.com/bszarlej/maratus/tree/master/packages/maratus_annotations
 issue_tracker: https://github.com/bszarlej/maratus/issues
 topics:
@@ -19,7 +19,7 @@ environment:
 resolution: workspace
 
 dependencies:
-  maratus: ^0.1.1
+  maratus: ^0.1.2
   meta: ^1.16.0
 
 dev_dependencies:
