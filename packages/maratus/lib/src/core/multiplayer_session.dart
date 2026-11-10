@@ -791,10 +791,12 @@ final class MultiplayerSession {
       remote.coalescedStates++;
       _coalescedStates++;
     }
+    // Only an authority's samples and their relays are held, and they all
+    // carry a sample time.
     remote.held[entity.id] = _HeldState(entity, {
       ...?previous?.fields,
       ...fields,
-    }, message.sampledAt);
+    }, message.sampledAt!);
   }
 
   /// Sends [remote]'s held state, oldest entry first: all of it, or as long
@@ -998,7 +1000,8 @@ final class MultiplayerSession {
         _emit(PeerReady(remote.peer!));
       case (_RemoteState.ready, RpcMessage message):
         _rpcDispatcher.route(remote.peer!, message);
-      case (_RemoteState.ready, StateMessage()):
+      // A client sends only state that it sampled, with its sample time.
+      case (_RemoteState.ready, StateMessage(sampledAt: _?)):
         _states.receive(remote.peer!, envelope, origin: remote);
       default:
         _drop(remote, DisconnectReason.protocolViolation, notify: true);

@@ -206,7 +206,7 @@ final class _Harness {
           sender,
           [for (final field in message.values.keys) field.value],
         ));
-        stamps.putIfAbsent(session, () => []).add(message.sampledAt);
+        stamps.putIfAbsent(session, () => []).add(message.sampledAt!);
       },
     );
     addTearDown(session.close);
@@ -636,6 +636,34 @@ void main() {
       expect(replica.health, 1);
       expect(harness.observed[harness.host], isNull);
       expect(harness.host.isReady(raw.id!), isTrue);
+    });
+
+    test('a host drops a client that sends state without a sample time', () {
+      final harness = _Harness();
+      final raw = harness.rawClient();
+      harness.run();
+      raw.send(HelloMessage(fingerprint: harness.schema.schema.fingerprint));
+      harness.run();
+      raw.send(const ReadyMessage());
+      harness.run();
+      final [entity] = harness.register(1, owner: raw.id!, authority: raw.id!);
+      final model = _Model(harness.host, entity, harness.schema);
+      final peer = raw.id!;
+      _drain(harness.host);
+
+      raw.send(
+        StateMessage(
+          entity: const EntityId(1),
+          values: {const FieldId('test.health'): 99},
+        ),
+      );
+      harness.run();
+
+      expect(_drain(harness.host), [
+        PeerLeft(peer, DisconnectReason.protocolViolation),
+      ]);
+      expect(model.health, 0);
+      expect(harness.observed[harness.host], isNull);
     });
 
     test('a client ignores host state for entities it writes', () {

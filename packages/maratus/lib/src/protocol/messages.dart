@@ -29,6 +29,12 @@ enum MessageKind {
   /// A [DespawnMessage].
   despawn('despawn'),
 
+  /// An [AuthorityMessage].
+  authority('authority'),
+
+  /// An [AuthorityAckMessage].
+  authorityAck('authority_ack'),
+
   /// An [RpcMessage].
   rpc('rpc'),
 
@@ -64,7 +70,8 @@ final class MessageEnvelope {
   ///
   /// The host assigns increasing revisions to replicated changes within
   /// its session. Clients use them to establish the bootstrap baseline and
-  /// discard obsolete spawn, despawn, and state messages. RPCs do not
+  /// discard obsolete spawn, despawn, authority, and state messages, and
+  /// acknowledge an authority transfer with its revision. RPCs do not
   /// advance this counter. The protocol layer validates a non-negative
   /// integer; the session enforces ordering.
   final int revision;
@@ -247,8 +254,11 @@ final class SpawnMessage extends ProtocolMessage {
   /// The peer that controls the entity's input.
   final PeerId owner;
 
-  /// The peer whose copy of the entity is the source of truth, fixed for the
-  /// entity's lifetime.
+  /// The peer whose copy of the entity is the source of truth.
+  ///
+  /// When the entity is spawned, this is the host or [owner]. In a joining
+  /// client's baseline, it is the entity's current authority, which an
+  /// [AuthorityMessage] may have transferred to another peer.
   final PeerId authority;
 
   /// The replicated entity that this entity belongs to, if any.
@@ -270,6 +280,43 @@ final class DespawnMessage extends ProtocolMessage {
 
   @override
   MessageKind get kind => MessageKind.despawn;
+}
+
+/// Transfers the authority of a replicated or static entity to another peer.
+///
+/// Only the host sends transfers, as replicated changes ordered by their
+/// revision. The entity's previous and new authority each acknowledge one
+/// with an [AuthorityAckMessage].
+final class AuthorityMessage extends ProtocolMessage {
+  /// Creates a message that makes [authority] the authority of [entity].
+  const AuthorityMessage({required this.entity, required this.authority});
+
+  /// The entity whose authority changes.
+  final EntityId entity;
+
+  /// The entity's new authority.
+  final PeerId authority;
+
+  @override
+  MessageKind get kind => MessageKind.authority;
+}
+
+/// Acknowledges the authority transfer of [entity] with the envelope's
+/// revision.
+///
+/// A client sends it once it has applied a transfer that makes it, or stops
+/// it being, the entity's authority. State that the client sends about the
+/// entity follows the acknowledgement, so the host can tell it from state
+/// sent before the client applied the transfer.
+final class AuthorityAckMessage extends ProtocolMessage {
+  /// Creates a message that acknowledges the transfer of [entity].
+  const AuthorityAckMessage({required this.entity});
+
+  /// The entity whose transfer is acknowledged.
+  final EntityId entity;
+
+  @override
+  MessageKind get kind => MessageKind.authorityAck;
 }
 
 /// Asks the host to route a registered RPC on an entity.
@@ -339,11 +386,11 @@ final class RpcDeliveryMessage extends ProtocolMessage {
 /// Carries new values of an entity's synchronized fields.
 final class StateMessage extends ProtocolMessage {
   /// Creates a message that sets the [values] of fields of [entity], as the
-  /// entity's authority sampled them at [sampledAt].
+  /// entity's authority sampled them at [sampledAt], if given.
   StateMessage({
     required this.entity,
     required Map<FieldId, Object?> values,
-    required this.sampledAt,
+    this.sampledAt,
   }) : values = Map<FieldId, Object?>.unmodifiable(values);
 
   /// The entity whose fields changed.
@@ -354,14 +401,18 @@ final class StateMessage extends ProtocolMessage {
   final Map<FieldId, Object?> values;
 
   /// When the entity's authority sampled [values], on the authority's
-  /// session clock.
+  /// session clock, or `null` for values that the entity's current
+  /// authority did not sample.
   ///
   /// The host relays state with its authority's time. Peers' clocks are not
   /// synchronized, so a time is only comparable with other times from the
   /// same authority, for example to interpolate values at the pace they
-  /// were sampled. The protocol layer validates a non-negative whole number
-  /// of microseconds.
-  final Duration sampledAt;
+  /// were sampled. After an authority transfer, the host sends values that
+  /// a previous authority sampled without a time: in a joining client's
+  /// baseline, and to the previous authority, to replace the values it sent
+  /// after the transfer. Clients always send a time. The protocol layer
+  /// validates a non-negative whole number of microseconds.
+  final Duration? sampledAt;
 
   @override
   MessageKind get kind => MessageKind.state;

@@ -38,6 +38,8 @@ const _fixtures = {
       '{"v":1,"k":"spawn","g":5,"r":9,'
       '"b":{"e":8,"t":"player","d":"Bob","o":3,"a":3,"p":7}}',
   'despawn': '{"v":1,"k":"despawn","g":0,"r":0,"b":{"e":7}}',
+  'authority': '{"v":1,"k":"authority","g":5,"r":10,"b":{"e":7,"a":3}}',
+  'authority ack': '{"v":1,"k":"authority_ack","g":5,"r":10,"b":{"e":7}}',
   'rpc':
       '{"v":1,"k":"rpc","g":0,"r":0,'
       '"b":{"e":7,"m":"player.move","p":{"x":0.5,"y":-0.25}}}',
@@ -50,6 +52,8 @@ const _fixtures = {
   'state':
       '{"v":1,"k":"state","g":3,"r":42,'
       '"b":{"e":7,"t":1500000,"f":{"player.health":75,"player.name":"Ada"}}}',
+  'untimed state':
+      '{"v":1,"k":"state","g":3,"r":43,"b":{"e":7,"f":{"player.health":75}}}',
 };
 
 /// The envelopes that [_fixtures] encode.
@@ -105,6 +109,16 @@ final _envelopes = {
     revision: 9,
   ),
   'despawn': const MessageEnvelope(DespawnMessage(entity: EntityId(7))),
+  'authority': const MessageEnvelope(
+    AuthorityMessage(entity: EntityId(7), authority: PeerId(3)),
+    generation: 5,
+    revision: 10,
+  ),
+  'authority ack': const MessageEnvelope(
+    AuthorityAckMessage(entity: EntityId(7)),
+    generation: 5,
+    revision: 10,
+  ),
   'rpc': const MessageEnvelope(
     RpcMessage(
       entity: EntityId(7),
@@ -142,6 +156,14 @@ final _envelopes = {
     ),
     generation: 3,
     revision: 42,
+  ),
+  'untimed state': MessageEnvelope(
+    StateMessage(
+      entity: const EntityId(7),
+      values: const {FieldId('player.health'): 75},
+    ),
+    generation: 3,
+    revision: 43,
   ),
 };
 
@@ -370,8 +392,46 @@ final _invalidInputs = <_InvalidInput>[
     path: ['b', 'f', 'player.mana'],
   ),
   _invalid(
-    'a state without a sample time',
-    '{"v":1,"k":"state","g":0,"r":0,"b":{"e":7,"f":{"player.health":1}}}',
+    'a state with an unexpected key',
+    '{"v":1,"k":"state","g":0,"r":0,'
+        '"b":{"e":7,"t":0,"f":{"player.health":1},"a":2}}',
+    ProtocolErrorCode.invalidValue,
+    path: ['b'],
+  ),
+  _invalid(
+    'an authority transfer without a new authority',
+    '{"v":1,"k":"authority","g":5,"r":10,"b":{"e":7}}',
+    ProtocolErrorCode.invalidValue,
+    path: ['b'],
+  ),
+  _invalid(
+    'an authority transfer with an unexpected key',
+    '{"v":1,"k":"authority","g":5,"r":10,"b":{"e":7,"a":3,"o":2}}',
+    ProtocolErrorCode.invalidValue,
+    path: ['b'],
+  ),
+  for (final (description, peer) in [
+    ('null', 'null'),
+    ('zero', '0'),
+    ('fractional', '2.5'),
+    ('string', '"2"'),
+    ('web-unsafe', '9007199254740992'),
+  ])
+    _invalid(
+      'a $description new authority',
+      '{"v":1,"k":"authority","g":5,"r":10,"b":{"e":7,"a":$peer}}',
+      ProtocolErrorCode.invalidValue,
+      path: ['b', 'a'],
+    ),
+  _invalid(
+    'an authority acknowledgement that names an authority',
+    '{"v":1,"k":"authority_ack","g":5,"r":10,"b":{"e":7,"a":3}}',
+    ProtocolErrorCode.invalidValue,
+    path: ['b'],
+  ),
+  _invalid(
+    'an authority acknowledgement without an entity',
+    '{"v":1,"k":"authority_ack","g":5,"r":10,"b":{}}',
     ProtocolErrorCode.invalidValue,
     path: ['b'],
   ),
@@ -851,6 +911,41 @@ void main() {
               'sampledAt',
               const Duration(milliseconds: 1500),
             ),
+      );
+    });
+
+    test('decodes state without a sample time', () {
+      final envelope = codec.decode(_bytes(_fixtures['untimed state']!));
+
+      expect(
+        envelope.message,
+        isA<StateMessage>()
+            .having((m) => m.values, 'values', {
+              const FieldId('player.health'): 75,
+            })
+            .having((m) => m.sampledAt, 'sampledAt', isNull),
+      );
+    });
+
+    test('decodes authority transfers and their acknowledgements', () {
+      final transfer = codec.decode(_bytes(_fixtures['authority']!));
+      final ack = codec.decode(_bytes(_fixtures['authority ack']!));
+
+      expect(transfer.revision, 10);
+      expect(
+        transfer.message,
+        isA<AuthorityMessage>()
+            .having((m) => m.entity, 'entity', const EntityId(7))
+            .having((m) => m.authority, 'authority', const PeerId(3)),
+      );
+      expect(ack.revision, 10);
+      expect(
+        ack.message,
+        isA<AuthorityAckMessage>().having(
+          (m) => m.entity,
+          'entity',
+          const EntityId(7),
+        ),
       );
     });
 
