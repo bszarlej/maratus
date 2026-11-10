@@ -14,6 +14,8 @@ void main() {
     expect(annotation.caller, rpc.caller);
     expect(annotation.target, rpc.target);
     expect(annotation.local, rpc.local);
+    expect(annotation.deliveryMode, rpc.deliveryMode);
+    expect(annotation.channel, rpc.channel);
     expect(annotation.version, isNull);
   });
 
@@ -23,12 +25,16 @@ void main() {
       caller: RpcCaller.host,
       target: RpcTarget.all,
       local: RpcLocal.include,
+      deliveryMode: DeliveryMode.unreliableOrdered,
+      channel: 1,
       version: 2,
     );
 
     expect(annotation.caller, RpcCaller.host);
     expect(annotation.target, RpcTarget.all);
     expect(annotation.local, RpcLocal.include);
+    expect(annotation.deliveryMode, DeliveryMode.unreliableOrdered);
+    expect(annotation.channel, 1);
     expect(annotation.version, 2);
   });
 
@@ -41,6 +47,8 @@ void main() {
 
     expect(annotation.id, 'arena.player.health');
     expect(annotation.mode, field.property(get: () => 0).mode);
+    expect(annotation.deliveryMode, field.deliveryMode);
+    expect(annotation.channel, field.channel);
     expect(annotation.interpolator, isNull);
   });
 
@@ -48,10 +56,14 @@ void main() {
     const annotation = SyncedField(
       'arena.player.speed',
       mode: SyncMode.always,
+      deliveryMode: DeliveryMode.unreliable,
+      channel: 2,
       interpolator: DoubleInterpolator(teleportDistance: 50),
     );
 
     expect(annotation.mode, SyncMode.always);
+    expect(annotation.deliveryMode, DeliveryMode.unreliable);
+    expect(annotation.channel, 2);
     expect(
       annotation.interpolator,
       isA<DoubleInterpolator>().having(
