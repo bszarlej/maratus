@@ -8,6 +8,7 @@ environment:
 workspace:
   - packages/maratus
   - packages/maratus_annotations
+  - packages/maratus_enet
   - packages/maratus_flame
   - packages/maratus_generator
   - examples/chat
