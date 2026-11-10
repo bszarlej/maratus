@@ -34,6 +34,7 @@ import 'package:maratus_flame/maratus_flame.dart';
 | ------- | ---------- |
 | [maratus_flame](packages/maratus_flame) | Networked Flame components, spawning, and position smoothing. Includes the core APIs. |
 | [maratus](packages/maratus) | Shared game protocols and standalone Dart hosts, without Flutter. Install with `dart pub add maratus`. |
+| [maratus_enet](packages/maratus_enet) | Optional native ENet transport over UDP, with reliable and unreliable delivery and independent channels. Use alongside the core or Flame package. |
 | [maratus_annotations](packages/maratus_annotations) | Annotations that declare RPC handlers, synchronized fields, spawn types, and data codecs. |
 | [maratus_generator](packages/maratus_generator) | Generates handles, bindings, typed RPC senders, and codecs from those annotations, as a dev dependency. |
 
@@ -53,9 +54,13 @@ annotations: both produce the same schema.
 
 ## Current scope
 
-The initial release focuses on small sessions, such as 2–4 players, over
-reliable, ordered WebSockets. Desktop apps can host or join; browsers can join.
-Clients currently need a directly reachable host.
+The initial release focuses on small sessions, such as 2–4 players. WebSockets
+provide reliable, ordered delivery: desktop apps can host or join, and browsers
+can join. The optional `maratus_enet` package adds native UDP connections with
+reliable, ordered-unreliable, and unordered-unreliable transport messages on
+independent channels. RPCs and synchronized fields select delivery modes and
+channels individually; session control and initial snapshots remain reliable.
+Clients need a directly reachable host.
 
 Requires Dart `>=3.11.0 <4.0.0`; Flame integration also requires Flutter
 `>=3.41.0` and Flame `^1.38.2`.
@@ -64,9 +69,9 @@ Planned work:
 
 - Android/iOS support and larger-session tuning: compatibility and performance
   validation are still pending.
-- Additional transports, unreliable delivery, relays/NAT traversal,
-  built-in client-side prediction and reconciliation, interest management, and state
-  compression: **not implemented yet**.
+- Relays/NAT traversal,
+  built-in client-side prediction and reconciliation, interest management, and
+  state compression: **not implemented yet**.
 
 ## Contributing
 
@@ -81,6 +86,8 @@ dart run melos run test:browser --no-select
 ```
 
 Browser tests require Chrome. Set `CHROME_EXECUTABLE` if it is not found.
+The ENet package builds its bundled C library through a Dart build hook and
+requires a native C compiler; see its [setup instructions](packages/maratus_enet).
 After changing `maratus_generator` or annotated code, regenerate the committed
 `.g.dart` files with `dart run melos run generate --no-select`.
 
