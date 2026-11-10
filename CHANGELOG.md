@@ -11,6 +11,48 @@ See [Conventional Commits](https://conventionalcommits.org) for commit guideline
 
 Packages with breaking changes:
 
+ - [`maratus` - `v0.2.0`](#maratus---v020)
+
+Packages with other changes:
+
+ - [`maratus_annotations` - `v0.1.2`](#maratus_annotations---v012)
+ - [`maratus_generator` - `v0.1.2`](#maratus_generator---v012)
+ - [`maratus_flame` - `v0.1.3`](#maratus_flame---v013)
+
+Packages with dependency updates only:
+
+> Packages listed below depend on other packages in this workspace that have had changes. Their versions have been incremented to bump the minimum dependency versions of the packages they depend upon in this project.
+
+ - `maratus_flame` - `v0.1.3`
+
+---
+
+#### `maratus` - `v0.2.0`
+
+ - **FEAT**: send RPCs and fields with their delivery settings. ([ce4ae28d](https://github.com/bszarlej/maratus/commit/ce4ae28d723ee5557650913c317a18505b06c8e5))
+ - **FEAT**: add unreliable delivery and channels to the in-memory network. ([4412c2aa](https://github.com/bszarlej/maratus/commit/4412c2aaa5e9c75b83c9dbc9f0421e948f486dc5))
+ - **DOCS**: describe delivery modes and channels. ([f9b3032e](https://github.com/bszarlej/maratus/commit/f9b3032e993ee76adb6941ef566fad3057b4ba6b))
+ - **BREAKING** **FEAT**: add delivery settings to RPC and field handles. ([d97a380e](https://github.com/bszarlej/maratus/commit/d97a380e2ea3df1f7c3a317060eda0ce1cde332b))
+
+#### `maratus_annotations` - `v0.1.2`
+
+ - **FEAT**: add delivery settings to RpcMethod and SyncedField. ([efae4be0](https://github.com/bszarlej/maratus/commit/efae4be0d9033444213a5e60ed8866023ac9a55b))
+ - **DOCS**: list the delivery settings of RpcMethod and SyncedField. ([85e7a93a](https://github.com/bszarlej/maratus/commit/85e7a93acd5760f5198b2c2af1fc5ddd12a07ea2))
+
+#### `maratus_generator` - `v0.1.2`
+
+ - **FEAT**: generate delivery settings for RPCs and fields. ([91d1c66e](https://github.com/bszarlej/maratus/commit/91d1c66e45db1644d0cb39d0768bbbc9cf4e6d2d))
+ - **DOCS**: describe delivery settings in annotations. ([fc7d661c](https://github.com/bszarlej/maratus/commit/fc7d661c3ea70e43d783c49ff7d370ea6905c0d6))
+
+
+## 2026-11-10
+
+### Changes
+
+---
+
+Packages with breaking changes:
+
  - There are no breaking changes in this release.
 
 Packages with other changes:

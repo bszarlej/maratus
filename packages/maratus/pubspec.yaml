@@ -3,7 +3,7 @@ description: >-
   Godot-inspired multiplayer for Dart games: host-authoritative sessions, typed
   RPCs, replicated spawning, property synchronization, and late joining over
   WebSockets.
-version: 0.1.2
+version: 0.2.0
 repository: https://github.com/bszarlej/maratus/tree/master/packages/maratus
 issue_tracker: https://github.com/bszarlej/maratus/issues
 topics:

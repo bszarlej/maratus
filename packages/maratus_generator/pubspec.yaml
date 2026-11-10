@@ -2,7 +2,7 @@ name: maratus_generator
 description: >-
   Generates maratus protocol handles, schema registration, RPC and property
   bindings, typed RPC senders, and value codecs from maratus_annotations.
-version: 0.1.1
+version: 0.1.2
 repository: https://github.com/bszarlej/maratus/tree/master/packages/maratus_generator
 issue_tracker: https://github.com/bszarlej/maratus/issues
 topics:
@@ -22,12 +22,12 @@ resolution: workspace
 dependencies:
   analyzer: '>=8.4.0 <15.0.0'
   build: '>=4.0.4 <6.0.0'
-  maratus_annotations: ^0.1.1
+  maratus_annotations: ^0.1.2
   source_gen: ^4.2.4
 
 dev_dependencies:
   build_runner: ^2.15.1
   build_test: ^3.5.16
   lints: ^6.0.0
-  maratus: ^0.1.2
+  maratus: ^0.2.0
   test: ^1.26.3

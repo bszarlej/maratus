@@ -1,3 +1,12 @@
+## 0.2.0
+
+> Note: This release has breaking changes.
+
+ - **FEAT**: send RPCs and fields with their delivery settings. ([ce4ae28d](https://github.com/bszarlej/maratus/commit/ce4ae28d723ee5557650913c317a18505b06c8e5))
+ - **FEAT**: add unreliable delivery and channels to the in-memory network. ([4412c2aa](https://github.com/bszarlej/maratus/commit/4412c2aaa5e9c75b83c9dbc9f0421e948f486dc5))
+ - **DOCS**: describe delivery modes and channels. ([f9b3032e](https://github.com/bszarlej/maratus/commit/f9b3032e993ee76adb6941ef566fad3057b4ba6b))
+ - **BREAKING** **FEAT**: add delivery settings to RPC and field handles. ([d97a380e](https://github.com/bszarlej/maratus/commit/d97a380e2ea3df1f7c3a317060eda0ce1cde332b))
+
 ## 0.1.2
 
  - **FEAT**: replicate session membership to clients. ([70904a7e](https://github.com/bszarlej/maratus/commit/70904a7edba8924d8e5a3a84999d06c31d9297fc))
