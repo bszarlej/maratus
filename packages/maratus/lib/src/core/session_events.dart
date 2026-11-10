@@ -276,6 +276,48 @@ final class PropertySyncFailed extends SessionEvent {
   final StackTrace stackTrace;
 }
 
+/// The authority of [entity] moved from [previous] to [authority] on this
+/// peer.
+///
+/// Every peer reports a transfer as it applies it: the host when it
+/// transfers the entity, and each client as the transfer arrives in
+/// revision order, or in its baseline if the entity's authority changed
+/// before it joined.
+final class AuthorityChanged extends SessionEvent {
+  /// Creates an event reporting that [entity]'s authority moved from
+  /// [previous] to [authority].
+  const AuthorityChanged({
+    required this.entity,
+    required this.previous,
+    required this.authority,
+  });
+
+  /// The entity whose authority changed.
+  final EntityId entity;
+
+  /// The entity's authority before the transfer.
+  final PeerId previous;
+
+  /// The entity's new authority.
+  final PeerId authority;
+
+  @override
+  bool operator ==(Object other) =>
+      other is AuthorityChanged &&
+      other.entity == entity &&
+      other.previous == previous &&
+      other.authority == authority;
+
+  @override
+  int get hashCode =>
+      Object.hash(AuthorityChanged, entity, previous, authority);
+
+  @override
+  String toString() =>
+      'AuthorityChanged(${entity.value}, '
+      '${previous.value} -> ${authority.value})';
+}
+
 /// The session moved to [state].
 final class SessionStateChanged extends SessionEvent {
   /// Creates an event reporting a move to [state], for [reason] if the

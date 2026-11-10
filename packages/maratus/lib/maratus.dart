@@ -8,7 +8,7 @@ library;
 
 export 'src/core/admission.dart';
 export 'src/core/clock.dart';
-export 'src/core/entity_registry.dart';
+export 'src/core/entity_registry.dart' hide changeAuthority;
 export 'src/core/multiplayer_session.dart';
 export 'src/core/session_events.dart';
 export 'src/protocol/identifiers.dart'

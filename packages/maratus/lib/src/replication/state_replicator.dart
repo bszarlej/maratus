@@ -428,8 +428,13 @@ final class _StateReplicator {
       _reject(message.entity, sender, StateRejection.unknownEntity);
       return;
     }
-    // A late update for a removed entity is a harmless race.
-    if (entity.state == EntityState.removed) return;
+    // A late update for a removed entity is a harmless race, and so is state
+    // that a client sent before applying a transfer of the entity's
+    // authority that the host has made.
+    if (entity.state == EntityState.removed ||
+        (session._isHost && session._authorities.awaits(entity, sender))) {
+      return;
+    }
     final writer = session._isHost
         ? entity.authority == sender
         : entity.authority != session._localPeer;

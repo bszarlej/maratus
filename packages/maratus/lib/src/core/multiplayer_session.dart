@@ -23,6 +23,7 @@ import 'session_events.dart';
 part 'rpc_dispatcher.dart';
 part 'entity_attachment.dart';
 part 'session_diagnostics.dart';
+part '../replication/authority_replicator.dart';
 part '../replication/interpolation.dart';
 part '../replication/spawn_replicator.dart';
 part '../replication/state_replicator.dart';
@@ -111,8 +112,10 @@ typedef SessionMessageHandler =
 /// [despawn]; each peer creates their local representation through
 /// [bindSpawn] handlers. Each entity's authority sends its synchronized
 /// properties when [captureState] runs, and the host relays them, so only
-/// the authority writes them. A joining client receives the live entities
-/// and their latest values in its baseline, and every later change after it.
+/// the authority writes them. The host can move an entity's authority to
+/// another peer with [transferAuthority]. A joining client receives the
+/// live entities, their authorities, and their latest values in its
+/// baseline, and every later change after it.
 final class MultiplayerSession {
   /// Creates a session for the messages of [schema], timed by [clock].
   ///
@@ -182,6 +185,7 @@ final class MultiplayerSession {
   late final _rpcDispatcher = _RpcDispatcher(this);
   late final _attachments = _EntityAttachments(this);
   late final _spawns = _SpawnReplicator(this);
+  late final _authorities = _AuthorityReplicator(this);
   late final _states = _StateReplicator(this);
 
   /// How long this session waits for each stage of joining.
@@ -600,7 +604,8 @@ final class MultiplayerSession {
   /// Each session registers the schema's static entities when it starts
   /// hosting or joining, before it handles any message, so they exist on
   /// every peer with the same IDs. The host owns them and is their
-  /// authority. Like any entity, each starts pending until an attachment or
+  /// authority until it transfers one with [transferAuthority]. Like any
+  /// entity, each starts pending until an attachment or
   /// [EntityRegistry.markReady] makes it ready. Static entities are not
   /// spawned, so [despawn] does not remove them; they are removed when the
   /// session disconnects, and the next session registers them again.
@@ -629,10 +634,11 @@ final class MultiplayerSession {
   /// pending; an attachment or [EntityRegistry.markReady] makes it ready.
   ///
   /// [owner] controls the entity's input and must be the host or a joined
-  /// client. [authority] is fixed for the entity's lifetime and must be the
-  /// host or [owner]. A [parent] must be a replicated entity of this
-  /// session; despawning it also despawns this entity. [onOwnerLeft] decides
-  /// what happens to the entity when a client [owner] leaves.
+  /// client. [authority] must be the host or [owner]; [transferAuthority]
+  /// can move it to another peer later. A [parent] must be a replicated
+  /// entity of this session; despawning it also despawns this entity.
+  /// [onOwnerLeft] decides what happens to the entity when a client [owner]
+  /// leaves.
   ///
   /// Throws a [StateError] unless hosting, and an [ArgumentError] for a
   /// foreign [type] handle, invalid metadata, or [data] that cannot make a
@@ -664,6 +670,35 @@ final class MultiplayerSession {
   /// Throws a [StateError] unless hosting, and an [ArgumentError] for an
   /// entity of another registry, or a live one that was not spawned.
   bool despawn(NetworkEntity entity) => _spawns.despawn(entity);
+
+  /// Transfers the authority of the replicated or static [entity] to
+  /// [authority], on every peer.
+  ///
+  /// Only a hosting session transfers authority. The host applies the
+  /// transfer at once, then replicates it to every joined client in
+  /// revision order, after the state that preceded it. A joining client
+  /// receives each entity's current authority in its baseline. Every peer
+  /// reports the change as an [AuthorityChanged] event while applying it.
+  ///
+  /// The entity keeps a single writer. A client that the transfer makes, or
+  /// stops being, the authority acknowledges the transfer as it applies it.
+  /// The host drops the entity's state that such a client sent before its
+  /// acknowledgement, without reporting it: state that the previous
+  /// authority sent before it learned of the transfer, and state that a new
+  /// authority sent before applying it. The new authority's synchronizer
+  /// then samples its local state, and every other synchronizer applies the
+  /// values received from it. RPCs keep their routing: from the transfer
+  /// on, the host checks [RpcCaller.authority] and selects
+  /// [RpcTarget.authority] with the new authority.
+  ///
+  /// [authority] must be the host or a ready client. Returns `false`,
+  /// changing nothing, if it is already the entity's authority.
+  ///
+  /// Throws a [StateError] unless hosting, and an [ArgumentError] for an
+  /// entity that is not a live replicated or static entity of this session,
+  /// or for an [authority] that is neither the host nor a ready client.
+  bool transferAuthority(NetworkEntity entity, PeerId authority) =>
+      _authorities.transfer(entity, authority);
 
   /// Binds handlers that create and release the local representation of
   /// replicated entities of [type], such as their components.
@@ -711,14 +746,15 @@ final class MultiplayerSession {
     }
   }
 
-  /// Sends a spawn or despawn [message] with a new revision to every joined
-  /// client, then removes the clients whose transports refused it.
+  /// Sends a spawn, despawn, or authority [message] with a new revision to
+  /// every joined client, then removes the clients whose transports refused
+  /// it. Returns the message's revision.
   ///
   /// Each client's held state is sent first, so the message follows it. The
   /// revision is taken afterward, so it exceeds the revisions of that state.
   /// Removal waits until every client has been offered the message, so the
   /// cleanup of a departure never interleaves with it.
-  void _replicate(ProtocolMessage message) {
+  int _replicate(ProtocolMessage message) {
     final refused = <_Remote>[];
     final remotes = _peers.values.toList();
     for (final remote in remotes) {
@@ -730,6 +766,7 @@ final class MultiplayerSession {
       if (!_transmit(remote, message, revision: revision)) refused.add(remote);
     }
     refused.forEach(_refused);
+    return revision;
   }
 
   /// Sends a state [message] about [entity], whose fields encode as [fields],
@@ -879,6 +916,7 @@ final class MultiplayerSession {
     _coalescedStates = 0;
     _rpcDispatcher.clear();
     _spawns.clear();
+    _authorities.clear();
     _states.clear();
     registry.clear();
     _staticEntities.clear();
@@ -1003,6 +1041,19 @@ final class MultiplayerSession {
       // A client sends only state that it sampled, with its sample time.
       case (_RemoteState.ready, StateMessage(sampledAt: _?)):
         _states.receive(remote.peer!, envelope, origin: remote);
+      // A client that is still synchronizing may lose the authority of an
+      // entity it owns.
+      case (
+        _RemoteState.synchronizing || _RemoteState.ready,
+        AuthorityAckMessage message,
+      ):
+        if (!_authorities.acknowledge(
+          remote.peer!,
+          message,
+          envelope.revision,
+        )) {
+          _drop(remote, DisconnectReason.protocolViolation, notify: true);
+        }
       default:
         _drop(remote, DisconnectReason.protocolViolation, notify: true);
     }
@@ -1125,6 +1176,7 @@ final class MultiplayerSession {
           revision: _revision,
         ) ||
         !_spawns.sendBaseline(remote) ||
+        !_authorities.sendBaseline(remote) ||
         !_states.sendBaseline(remote)) {
       return;
     }
@@ -1159,6 +1211,12 @@ final class MultiplayerSession {
         if (!_spawns.applySpawn(message, baseline: true)) {
           _drop(remote, DisconnectReason.protocolViolation, notify: true);
         }
+      case (_RemoteState.synchronizing, AuthorityMessage message)
+          when envelope.revision == _revision:
+        // The authority of a static entity that the host transferred.
+        if (!_authorities.apply(message, envelope.revision)) {
+          _drop(remote, DisconnectReason.protocolViolation, notify: true);
+        }
       case (_RemoteState.synchronizing, StateMessage())
           when envelope.revision == _revision:
         // Baseline values of an entity.
@@ -1170,7 +1228,10 @@ final class MultiplayerSession {
         remote.state = _RemoteState.installing;
       case (
         _RemoteState.installing || _RemoteState.ready,
-        SpawnMessage() || DespawnMessage() || StateMessage(),
+        SpawnMessage() ||
+            DespawnMessage() ||
+            AuthorityMessage() ||
+            StateMessage(),
       ):
         if (envelope.revision <= _revision) {
           _obsoleteMessages++;
@@ -1180,6 +1241,10 @@ final class MultiplayerSession {
         final consistent = switch (envelope.message) {
           SpawnMessage message => _spawns.applySpawn(message),
           DespawnMessage message => _spawns.applyDespawn(message),
+          AuthorityMessage message => _authorities.apply(
+            message,
+            envelope.revision,
+          ),
           _ => true,
         };
         if (!consistent) {
@@ -1328,6 +1393,7 @@ final class MultiplayerSession {
     if (peer != null) {
       _peers.remove(peer);
       _emit(PeerLeft(peer, reason));
+      _authorities.peerLeft(peer);
       if (release) _spawns.peerLeft(peer);
     }
   }
@@ -1345,6 +1411,7 @@ final class MultiplayerSession {
     _joinRequest = null;
     _rejectionReason = reason == DisconnectReason.rejected ? detail : null;
     _rpcDispatcher.clear();
+    _authorities.clear();
     _states.clear();
     final ended = _spawns.end();
     registry.clear();

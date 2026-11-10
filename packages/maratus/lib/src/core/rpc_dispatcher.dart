@@ -30,7 +30,7 @@ final class RpcContext {
   /// The entity's input owner when the call was accepted locally.
   final PeerId owner;
 
-  /// The entity's fixed authority.
+  /// The entity's authority when the call was accepted locally.
   final PeerId authority;
 
   /// The host session in which the call was accepted.

@@ -16,7 +16,7 @@ enum EntityState {
 
 /// A networked entity in an [EntityRegistry].
 final class NetworkEntity {
-  NetworkEntity._(this.id, this.owner, this.authority);
+  NetworkEntity._(this.id, this.owner, this._authority);
 
   /// The ID of this entity, unique within its session.
   final EntityId id;
@@ -25,9 +25,14 @@ final class NetworkEntity {
   /// owner-only RPCs.
   final PeerId owner;
 
-  /// The peer whose copy of this entity is the source of truth. It is fixed
-  /// for the entity's lifetime.
-  final PeerId authority;
+  /// The peer whose copy of this entity is the source of truth, and which
+  /// writes its synchronized properties.
+  ///
+  /// The host can transfer the authority of a replicated or static entity
+  /// with `MultiplayerSession.transferAuthority`, and every peer reports
+  /// the change as an `AuthorityChanged` event while applying it.
+  PeerId get authority => _authority;
+  PeerId _authority;
 
   /// The lifecycle state of this entity.
   EntityState get state => _state;
@@ -150,3 +155,10 @@ final class EntityRegistry {
       _entities[id] ??
       (throw ArgumentError.value(id.value, 'id', 'is not registered'));
 }
+
+/// Makes [authority] the authority of [entity] on this peer only.
+///
+/// The session calls this while it replicates or applies a transfer; it is
+/// not exported.
+void changeAuthority(NetworkEntity entity, PeerId authority) =>
+    entity._authority = authority;
