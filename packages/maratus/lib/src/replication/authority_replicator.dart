@@ -18,8 +18,31 @@ final class _AuthorityReplicator {
   /// revision of the latest such transfer.
   final _awaited = <NetworkEntity, Map<PeerId, int>>{};
 
+  /// The revision of the latest transfer of each entity's authority.
+  /// [forgetEntity] drops a despawned entity's entry, and [prune], which
+  /// every update runs, the entries of entities removed otherwise.
+  final _transfers = <NetworkEntity, int>{};
+
+  int lastTransfer(NetworkEntity entity) => _transfers[entity] ?? 0;
+
+  void forgetEntity(EntityId id) {
+    _transfers.removeWhere((entity, _) => entity.id == id);
+    _awaited.removeWhere((entity, _) => entity.id == id);
+  }
+
+  void prune() {
+    bool gone(NetworkEntity entity) =>
+        entity.state == EntityState.removed ||
+        !identical(session.registry[entity.id], entity);
+    _transfers.removeWhere((entity, _) => gone(entity));
+    _awaited.removeWhere((entity, _) => gone(entity));
+  }
+
   /// Forgets the transfers of a previous session.
-  void clear() => _awaited.clear();
+  void clear() {
+    _awaited.clear();
+    _transfers.clear();
+  }
 
   bool transfer(NetworkEntity entity, PeerId authority) {
     if (session._state != SessionState.hosting) {
@@ -57,6 +80,7 @@ final class _AuthorityReplicator {
     // Clients whose transports refused the transfer have left, and their
     // departure may have despawned the entity or transferred it again.
     if (entity.state == EntityState.removed) return;
+    _transfers[entity] = max(_transfers[entity] ?? 0, revision);
     for (final peer in {previous, authority}) {
       if (peer == PeerId.host || !session._peers.containsKey(peer)) continue;
       (_awaited[entity] ??= {})[peer] = revision;
@@ -150,6 +174,7 @@ final class _AuthorityReplicator {
     }
     final previous = entity.authority;
     final local = session._localPeer;
+    _transfers[entity] = revision;
     _change(entity, message.authority);
     final host = session._peers[PeerId.host];
     if (host != null && (previous == local || message.authority == local)) {

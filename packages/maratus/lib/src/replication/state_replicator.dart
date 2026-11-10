@@ -16,7 +16,8 @@ enum SyncMode {
 /// describes; every other peer receives it and passes a copy to [set]. A
 /// sample is the field codec's encoding of the value, so sampling copies
 /// mutable values such as vectors, and a value is unchanged while its encoding
-/// is unchanged.
+/// is unchanged. Fields with unreliable delivery require [SyncMode.always],
+/// so the next sample repairs a lost update even if its value is unchanged.
 final class SyncProperty<T> {
   /// Describes how [field] is read with [get] and written with [set].
   ///
@@ -119,7 +120,8 @@ final class SyncSnapshot<T> {
 /// Create one with [EntityAttachment.synchronize]. On the entity's authority,
 /// [MultiplayerSession.captureState] samples the [properties] at most once per
 /// [interval] of the session's clock, independent of how often it is called,
-/// and sends the fields that are due in one message. On every other peer,
+/// and groups the fields that are due by delivery mode and channel. On every
+/// other peer,
 /// [MultiplayerSession.update] passes the latest authoritative values to the
 /// setters while the attachment is ready, so a component that becomes ready
 /// later still receives the current values. Applying received values never
@@ -239,6 +241,10 @@ final class _StateReplicator {
   /// sent on the authority, and the last ones received elsewhere.
   final _values = <NetworkEntity, Map<FieldId, _FieldValue>>{};
 
+  /// The newest independent-lane sample accepted for each field. Sequences
+  /// are compared per field because different channels may arrive out of order.
+  final _sequences = <NetworkEntity, Map<FieldId, int>>{};
+
   /// The entities that this peer became the authority of, whose
   /// synchronizers apply the values received before that ahead of their
   /// first sample.
@@ -252,26 +258,32 @@ final class _StateReplicator {
   void clear() {
     _lifetime++;
     _values.clear();
+    _sequences.clear();
     _catchingUp.clear();
   }
 
   /// Forgets the values of a despawned entity.
   void forget(EntityId entity) {
+    session._authorities.forgetEntity(entity);
     _values.removeWhere((key, _) => key.id == entity);
+    _sequences.removeWhere((key, _) => key.id == entity);
     _catchingUp.removeWhere((key) => key.id == entity);
   }
 
   void _prune() {
+    session._authorities.prune();
     bool gone(NetworkEntity entity) =>
         entity.state == EntityState.removed ||
         !identical(session.registry[entity.id], entity);
     _values.removeWhere((entity, _) => gone(entity));
+    _sequences.removeWhere((entity, _) => gone(entity));
     _catchingUp.removeWhere(gone);
   }
 
   /// Switches the roles of [entity]'s synchronizer after its authority
   /// moved from [previous] on this peer.
   void transferred(NetworkEntity entity, PeerId previous) {
+    _sequences.remove(entity);
     final local = session._localPeer;
     final values = _values[entity];
     if (!session._isHost && previous == local) {
@@ -314,7 +326,12 @@ final class _StateReplicator {
       for (final MapEntry(key: field, :value) in fields.entries)
         field: value.bytes,
     };
-    for (final message in _messages(entity, values, sampledAt: null)) {
+    for (final message in _messages(
+      entity,
+      values,
+      sampledAt: null,
+      reliable: true,
+    )) {
       if (!session._sendChange(remote, message)) return false;
     }
     return true;
@@ -358,6 +375,14 @@ final class _StateReplicator {
           field.id.value,
           'properties',
           'binds a field more than once',
+        );
+      }
+      if (field.deliveryMode != DeliveryMode.reliable &&
+          property.mode != SyncMode.always) {
+        throw ArgumentError.value(
+          field.id.value,
+          'properties',
+          'unreliable fields must use SyncMode.always',
         );
       }
     }
@@ -540,7 +565,14 @@ final class _StateReplicator {
       return;
     }
     final received = <FieldId, Uint8List>{};
+    final sequence = message.sequence;
+    var current = sequence == null;
     for (final MapEntry(key: field, :value) in message.values.entries) {
+      final previous = _sequences[entity]?[field];
+      if (sequence != null && previous != null && sequence <= previous) {
+        continue;
+      }
+      current = true;
       try {
         received[field] = _encode(field, value);
       } on Object catch (error, stackTrace) {
@@ -549,10 +581,14 @@ final class _StateReplicator {
       }
       if (_lifetime != lifetime) return;
     }
+    // A sample that is older than the newest one of each of its fields is
+    // obsolete, like a control change with an old revision.
+    if (!current) return;
     for (final accepted in _messages(
       entity,
       received,
       sampledAt: message.sampledAt,
+      reliable: sequence == null,
     )) {
       if (_lifetime != lifetime ||
           entity.state == EntityState.removed ||
@@ -564,6 +600,12 @@ final class _StateReplicator {
         for (final field in accepted.values.keys) field: received[field]!,
       };
       _retain(entity, fields, now, sampledAt: message.sampledAt);
+      if (sequence != null) {
+        final sequences = _sequences.putIfAbsent(entity, () => {});
+        for (final field in fields.keys) {
+          sequences[field] = sequence;
+        }
+      }
       final synchronizer = _synchronizers[entity.id];
       if (synchronizer != null &&
           !synchronizer.isDisposed &&
@@ -612,8 +654,8 @@ final class _StateReplicator {
         if (sampledAt == null || time > sampledAt) sampledAt = time;
       }
       for (final message in [
-        ..._messages(entity, settled, sampledAt: null),
-        ..._messages(entity, sampled, sampledAt: sampledAt),
+        ..._messages(entity, settled, sampledAt: null, reliable: true),
+        ..._messages(entity, sampled, sampledAt: sampledAt, reliable: true),
       ]) {
         if (!session._send(remote, message, revision: session._revision)) {
           return false;
@@ -755,73 +797,103 @@ final class _StateReplicator {
     }
   }
 
-  /// Splits [fields] into state messages within the wire limits, stamped
-  /// with the authority's [sampledAt], if any: one for all of them when
-  /// possible, otherwise one for each field.
+  /// Groups [fields] by delivery mode and channel, then splits groups to
+  /// fit the wire and transport limits, stamped with the authority's
+  /// [sampledAt], if any. Baselines and authority resyncs use [reliable]
+  /// delivery on the control channel regardless of field configuration, so
+  /// all of their fields share one group.
   List<StateMessage> _messages(
     NetworkEntity entity,
     Map<FieldId, Uint8List> fields, {
     required Duration? sampledAt,
+    bool reliable = false,
   }) {
     if (fields.isEmpty) return const [];
     final lifetime = _lifetime;
-    final values = <FieldId, Object?>{};
+    final groups = <_Delivery, Map<FieldId, Object?>>{};
     for (final MapEntry(key: field, value: bytes) in fields.entries) {
       try {
-        values[field] = _decode(field, bytes);
+        final value = _decode(field, bytes);
+        final definition = session._schema.fieldDefinition(field)!;
+        final group = reliable
+            ? _defaultDelivery
+            : (mode: definition.deliveryMode, channel: definition.channel);
+        groups.putIfAbsent(group, () => {})[field] = value;
       } on Object catch (error, stackTrace) {
         if (_lifetime != lifetime) return const [];
         _fail(entity.id, field, error, stackTrace);
       }
       if (_lifetime != lifetime) return const [];
     }
-    if (values.isEmpty) return const [];
-    final combined = StateMessage(
-      entity: entity.id,
-      values: values,
-      sampledAt: sampledAt,
-    );
-    try {
-      _checkFits(combined);
-      return [combined];
-    } on Object catch (error, stackTrace) {
-      if (_lifetime != lifetime) return const [];
-      if (values.length == 1) {
-        _fail(entity.id, values.keys.single, error, stackTrace);
-        return const [];
-      }
-      // The combined message may exceed the byte, depth or collection
-      // limits. Check each field independently so valid fields still send.
-    }
     final messages = <StateMessage>[];
-    for (final MapEntry(key: field, :value) in values.entries) {
-      final single = StateMessage(
+    for (final values in groups.values) {
+      final combined = StateMessage(
         entity: entity.id,
-        values: {field: value},
+        values: values,
         sampledAt: sampledAt,
       );
       try {
-        _checkFits(single);
-        messages.add(single);
+        _checkFits(combined, reliable: reliable);
+        messages.add(combined);
+        continue;
       } on Object catch (error, stackTrace) {
         if (_lifetime != lifetime) return const [];
-        _fail(entity.id, field, error, stackTrace);
+        if (values.length == 1) {
+          _fail(entity.id, values.keys.single, error, stackTrace);
+          if (_lifetime != lifetime) return const [];
+          continue;
+        }
+        // A combined message may exceed the wire or transport limits.
+        // Check fields independently so valid fields still send.
       }
-      if (_lifetime != lifetime) return const [];
+      for (final MapEntry(key: field, :value) in values.entries) {
+        final single = StateMessage(
+          entity: entity.id,
+          values: {field: value},
+          sampledAt: sampledAt,
+        );
+        try {
+          _checkFits(single, reliable: reliable);
+          messages.add(single);
+        } on Object catch (error, stackTrace) {
+          if (_lifetime != lifetime) return const [];
+          _fail(entity.id, field, error, stackTrace);
+        }
+        if (_lifetime != lifetime) return const [];
+      }
     }
     return messages;
   }
 
   /// Checks [message] against the wire limits with any connection generation
   /// and revision, including envelopes containing only one field.
-  void _checkFits(StateMessage message) {
-    session._codec.encode(
+  void _checkFits(StateMessage message, {bool reliable = false}) {
+    // Live updates on an independent lane also carry a sequence.
+    final sequenced = !reliable && session._delivery.independent(message);
+    final bytes = session._codec.encode(
       MessageEnvelope(
-        message,
+        sequenced
+            ? StateMessage(
+                entity: message.entity,
+                values: message.values,
+                sampledAt: message.sampledAt,
+                sequence: IntCodec.maxSafe,
+              )
+            : message,
         generation: IntCodec.maxSafe,
         revision: IntCodec.maxSafe,
       ),
     );
+    final maximum = session._peer?.capabilities.maxUnreliableMessageBytes;
+    if (sequenced &&
+        maximum != null &&
+        bytes.length > maximum &&
+        session._delivery.lane(message).mode != DeliveryMode.reliable) {
+      throw ArgumentError(
+        'The state message exceeds the transport limit of $maximum bytes '
+        'for unreliable delivery.',
+      );
+    }
   }
 
   /// The canonical encoding of a value of [field], which serves as its
