@@ -1,0 +1,118 @@
+name: Release
+
+on:
+  push:
+    tags:
+      - 'maratus-v*'
+      - 'maratus_annotations-v*'
+      - 'maratus_flame-v*'
+      - 'maratus_generator-v*'
+
+permissions:
+  contents: read
+
+concurrency:
+  group: release-${{ github.ref }}
+  cancel-in-progress: false
+
+jobs:
+  publish:
+    name: Publish tagged package
+    runs-on: ubuntu-latest
+    timeout-minutes: 20
+    permissions:
+      contents: read
+      id-token: write
+    outputs:
+      package: ${{ steps.package.outputs.name }}
+      version: ${{ steps.package.outputs.version }}
+    steps:
+      - uses: actions/checkout@v7
+        with:
+          persist-credentials: false
+
+      # setup-dart configures pub.dev OIDC credentials. Flutter is installed
+      # afterwards so Melos uses the same bundled Dart SDK as the workspace CI.
+      - uses: dart-lang/setup-dart@v1
+
+      - uses: subosito/flutter-action@v2
+        with:
+          channel: stable
+          flutter-version: 3.47.x
+          cache: true
+
+      - name: Resolve workspace dependencies
+        run: flutter pub get
+
+      - name: Validate package tag
+        id: package
+        env:
+          RELEASE_TAG: ${{ github.ref_name }}
+        shell: python
+        run: |
+          import json
+          import os
+          import re
+          import subprocess
+
+          tag = os.environ['RELEASE_TAG']
+          match = re.fullmatch(
+              r'(maratus(?:_annotations|_flame|_generator)?)-v'
+              r'(\d+\.\d+\.\d+(?:-[0-9A-Za-z.-]+)?(?:\+[0-9A-Za-z.-]+)?)',
+              tag,
+          )
+          if not match:
+              raise SystemExit(f'Invalid package release tag: {tag}')
+          package, version = match.groups()
+          packages = json.loads(subprocess.check_output(
+              ['dart', 'run', 'melos', 'list', '--no-private', '--json'],
+              text=True,
+          ))
+          selected = [entry for entry in packages if entry['name'] == package]
+          if len(selected) != 1:
+              raise SystemExit(f'{package} is not a publishable workspace package')
+          if selected[0]['version'] != version:
+              raise SystemExit(f'Tag {tag} does not match the package version')
+          with open(os.environ['GITHUB_OUTPUT'], 'a') as output:
+              output.write(f'name={package}\nversion={version}\n')
+
+      - name: Validate tagged package for publishing
+        env:
+          PACKAGE: ${{ steps.package.outputs.name }}
+        run: dart run melos publish --scope="$PACKAGE" --no-private --dry-run --yes
+
+      - name: Publish tagged package
+        env:
+          PACKAGE: ${{ steps.package.outputs.name }}
+        run: dart run melos publish --scope="$PACKAGE" --no-private --no-dry-run --yes
+
+  github-release:
+    name: Create GitHub release
+    needs: publish
+    runs-on: ubuntu-latest
+    timeout-minutes: 5
+    permissions:
+      contents: write
+    steps:
+      - name: Create release for the published package
+        env:
+          GH_TOKEN: ${{ github.token }}
+          GH_REPO: ${{ github.repository }}
+          RELEASE_TAG: ${{ github.ref_name }}
+          PACKAGE: ${{ needs.publish.outputs.package }}
+          VERSION: ${{ needs.publish.outputs.version }}
+        run: |
+          if gh release view "$RELEASE_TAG" > /dev/null 2>&1; then
+            echo "Release $RELEASE_TAG already exists."
+            exit 0
+          fi
+          flags=()
+          if [[ "${VERSION%%+*}" == *-* ]]; then
+            flags+=(--prerelease)
+          fi
+          gh release create "$RELEASE_TAG" \
+            --verify-tag \
+            --title "$PACKAGE v$VERSION" \
+            --notes "Published [$PACKAGE $VERSION](https://pub.dev/packages/$PACKAGE/versions/$VERSION)." \
+            --generate-notes \
+            "${flags[@]}"
