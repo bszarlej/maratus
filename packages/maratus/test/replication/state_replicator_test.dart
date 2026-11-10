@@ -270,6 +270,9 @@ final class _RawClient {
   PeerConnection? connection;
   PeerId? id;
   var generation = 0;
+
+  /// The revision of the baseline that the host welcomed this client with.
+  var baseline = 0;
   final received = <ProtocolMessage>[];
 
   void update() {
@@ -282,6 +285,7 @@ final class _RawClient {
           if (envelope.message case WelcomeMessage(:final peer)) {
             id = peer;
             generation = envelope.generation;
+            baseline = envelope.revision;
           }
           received.add(envelope.message);
         case ConnectionClosed():
@@ -292,6 +296,17 @@ final class _RawClient {
 
   void send(ProtocolMessage message) => connection!.send(
     codec.encode(MessageEnvelope(message, generation: generation)),
+  );
+
+  /// Reports ready, acknowledging the baseline.
+  void ready() => connection!.send(
+    codec.encode(
+      MessageEnvelope(
+        const ReadyMessage(),
+        generation: generation,
+        revision: baseline,
+      ),
+    ),
   );
 }
 
@@ -569,10 +584,11 @@ void main() {
         ..health = 42
         ..name = 'Bob';
       final reader = _Model(second, onSecond, harness.schema);
+      final revision = harness.host.revision;
 
       harness.host.captureState();
       second.captureState();
-      expect(harness.host.revision, 0);
+      expect(harness.host.revision, revision);
       first.captureState();
       harness.run();
 
@@ -582,7 +598,7 @@ void main() {
       expect(harness.observed[second], [_stateFrom(PeerId.host, _fields)]);
       expect(harness.observed[first], isNull);
       expect(writer.applied, isEmpty);
-      expect(first.revision, 0);
+      expect(first.revision, revision);
       expect(second.revision, harness.host.revision);
     });
 
@@ -593,7 +609,7 @@ void main() {
       harness.run();
       raw.send(HelloMessage(fingerprint: harness.schema.schema.fingerprint));
       harness.run();
-      raw.send(const ReadyMessage());
+      raw.ready();
       harness.run();
       final [hostEntity, readerEntity] = harness.register(1);
       final [removed, _] = harness.register(
@@ -644,7 +660,7 @@ void main() {
       harness.run();
       raw.send(HelloMessage(fingerprint: harness.schema.schema.fingerprint));
       harness.run();
-      raw.send(const ReadyMessage());
+      raw.ready();
       harness.run();
       final [entity] = harness.register(1, owner: raw.id!, authority: raw.id!);
       final model = _Model(harness.host, entity, harness.schema);
@@ -924,7 +940,9 @@ void main() {
       expect(spawned[joiner]!.values, spawned[harness.host]!.values);
       expect(relayed.health, 30);
       expect(harness.observedBy(joiner), 2);
-      expect(joiner.revision, harness.host.revision);
+      // Only the host's report that the joiner is ready, which goes to the
+      // other clients, follows the baseline.
+      expect(joiner.revision, harness.host.revision - 1);
     });
 
     test('despawning forgets the values of an entity', () {
@@ -1015,6 +1033,7 @@ void main() {
               harness.schema.huge.property(get: () => 'h' * 70000),
             ]);
         _drain(harness.host);
+        final revision = harness.host.revision;
 
         harness.host.captureState();
         harness.run();
@@ -1025,7 +1044,7 @@ void main() {
         expect(failure.field, harness.schema.huge.id);
         expect(failure.error, isA<ArgumentError>());
         expect(synchronizer.snapshot(harness.schema.huge), isNull);
-        expect(harness.host.revision, 0);
+        expect(harness.host.revision, revision);
         expect(harness.observedBy(client), 0);
         expect(client.state, SessionState.ready);
       },

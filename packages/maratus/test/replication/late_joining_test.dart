@@ -351,7 +351,9 @@ void main() {
         // that revision, while Dee, spawned after the baseline, still loads.
         expect(client.session.state, SessionState.ready);
         expect(host.isReady(_client1), isTrue);
-        expect(client.session.revision, host.revision);
+        // Only the host's report that the client is ready, which goes to
+        // the other clients, follows it.
+        expect(client.session.revision, host.revision - 1);
         expect(client.world, harness.host.world);
         expect(client['Dee'].entity.state, EntityState.pending);
         expect(client['Ada'].applied, [(30, SessionState.synchronizing)]);
@@ -555,6 +557,9 @@ void main() {
 
       expect(client.session.disconnectReason, DisconnectReason.bootstrapFailed);
       expect(_drain(client.session).skip(3), [
+        // The observer, from the baseline.
+        const PeerJoined(_client1),
+        const PeerReady(_client1),
         isA<SpawnHandlerFailed>()
             .having((event) => event.entity, 'entity', bob.id)
             .having((event) => event.error, 'error', isStateError),
@@ -572,6 +577,7 @@ void main() {
       ]);
       expect(observer.spawned, ['Ada', 'Bob', 'Cy']);
       expect(observer.world, harness.host.world);
+      expect(observer.session.peers, [PeerId.host]);
       expect(harness.host.avatars.values.map((avatar) => avatar.name), [
         'Ada',
         'Bob',

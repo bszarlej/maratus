@@ -23,6 +23,7 @@ import 'session_events.dart';
 part 'rpc_dispatcher.dart';
 part 'entity_attachment.dart';
 part 'session_diagnostics.dart';
+part 'session_membership.dart';
 part '../replication/authority_replicator.dart';
 part '../replication/interpolation.dart';
 part '../replication/spawn_replicator.dart';
@@ -104,7 +105,10 @@ typedef SessionMessageHandler =
 /// and the client applies later changes only in increasing revision order.
 /// A joining client keeps applying them while it installs the baseline, and
 /// reports ready, with the latest revision it applied, once every entity of
-/// the baseline is ready.
+/// the baseline is ready. Membership is replicated the same way: every
+/// client learns which other clients joined, became ready, and left, from
+/// its baseline and then in revision order, so it learns about a client
+/// before any entity that the client owns.
 ///
 /// The schema's static entities exist on every peer, with the same IDs, as
 /// soon as it starts hosting or joining; [staticEntity] returns them. The
@@ -184,6 +188,7 @@ final class MultiplayerSession {
   final SessionMessageHandler? _onMessage;
   late final _rpcDispatcher = _RpcDispatcher(this);
   late final _attachments = _EntityAttachments(this);
+  late final _membership = _SessionMembership(this);
   late final _spawns = _SpawnReplicator(this);
   late final _authorities = _AuthorityReplicator(this);
   late final _states = _StateReplicator(this);
@@ -310,14 +315,29 @@ final class MultiplayerSession {
   /// client, the latest one it applied.
   int get revision => _revision;
 
-  /// The peers this session exchanges messages with: on a host, the clients
-  /// it accepted; on a client, the host once it accepted this client.
-  List<PeerId> get peers => List.unmodifiable(_peers.keys);
+  /// The other peers of this session: on a host, the clients it admitted;
+  /// on a client, once the host accepted this client, the host and the
+  /// other clients that the host has told it about.
+  ///
+  /// A client learns about the other clients in revision order, so its list
+  /// follows the host's: a client joins it before any entity that it owns
+  /// arrives, and leaves it before the host's reaction to its departure,
+  /// such as despawning its entities. [PeerJoined] and [PeerLeft] report
+  /// each change on every peer, though a client does not report the host or
+  /// itself. The list never includes the local peer.
+  List<PeerId> get peers => List.unmodifiable(
+    _isHost ? _peers.keys : [..._peers.keys, ..._membership.members],
+  );
 
   /// Whether [peer] takes part in gameplay: on a host, whether the client
-  /// reported ready; on a client, whether [peer] is the host and this
-  /// client is ready.
-  bool isReady(PeerId peer) => _peers[peer]?.state == _RemoteState.ready;
+  /// reported ready; on a client, whether the host has told it that the
+  /// other client [peer] is ready or, for [PeerId.host], whether this client
+  /// is ready.
+  ///
+  /// On a client, this tells which peers a call with [RpcTarget.peer] can
+  /// reach, as of the latest revision that the client applied.
+  bool isReady(PeerId peer) =>
+      _peers[peer]?.state == _RemoteState.ready || _membership.isReady(peer);
 
   /// The number of messages dropped because they carried the generation of
   /// another connection.
@@ -752,17 +772,20 @@ final class MultiplayerSession {
     }
   }
 
-  /// Sends a spawn, despawn, or authority [message] with a new revision to
-  /// every joined client, then removes the clients whose transports refused
-  /// it. Returns the message's revision.
+  /// Sends a membership, spawn, despawn, or authority [message] with a new
+  /// revision to every joined client except [except], then removes the
+  /// clients whose transports refused it. Returns the message's revision.
   ///
   /// Each client's held state is sent first, so the message follows it. The
   /// revision is taken afterward, so it exceeds the revisions of that state.
   /// Removal waits until every client has been offered the message, so the
   /// cleanup of a departure never interleaves with it.
-  int _replicate(ProtocolMessage message) {
+  int _replicate(ProtocolMessage message, {_Remote? except}) {
     final refused = <_Remote>[];
-    final remotes = _peers.values.toList();
+    final remotes = [
+      for (final remote in _peers.values)
+        if (!identical(remote, except)) remote,
+    ];
     for (final remote in remotes) {
       if (!_flush(remote, all: true)) refused.add(remote);
     }
@@ -922,6 +945,7 @@ final class MultiplayerSession {
     _received.clear();
     _coalescedStates = 0;
     _rpcDispatcher.clear();
+    _membership.clear();
     _spawns.clear();
     _authorities.clear();
     _states.clear();
@@ -1043,6 +1067,7 @@ final class MultiplayerSession {
           ..state = _RemoteState.ready
           ..deadline = null;
         _emit(PeerReady(remote.peer!));
+        _membership.ready(remote);
       case (_RemoteState.ready, RpcMessage message):
         _rpcDispatcher.route(remote.peer!, message);
       // A client sends only state that it sampled, with its sample time.
@@ -1167,6 +1192,9 @@ final class MultiplayerSession {
 
   void _welcome(_Remote remote) {
     final peer = remote.candidate!;
+    // The other clients learn about the new client first, so its baseline
+    // follows that change and leaves out any client removed meanwhile.
+    _membership.joined(peer);
     remote
       ..peer = peer
       ..generation = _nextGeneration++
@@ -1176,12 +1204,14 @@ final class MultiplayerSession {
     _accepted(remote);
     _peers[peer] = remote;
     _emit(PeerJoined(peer));
-    // The baseline holds the live entities, then their latest values.
+    // The baseline holds the other clients, the live entities, and then
+    // their latest values.
     if (!_send(
           remote,
           WelcomeMessage(peer: peer, epoch: _epoch!),
           revision: _revision,
         ) ||
+        !_membership.sendBaseline(remote) ||
         !_spawns.sendBaseline(remote) ||
         !_authorities.sendBaseline(remote) ||
         !_states.sendBaseline(remote)) {
@@ -1211,6 +1241,15 @@ final class MultiplayerSession {
         _epoch = epoch;
         _revision = envelope.revision;
         _setState(SessionState.synchronizing);
+      case (
+            _RemoteState.synchronizing,
+            PeerJoinedMessage() || PeerReadyMessage(),
+          )
+          when envelope.revision == _revision:
+        // A baseline record: a client that joined before this one.
+        if (!_membership.apply(envelope.message)) {
+          _drop(remote, DisconnectReason.protocolViolation, notify: true);
+        }
       case (_RemoteState.synchronizing, SpawnMessage message)
           when envelope.revision == _revision:
         // A baseline record: an entity that existed when the host welcomed
@@ -1235,7 +1274,10 @@ final class MultiplayerSession {
         remote.state = _RemoteState.installing;
       case (
         _RemoteState.installing || _RemoteState.ready,
-        SpawnMessage() ||
+        PeerJoinedMessage() ||
+            PeerReadyMessage() ||
+            PeerLeftMessage() ||
+            SpawnMessage() ||
             DespawnMessage() ||
             AuthorityMessage() ||
             StateMessage(),
@@ -1246,6 +1288,9 @@ final class MultiplayerSession {
         }
         _revision = envelope.revision;
         final consistent = switch (envelope.message) {
+          PeerJoinedMessage() ||
+          PeerReadyMessage() ||
+          PeerLeftMessage() => _membership.apply(envelope.message),
           SpawnMessage message => _spawns.applySpawn(message),
           DespawnMessage message => _spawns.applyDespawn(message),
           AuthorityMessage message => _authorities.apply(
@@ -1372,10 +1417,11 @@ final class MultiplayerSession {
   /// Ends the connection to [remote] for [reason], first telling it why if
   /// [notify] is set and the reason can be stated in a goodbye.
   ///
-  /// On a client, this disconnects the session. On a host, it then applies
-  /// the departed client's [OwnerLeftPolicy] to its entities and takes the
-  /// authority of the remaining entities that the client was the authority
-  /// of, unless [release] is false because the whole session is closing.
+  /// On a client, this disconnects the session. On a host, it then tells the
+  /// remaining clients that the client left, applies the departed client's
+  /// [OwnerLeftPolicy] to its entities, and takes the authority of the
+  /// remaining entities that the client was the authority of, unless
+  /// [release] is false because the whole session is closing.
   void _drop(
     _Remote remote,
     DisconnectReason reason, {
@@ -1403,6 +1449,7 @@ final class MultiplayerSession {
       _emit(PeerLeft(peer, reason));
       _authorities.forget(peer);
       if (release) {
+        _membership.left(peer, reason);
         _spawns.peerLeft(peer);
         _authorities.reclaim(peer);
       }
@@ -1422,6 +1469,7 @@ final class MultiplayerSession {
     _joinRequest = null;
     _rejectionReason = reason == DisconnectReason.rejected ? detail : null;
     _rpcDispatcher.clear();
+    _membership.clear();
     _authorities.clear();
     _states.clear();
     final ended = _spawns.end();

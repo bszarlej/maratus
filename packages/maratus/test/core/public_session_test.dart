@@ -60,12 +60,18 @@ void main() {
     expect(host.peers, [firstId, secondId]);
     expect(host.isReady(firstId), isTrue);
     expect(host.isReady(secondId), isTrue);
-    expect(_events(first), const [
-      SessionStateChanged(SessionState.connecting),
-      SessionStateChanged(SessionState.handshaking),
-      SessionStateChanged(SessionState.synchronizing),
-      SessionStateChanged(SessionState.ready),
+    expect(_events(first), [
+      const SessionStateChanged(SessionState.connecting),
+      const SessionStateChanged(SessionState.handshaking),
+      const SessionStateChanged(SessionState.synchronizing),
+      PeerJoined(secondId),
+      const SessionStateChanged(SessionState.ready),
+      PeerReady(secondId),
     ]);
+    expect(first.peers, [PeerId.host, secondId]);
+    expect(first.isReady(secondId), isTrue);
+    expect(second.peers, [PeerId.host, firstId]);
+    expect(second.isReady(firstId), isTrue);
     expect(
       _events(host),
       containsAllInOrder([
@@ -132,6 +138,8 @@ void main() {
       _events(host),
       contains(PeerLeft(secondId, DisconnectReason.kicked)),
     );
+    expect(_events(first), [PeerLeft(secondId, DisconnectReason.kicked)]);
+    expect(first.peers, [PeerId.host]);
 
     first.close();
     expect(first.state, SessionState.disconnected);
@@ -147,7 +155,9 @@ void main() {
     expect(first.localPeer, isNot(firstId));
     expect(first.generation, isNot(firstGeneration));
     expect(first.epoch, host.epoch);
-    expect(first.revision, revision);
+    // The departures and the new join took revisions of their own.
+    expect(first.revision, greaterThan(revision));
+    expect(first.peers, [PeerId.host]);
 
     host.close();
     expect(host.state, SessionState.disconnected);

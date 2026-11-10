@@ -147,7 +147,7 @@ final class _Harness {
     raw.send(HelloMessage(fingerprint: schema.fingerprint));
     run();
     if (ready) {
-      raw.send(const ReadyMessage());
+      raw.ready();
       run();
     }
     _drain(host);
@@ -163,6 +163,9 @@ final class _RawClient {
   PeerConnection? connection;
   PeerId? id;
   var generation = 0;
+
+  /// The revision of the baseline that the host welcomed this client with.
+  var baseline = 0;
   final received = <ProtocolMessage>[];
 
   void update() {
@@ -175,6 +178,7 @@ final class _RawClient {
           if (envelope.message case WelcomeMessage(:final peer)) {
             id = peer;
             generation = envelope.generation;
+            baseline = envelope.revision;
           }
           received.add(envelope.message);
         case ConnectionClosed():
@@ -201,6 +205,17 @@ final class _RawClient {
           ),
         ),
       );
+
+  /// Reports ready, acknowledging the baseline.
+  void ready() => connection!.send(
+    codec.encode(
+      MessageEnvelope(
+        const ReadyMessage(),
+        generation: generation,
+        revision: baseline,
+      ),
+    ),
+  );
 }
 
 final class _RawHostHarness {
@@ -437,21 +452,26 @@ void main() {
       final harness = _Harness(
         target: RpcTarget.all,
         local: RpcLocal.include,
-        hostOutgoingLimits: const QueueLimits(maxMessages: 2),
+        // Enough for a baseline that lists the other client.
+        hostOutgoingLimits: const QueueLimits(maxMessages: 4),
       );
       final entity = harness.entity(harness.host);
-      expect(harness.host.callRpc(entity, harness.rpc, 1), isTrue);
-      expect(harness.host.callRpc(entity, harness.rpc, 2), isTrue);
-      expect(harness.host.callRpc(entity, harness.rpc, 3), isFalse);
-      expect(harness.invocations.map((call) => call.payload), [1, 2, 3]);
+      for (var payload = 1; payload <= 4; payload++) {
+        expect(harness.host.callRpc(entity, harness.rpc, payload), isTrue);
+      }
+      expect(harness.host.callRpc(entity, harness.rpc, 5), isFalse);
+      expect(harness.invocations.map((call) => call.payload), [1, 2, 3, 4, 5]);
       expect(harness.host.state, SessionState.hosting);
+      // The first client's departure did not fit the second client's queue
+      // either, which removed it before its own delivery.
+      expect(harness.host.peers, isEmpty);
       harness.run();
-      expect(harness.invocations, hasLength(7));
+      expect(harness.invocations, hasLength(13));
       expect(
         harness.invocations
             .where((call) => call.context.target != PeerId.host)
             .map((call) => call.payload),
-        unorderedEquals([1, 2, 1, 2]),
+        unorderedEquals([1, 2, 3, 4, 1, 2, 3, 4]),
       );
     });
 

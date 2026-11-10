@@ -188,6 +188,9 @@ final class _RawClient {
   PeerConnection? connection;
   PeerId? id;
   var generation = 0;
+
+  /// The revision of the baseline that the host welcomed this client with.
+  var baseline = 0;
   final received = <ProtocolMessage>[];
   CloseReason? closeReason;
 
@@ -201,6 +204,7 @@ final class _RawClient {
           if (envelope.message case WelcomeMessage(:final peer)) {
             id = peer;
             generation = envelope.generation;
+            baseline = envelope.revision;
           }
           received.add(envelope.message);
         case ConnectionClosed(:final reason):
@@ -214,6 +218,17 @@ final class _RawClient {
   );
 
   void hello() => send(HelloMessage(fingerprint: schema.fingerprint));
+
+  /// Reports ready, acknowledging the baseline.
+  void ready() => connection!.send(
+    codec.encode(
+      MessageEnvelope(
+        const ReadyMessage(),
+        generation: generation,
+        revision: baseline,
+      ),
+    ),
+  );
 }
 
 /// A client session joining a host that speaks the protocol directly, to
@@ -357,7 +372,9 @@ void main() {
 
       expect(client.session.state, SessionState.ready);
       expect(client.log, ['+1 avatar Ada o2 a1']);
-      expect(client.session.revision, host.revision);
+      // Only the host's report that the client is ready, which goes to the
+      // other clients, follows the spawn.
+      expect(client.session.revision, host.revision - 1);
     });
 
     test('sends a late joiner the live entities first, parents first', () {
@@ -382,7 +399,8 @@ void main() {
         '+4 avatar Kept o1 a1',
       ]);
       expect(client.world, harness.host.world);
-      expect(client.session.revision, baseline);
+      // The client's own join follows the entities in the baseline.
+      expect(client.session.revision, baseline + 1);
       expect(client.session.registry[gone.id], isNull);
 
       host.spawn(harness.schema.avatar, 'Later', owner: _client1);
@@ -504,7 +522,8 @@ void main() {
 
     test('a send failure removes the client once every client was offered', () {
       final harness = _Harness(
-        hostOutgoingLimits: const QueueLimits(maxMessages: 2),
+        // Enough for a baseline that lists the other client.
+        hostOutgoingLimits: const QueueLimits(maxMessages: 4),
       );
       final first = harness.join();
       final second = harness.join();
@@ -516,7 +535,7 @@ void main() {
         authority: PeerId.host,
       );
       host.registry.markReady(target.id);
-      for (var i = 0; i < 2; i++) {
+      for (var i = 0; i < 4; i++) {
         expect(
           host.callRpc(target, harness.schema.direct, i, peer: _client1),
           isTrue,
@@ -540,6 +559,7 @@ void main() {
       expect(first.session.state, SessionState.disconnected);
       expect(second.log, ['+2 avatar Ada o2 a1', '-2']);
       expect(second.world, isEmpty);
+      expect(second.session.peers, [PeerId.host]);
     });
   });
 
@@ -756,7 +776,7 @@ void main() {
       harness.run();
       raw.hello();
       harness.run();
-      raw.send(const ReadyMessage());
+      raw.ready();
       harness.run();
       final host = harness.host.session;
       host.spawn(
@@ -945,7 +965,7 @@ void main() {
       harness.run();
       raw.hello();
       harness.run();
-      raw.send(const ReadyMessage());
+      raw.ready();
       harness.run();
       final host = harness.host.session;
       host.spawn(harness.schema.avatar, 'Ada', owner: raw.id!);

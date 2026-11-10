@@ -347,6 +347,11 @@ final class SessionStateChanged extends SessionEvent {
 }
 
 /// The host accepted a client as [peer], which now synchronizes.
+///
+/// The host reports it when it admits the client. Every other client reports
+/// it in revision order, before it receives any entity that [peer] owns, and
+/// a joining client reports the clients that joined before it while it
+/// synchronizes. A client does not report itself or the host.
 final class PeerJoined extends SessionEvent {
   /// Creates an event reporting that [peer] joined.
   const PeerJoined(this.peer);
@@ -365,6 +370,9 @@ final class PeerJoined extends SessionEvent {
 }
 
 /// The client [peer] finished synchronizing and takes part in gameplay.
+///
+/// The host reports it when the client reports ready, and every other client
+/// once the host tells it, after [PeerJoined] for [peer].
 final class PeerReady extends SessionEvent {
   /// Creates an event reporting that [peer] is ready.
   const PeerReady(this.peer);
@@ -383,6 +391,15 @@ final class PeerReady extends SessionEvent {
 }
 
 /// The client [peer], which had joined, left the session for [reason].
+///
+/// The host reports it when the client leaves, and every other client once
+/// the host tells it, before the host's reaction such as despawning the
+/// client's entities. Other clients report [DisconnectReason.remoteClosed]
+/// for a client that closed its connection; for a client that was kicked,
+/// timed out, failed to install its baseline, violated the protocol, or
+/// lost its connection, they report the same reason as the host. A client
+/// that disconnects itself, or whose host closes the session, reports no
+/// [PeerLeft] for the other clients.
 final class PeerLeft extends SessionEvent {
   /// Creates an event reporting that [peer] left for [reason].
   const PeerLeft(this.peer, this.reason);

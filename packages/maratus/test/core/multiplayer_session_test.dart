@@ -183,6 +183,9 @@ final class _RawClient {
   PeerConnection? connection;
   PeerId? id;
   var generation = 0;
+
+  /// The revision of the baseline that the host welcomed this client with.
+  var baseline = 0;
   final received = <ProtocolMessage>[];
   CloseReason? closeReason;
 
@@ -196,6 +199,7 @@ final class _RawClient {
           if (envelope.message case WelcomeMessage(:final peer)) {
             id = peer;
             generation = envelope.generation;
+            baseline = envelope.revision;
           }
           received.add(envelope.message);
         case ConnectionClosed(:final reason):
@@ -221,6 +225,9 @@ final class _RawClient {
   void hello([ProtocolSchema? schema]) => send(
     HelloMessage(fingerprint: (schema ?? buildTestSchema()).fingerprint),
   );
+
+  /// Reports ready, acknowledging the baseline.
+  void ready() => send(const ReadyMessage(), revision: baseline);
 }
 
 /// A host that speaks the protocol directly, to send what a session would
@@ -491,8 +498,8 @@ void main() {
       a.hello();
       b.hello();
       harness.run();
-      a.send(const ReadyMessage());
-      b.send(const ReadyMessage());
+      a.ready();
+      b.ready();
       harness.run();
       harness.host.registry.register(
         const EntityId(7),
@@ -525,7 +532,7 @@ void main() {
       harness.run();
       raw.hello();
       harness.run();
-      raw.send(const ReadyMessage());
+      raw.ready();
       harness.run();
       expect(raw.id, _client2);
       harness.host.registry.register(
@@ -618,10 +625,11 @@ void main() {
       final client = harness.join();
       harness.run();
 
-      expect(client.revision, 3);
+      // The client's own join takes the revision after the spawns.
+      expect(client.revision, 4);
       harness.host.spawn(player, 'Bob');
       harness.run();
-      expect(client.revision, 4);
+      expect(client.revision, 5);
       expect(client.obsoleteMessageCount, 0);
     });
 
@@ -696,11 +704,16 @@ void main() {
       harness.run();
       _drain(harness.host);
 
-      // Each client's baseline is revision 1; revision 2 reaches all three.
+      // Each join takes a revision, so the baselines are revisions 2 to 4;
+      // the spawn of Bob reaches all three.
+      expect([early.baseline, current.baseline, ahead.baseline], [2, 3, 4]);
       harness.host.spawn(player, 'Bob');
-      early.send(const ReadyMessage(), revision: 0);
-      current.send(const ReadyMessage(), revision: 2);
-      ahead.send(const ReadyMessage(), revision: 3);
+      final latest = harness.host.revision;
+      early.send(const ReadyMessage(), revision: early.baseline - 1);
+      current.send(const ReadyMessage(), revision: latest);
+      // Not assigned yet, even after the departure and readiness that the
+      // other reports replicate.
+      ahead.send(const ReadyMessage(), revision: latest + 10);
       harness.run();
 
       expect(harness.host.peers, [_client2]);
@@ -1243,7 +1256,7 @@ void main() {
       harness.run();
       raw.hello();
       harness.run();
-      raw.send(const ReadyMessage());
+      raw.ready();
       harness.run();
 
       raw.sendBytes(utf8.encode('{"v":1,'));
@@ -1270,7 +1283,7 @@ void main() {
       harness.run();
       raw.hello();
       harness.run();
-      raw.send(const ReadyMessage());
+      raw.ready();
       harness.run();
 
       raw.send(
