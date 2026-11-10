@@ -22,6 +22,7 @@ focus on your game.
 
 - Typed RPCs with caller and ownership checks.
 - Replicated spawning and selected property synchronization.
+- Authority transfer, so players can take control of shared objects.
 - Late joining with the current world state.
 - WebSockets for real connections and an in-memory network for testing.
 - Optional code generation from annotations.
@@ -122,6 +123,41 @@ steers an avatar, the host moves it, and its position is synchronized back. The
 does the same with annotations.
 For a playable Flutter app and a dedicated Dart host, see the
 [chat example](https://github.com/bszarlej/maratus/tree/master/examples/chat).
+
+## Transfer authority
+
+Each entity has an authority: the peer that writes its synchronized
+properties. The host chooses it when spawning an entity and can move it later,
+for example to the player who picks up a ball, so that player sees it move
+without waiting for the host:
+
+```dart
+// On the host. `player` is the PeerId of a ready client, or PeerId.host.
+session.transferAuthority(ball, player);
+```
+
+Every peer applies the transfer in order with spawning and state changes, and
+reports it as an `AuthorityChanged` event. Clients that join later receive the
+current authority. Check `entity.authority == session.localPeer` to decide
+whether this peer simulates the entity.
+
+Transfers guarantee that:
+
+- **Only one peer writes at a time.** The previous authority stops sending
+  state as soon as it receives the transfer, and the host drops anything it
+  sent before then. The new authority's state counts once it has acknowledged
+  the transfer.
+- **Every peer ends up with the same state.** The new authority continues from
+  the latest values it received. The previous authority takes back the values
+  the host accepted, replacing any it sent that the host dropped.
+- **Interpolation stays smooth.** Samples from two authorities are never
+  blended: the latest value holds until the new authority's first sample
+  arrives.
+- **RPCs follow the new authority.** RPCs that only the authority may call,
+  or that go to the authority, use the new authority from the transfer on.
+- **Entities are never left without a writer.** When a client that is an
+  entity's authority leaves, even during a transfer, the host takes the
+  authority back, unless the client's departure despawns the entity.
 
 ## Compatibility and scope
 
