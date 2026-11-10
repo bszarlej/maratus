@@ -23,6 +23,15 @@ enum MessageKind {
   /// A [PongMessage].
   pong('pong'),
 
+  /// A [PeerJoinedMessage].
+  peerJoined('peer_joined'),
+
+  /// A [PeerReadyMessage].
+  peerReady('peer_ready'),
+
+  /// A [PeerLeftMessage].
+  peerLeft('peer_left'),
+
   /// A [SpawnMessage].
   spawn('spawn'),
 
@@ -70,10 +79,10 @@ final class MessageEnvelope {
   ///
   /// The host assigns increasing revisions to replicated changes within
   /// its session. Clients use them to establish the bootstrap baseline and
-  /// discard obsolete spawn, despawn, authority, and state messages, and
-  /// acknowledge an authority transfer with its revision. RPCs do not
-  /// advance this counter. The protocol layer validates a non-negative
-  /// integer; the session enforces ordering.
+  /// discard obsolete membership, spawn, despawn, authority, and state
+  /// messages, and acknowledge an authority transfer with its revision. RPCs
+  /// do not advance this counter. The protocol layer validates a
+  /// non-negative integer; the session enforces ordering.
   final int revision;
 }
 
@@ -224,6 +233,78 @@ final class PongMessage extends ProtocolMessage {
 
   @override
   MessageKind get kind => MessageKind.pong;
+}
+
+/// Tells a client that another client joined the session.
+///
+/// Only the host sends membership messages, as replicated changes ordered by
+/// their revision. A client's baseline announces each client that joined
+/// before it, followed by a [PeerReadyMessage] for those that are ready.
+/// A client is never told about itself.
+final class PeerJoinedMessage extends ProtocolMessage {
+  /// Creates a message announcing that [peer] joined.
+  const PeerJoinedMessage({required this.peer});
+
+  /// The client that joined.
+  final PeerId peer;
+
+  @override
+  MessageKind get kind => MessageKind.peerJoined;
+}
+
+/// Tells a client that another client finished joining and takes part in
+/// gameplay.
+final class PeerReadyMessage extends ProtocolMessage {
+  /// Creates a message announcing that [peer] is ready.
+  const PeerReadyMessage({required this.peer});
+
+  /// The client that became ready.
+  final PeerId peer;
+
+  @override
+  MessageKind get kind => MessageKind.peerReady;
+}
+
+/// Tells a client that another client left the session.
+final class PeerLeftMessage extends ProtocolMessage {
+  /// Creates a message announcing that [peer] left for [reason].
+  const PeerLeftMessage({required this.peer, required this.reason});
+
+  /// The client that left.
+  final PeerId peer;
+
+  /// Why the client left.
+  final DepartureReason reason;
+
+  @override
+  MessageKind get kind => MessageKind.peerLeft;
+}
+
+/// Why a client left the session, as a [PeerLeftMessage] states it to the
+/// other clients.
+enum DepartureReason {
+  /// The client closed its connection.
+  left('left'),
+
+  /// The host removed the client.
+  kicked('kicked'),
+
+  /// The client did not install the baseline in time, or went quiet.
+  timeout('timeout'),
+
+  /// The client could not install the host's baseline.
+  bootstrapFailed('bootstrap'),
+
+  /// The client sent a message that violates the protocol.
+  protocolViolation('violation'),
+
+  /// The client's connection failed.
+  transportError('transport');
+
+  const DepartureReason(this.code);
+
+  /// The stable code that identifies this reason on the wire.
+  final String code;
 }
 
 /// Creates a replicated entity of a registered spawn type.

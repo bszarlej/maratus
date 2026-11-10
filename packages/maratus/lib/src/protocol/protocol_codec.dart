@@ -24,18 +24,19 @@ import 'wire_codec.dart';
 ///   and optionally a join request `j`, welcome bodies the client's peer ID
 ///   `p` and the epoch `e`, and goodbye bodies the reason code `c` and
 ///   optionally a detail `m`; synced and ready bodies are empty. Ping and
-///   pong bodies hold the ping's sequence `n`. The other bodies hold the
-///   entity ID `e`: spawn bodies add the spawn type `t`, construction data
-///   `d`, owner `o`, authority `a`, and optionally a parent entity `p`;
-///   authority bodies add the new authority `a`, and authority
-///   acknowledgements hold only the entity. RPC request bodies add the RPC
-///   `m`, its payload `p`, and optionally a target peer `t`. RPC deliveries
-///   require both sender `s` and target `t`; state bodies add an object `f`
-///   of field values and, optionally, the authority's sample time `t`, in
-///   microseconds. The session validates the origin of RPC deliveries, the
-///   consistency of spawn and authority metadata, and the presence of
-///   sample times, and decodes join requests once the schema fingerprints
-///   match.
+///   pong bodies hold the ping's sequence `n`. Membership bodies hold the
+///   client's peer ID `p`, and departures add the reason code `c`. The
+///   other bodies hold the entity ID `e`: spawn bodies add the spawn type
+///   `t`, construction data `d`, owner `o`, authority `a`, and optionally a
+///   parent entity `p`; authority bodies add the new authority `a`, and
+///   authority acknowledgements hold only the entity. RPC request bodies add
+///   the RPC `m`, its payload `p`, and optionally a target peer `t`. RPC
+///   deliveries require both sender `s` and target `t`; state bodies add an
+///   object `f` of field values and, optionally, the authority's sample time
+///   `t`, in microseconds. The session validates the origin of RPC
+///   deliveries, the consistency of membership, spawn, and authority
+///   metadata, and the presence of sample times, and decodes join requests
+///   once the schema fingerprints match.
 final class ProtocolCodec {
   /// Creates a codec for the messages of [schema].
   ProtocolCodec(
@@ -46,9 +47,10 @@ final class ProtocolCodec {
 
   /// The protocol version that this codec writes and accepts.
   ///
-  /// RPC routing, spawn metadata, pings, state sample times, and authority
-  /// transfers extend version 1; the schema fingerprint includes RPC routing
-  /// metadata so earlier schemas fail the session handshake.
+  /// RPC routing, spawn metadata, pings, state sample times, authority
+  /// transfers, and membership extend version 1; the schema fingerprint
+  /// includes RPC routing metadata so earlier schemas fail the session
+  /// handshake.
   static const int version = 1;
 
   /// The registrations that message bodies are validated against.
@@ -76,6 +78,9 @@ final class ProtocolCodec {
   };
   static final _goodbyeReasons = {
     for (final reason in GoodbyeReason.values) reason.code: reason,
+  };
+  static final _departureReasons = {
+    for (final reason in DepartureReason.values) reason.code: reason,
   };
 
   /// Encodes [envelope] as bytes.
@@ -183,6 +188,12 @@ final class ProtocolCodec {
         },
         PingMessage(:final sequence) || PongMessage(:final sequence) => {
           'n': _checkCounter(sequence, 'sequence'),
+        },
+        PeerJoinedMessage(:final peer) ||
+        PeerReadyMessage(:final peer) => {'p': _clientCodec.encode(peer.value)},
+        PeerLeftMessage(:final peer, :final reason) => {
+          'p': _clientCodec.encode(peer.value),
+          'c': reason.code,
         },
         SpawnMessage(
           :final entity,
@@ -304,6 +315,25 @@ final class ProtocolCodec {
       case MessageKind.pong:
         final body = WireObject(value, const {'n'});
         return PongMessage(body.read('n', _counterCodec));
+      case MessageKind.peerJoined:
+        final body = WireObject(value, const {'p'});
+        return PeerJoinedMessage(peer: PeerId(body.read('p', _clientCodec)));
+      case MessageKind.peerReady:
+        final body = WireObject(value, const {'p'});
+        return PeerReadyMessage(peer: PeerId(body.read('p', _clientCodec)));
+      case MessageKind.peerLeft:
+        final body = WireObject(value, const {'p', 'c'});
+        final peer = PeerId(body.read('p', _clientCodec));
+        final code = body.read('c', _identifierCodec);
+        final reason = _departureReasons[code];
+        if (reason == null) {
+          throw ProtocolException(
+            ProtocolErrorCode.invalidValue,
+            'unknown departure reason "$code"',
+            path: const ['c'],
+          );
+        }
+        return PeerLeftMessage(peer: peer, reason: reason);
       case MessageKind.spawn:
         final hasParent =
             value is Map<String, Object?> && value.containsKey('p');

@@ -14,6 +14,9 @@ void main() {
         'goodbye': 'goodbye',
         'ping': 'ping',
         'pong': 'pong',
+        'peerJoined': 'peer_joined',
+        'peerReady': 'peer_ready',
+        'peerLeft': 'peer_left',
         'spawn': 'spawn',
         'despawn': 'despawn',
         'authority': 'authority',
@@ -37,6 +40,20 @@ void main() {
         'protocolViolation': 'violation',
         'rejected': 'rejected',
         'notAdmitting': 'not_admitting',
+      },
+    );
+  });
+
+  test('departure reasons keep their wire codes', () {
+    expect(
+      {for (final reason in DepartureReason.values) reason.name: reason.code},
+      {
+        'left': 'left',
+        'kicked': 'kicked',
+        'timeout': 'timeout',
+        'bootstrapFailed': 'bootstrap',
+        'protocolViolation': 'violation',
+        'transportError': 'transport',
       },
     );
   });
