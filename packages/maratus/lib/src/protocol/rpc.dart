@@ -1,3 +1,4 @@
+import '../transport/multiplayer_peer.dart';
 import 'identifiers.dart';
 import 'value_codec.dart';
 
@@ -78,6 +79,8 @@ final class Rpc<T> {
     this.caller = RpcCaller.anyPeer,
     this.target = RpcTarget.host,
     this.local = RpcLocal.exclude,
+    this.deliveryMode = DeliveryMode.reliable,
+    this.channel = 0,
   });
 
   /// The stable method identifier, independent of Dart names or object hashes.
@@ -94,4 +97,15 @@ final class Rpc<T> {
 
   /// Whether the caller executes when selected by [target].
   final RpcLocal local;
+
+  /// How the call is delivered, including when the host forwards it.
+  ///
+  /// Every peer's transport must support this mode on [channel].
+  final DeliveryMode deliveryMode;
+
+  /// The transport channel for this RPC, numbered from zero.
+  ///
+  /// Ordering guarantees apply within a channel. Registration rejects
+  /// negative channels, and the session validates transport support.
+  final int channel;
 }

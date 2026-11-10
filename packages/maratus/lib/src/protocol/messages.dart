@@ -472,6 +472,7 @@ final class StateMessage extends ProtocolMessage {
     required this.entity,
     required Map<FieldId, Object?> values,
     this.sampledAt,
+    this.sequence,
   }) : values = Map<FieldId, Object?>.unmodifiable(values);
 
   /// The entity whose fields changed.
@@ -494,6 +495,13 @@ final class StateMessage extends ProtocolMessage {
   /// after the transfer. Clients always send a time. The protocol layer
   /// validates a non-negative whole number of microseconds.
   final Duration? sampledAt;
+
+  /// The independent live-state sequence, or `null` for ordered state on
+  /// the reliable control channel, including baseline and authority resync.
+  ///
+  /// With a sequence, the envelope revision is a lifecycle dependency, not a
+  /// new replication revision. Receivers compare sequences per entity/field.
+  final int? sequence;
 
   @override
   MessageKind get kind => MessageKind.state;

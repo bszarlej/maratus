@@ -57,10 +57,23 @@ const _fixtures = {
       '"b":{"e":7,"t":1500000,"f":{"player.health":75,"player.name":"Ada"}}}',
   'untimed state':
       '{"v":1,"k":"state","g":3,"r":43,"b":{"e":7,"f":{"player.health":75}}}',
+  'sequenced state':
+      '{"v":1,"k":"state","g":3,"r":42,'
+      '"b":{"e":7,"n":9,"t":1500000,"f":{"player.health":75}}}',
 };
 
 /// The envelopes that [_fixtures] encode.
 final _envelopes = {
+  'sequenced state': MessageEnvelope(
+    StateMessage(
+      entity: const EntityId(7),
+      values: const {FieldId('player.health'): 75},
+      sampledAt: const Duration(milliseconds: 1500),
+      sequence: 9,
+    ),
+    generation: 3,
+    revision: 42,
+  ),
   'hello': const MessageEnvelope(HelloMessage(fingerprint: _fingerprint)),
   'hello with request': const MessageEnvelope(
     HelloMessage(
@@ -202,6 +215,14 @@ _InvalidInput _invalid(
 /// Received inputs that must be rejected, with the expected error code and
 /// location.
 final _invalidInputs = <_InvalidInput>[
+  for (final sequence in ['0', '-1', '9007199254740992', '1.5', 'null', '"1"'])
+    _invalid(
+      'invalid state sequence $sequence',
+      '{"v":1,"k":"state","g":3,"r":42,'
+          '"b":{"e":7,"t":0,"n":$sequence,"f":{"player.health":75}}}',
+      ProtocolErrorCode.invalidValue,
+      path: ['b', 'n'],
+    ),
   _invalid('empty input', '', ProtocolErrorCode.malformed),
   (
     reason: 'invalid UTF-8',
@@ -1270,6 +1291,16 @@ void main() {
     });
 
     test('invalid sample times and ping sequences', () {
+      for (final sequence in [0, -1, IntCodec.maxSafe + 1]) {
+        expectRejected(
+          StateMessage(
+            entity: const EntityId(7),
+            values: const {FieldId('player.health'): 1},
+            sampledAt: Duration.zero,
+            sequence: sequence,
+          ),
+        );
+      }
       for (final sampledAt in [
         const Duration(microseconds: -1),
         const Duration(microseconds: IntCodec.maxSafe + 1),

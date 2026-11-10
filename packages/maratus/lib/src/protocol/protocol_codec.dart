@@ -242,12 +242,19 @@ final class ProtocolCodec {
             's': _peerCodec.encode(sender.value),
             't': _peerCodec.encode(target.value),
           },
-        StateMessage(:final entity, :final values, :final sampledAt) => {
-          'e': _checkEntity(entity),
-          if (sampledAt != null)
-            't': _checkCounter(sampledAt.inMicroseconds, 'sampledAt'),
-          'f': _encodeFields(values),
-        },
+        StateMessage(
+          :final entity,
+          :final values,
+          :final sampledAt,
+          :final sequence,
+        ) =>
+          {
+            'e': _checkEntity(entity),
+            if (sequence != null) 'n': const IntCodec(min: 1).encode(sequence),
+            if (sampledAt != null)
+              't': _checkCounter(sampledAt.inMicroseconds, 'sampledAt'),
+            'f': _encodeFields(values),
+          },
       };
 
   Map<String, Object?> _encodeFields(Map<FieldId, Object?> values) {
@@ -398,12 +405,17 @@ final class ProtocolCodec {
         );
       case MessageKind.state:
         final hasTime = value is Map<String, Object?> && value.containsKey('t');
-        final body = WireObject(
-          value,
-          hasTime ? const {'e', 't', 'f'} : const {'e', 'f'},
-        );
+        final hasSequence =
+            value is Map<String, Object?> && value.containsKey('n');
+        final body = WireObject(value, {
+          'e',
+          'f',
+          if (hasTime) 't',
+          if (hasSequence) 'n',
+        });
         return StateMessage(
           entity: _readEntity(body),
+          sequence: hasSequence ? body.read('n', const IntCodec(min: 1)) : null,
           sampledAt: hasTime
               ? Duration(microseconds: body.read('t', _counterCodec))
               : null,
