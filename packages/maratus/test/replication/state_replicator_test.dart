@@ -682,6 +682,34 @@ void main() {
       expect(harness.observed[harness.host], isNull);
     });
 
+    test('a host observes accepted state whose values fail validation', () {
+      final harness = _Harness(
+        schema: _Schema(
+          healthCodec: const _BrokenRoundTripCodec(rejectDecodedValue: true),
+        ),
+      );
+      final raw = harness.rawClient();
+      harness.run();
+      raw.send(HelloMessage(fingerprint: harness.schema.schema.fingerprint));
+      harness.run();
+      raw.ready();
+      harness.run();
+      harness.register(1, owner: raw.id!, authority: raw.id!);
+      _drain(harness.host);
+
+      raw.send(_health(1, 5));
+      harness.run();
+
+      final failure = _drain(
+        harness.host,
+      ).whereType<PropertySyncFailed>().single;
+      expect(failure.field, harness.schema.health.id);
+      expect(harness.observed[harness.host], [
+        _stateFrom(raw.id!, ['test.health']),
+      ]);
+      expect(harness.host.isReady(raw.id!), isTrue);
+    });
+
     test('a client ignores host state for entities it writes', () {
       final harness = _RawHostHarness();
       final client = harness.client;

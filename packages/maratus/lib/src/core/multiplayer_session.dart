@@ -24,6 +24,7 @@ part 'rpc_dispatcher.dart';
 part 'entity_attachment.dart';
 part 'session_diagnostics.dart';
 part 'session_membership.dart';
+part 'session_delivery.dart';
 part '../replication/authority_replicator.dart';
 part '../replication/interpolation.dart';
 part '../replication/spawn_replicator.dart';
@@ -65,6 +66,11 @@ final class SessionTimeouts {
 
 /// Observes a state message after the session accepted it, with its sender.
 ///
+/// A message is accepted once its sender may write the entity, even if
+/// some of its values then fail validation. A sequenced sample that is
+/// older than the newest sample of each of its fields is obsolete and is
+/// not passed on.
+///
 /// The session itself applies state to [MultiplayerSynchronizer]s; a handler
 /// only observes it, for example to count replication traffic. Spawn and
 /// despawn records reach [MultiplayerSession.bindSpawn] handlers, and RPCs
@@ -100,7 +106,7 @@ typedef SessionMessageHandler =
 /// [SessionTimeouts.idle], a peer that sends nothing for that long is
 /// dropped.
 ///
-/// Replicated changes are ordered by a single [revision] that the host
+/// Reliable control changes are ordered by a single [revision] that the host
 /// advances. The host welcomes a client with the revision of its baseline,
 /// and the client applies later changes only in increasing revision order.
 /// A joining client keeps applying them while it installs the baseline, and
@@ -109,6 +115,10 @@ typedef SessionMessageHandler =
 /// client learns which other clients joined, became ready, and left, from
 /// its baseline and then in revision order, so it learns about a client
 /// before any entity that the client owns.
+/// RPCs and live fields select their delivery mode and channel in the schema.
+/// Independent state uses per-field sequences instead of [revision]. A
+/// client that is not ready yet receives it on the reliable control channel
+/// instead, and each such update advances [revision] once.
 ///
 /// The schema's static entities exist on every peer, with the same IDs, as
 /// soon as it starts hosting or joining; [staticEntity] returns them. The
@@ -127,13 +137,15 @@ final class MultiplayerSession {
   /// also passed to [onMessage]; RPCs use [bindRpc], spawned entities
   /// [bindSpawn], and synchronized properties [EntityAttachment.synchronize].
   /// All [timeouts] must be positive, as must all [pendingRpcLimits],
-  /// [stateBackpressure], and a [pingInterval], or an [ArgumentError] is
-  /// thrown. An idle timeout also requires a shorter [pingInterval].
+  /// [pendingDeliveryLimits], [stateBackpressure], and a [pingInterval], or an
+  /// [ArgumentError] is thrown. An idle timeout also requires a shorter
+  /// [pingInterval].
   MultiplayerSession({
     required ProtocolSchema schema,
     MonotonicClock clock = const SystemClock(),
     this.timeouts = const SessionTimeouts(),
     this.pendingRpcLimits = const PendingRpcLimits(),
+    this.pendingDeliveryLimits = const QueueLimits(),
     this.pingInterval = const Duration(seconds: 1),
     this.stateBackpressure = const QueueLimits(
       maxMessages: 256,
@@ -179,6 +191,14 @@ final class MultiplayerSession {
         'limits must be positive',
       );
     }
+    if (pendingDeliveryLimits.maxMessages <= 0 ||
+        pendingDeliveryLimits.maxBytes <= 0) {
+      throw ArgumentError.value(
+        pendingDeliveryLimits,
+        'pendingDeliveryLimits',
+        'limits must be positive',
+      );
+    }
   }
 
   final ProtocolSchema _schema;
@@ -192,12 +212,19 @@ final class MultiplayerSession {
   late final _spawns = _SpawnReplicator(this);
   late final _authorities = _AuthorityReplicator(this);
   late final _states = _StateReplicator(this);
+  late final _delivery = _SessionDelivery(this);
 
   /// How long this session waits for each stage of joining.
   final SessionTimeouts timeouts;
 
   /// Bounds local RPCs waiting for an attached entity's update boundary.
   final PendingRpcLimits pendingRpcLimits;
+
+  /// Bounds reliable messages on other channels waiting for lifecycle
+  /// changes on channel zero. Overflow disconnects the sender; waiting
+  /// longer than [SessionTimeouts.bootstrap] disconnects it with a timeout.
+  /// Unreliable messages that overtake their dependencies are discarded.
+  final QueueLimits pendingDeliveryLimits;
 
   /// How often this session pings each accepted peer to measure the round
   /// trip, or `null` to send no pings.
@@ -214,8 +241,8 @@ final class MultiplayerSession {
   /// [PeerConnection.outgoing] queue reaches either limit, as when its peer
   /// stops polling, newer state for an entity replaces state that has not
   /// been sent, keeping one waiting entry per entity. Waiting state is sent
-  /// in order once the queue drains, and before any other message to that
-  /// peer, so state never overtakes spawning, despawning, or RPCs. Other
+  /// once the queue drains, and before any other message is sent to that
+  /// peer. Delivery ordering depends on each field's mode and channel. Other
   /// messages are not replaceable and still close a connection whose
   /// transport queue overflows.
   final QueueLimits stateBackpressure;
@@ -412,6 +439,8 @@ final class MultiplayerSession {
   /// The session takes over [peer] and closes it when it disconnects.
   /// Throws an [ArgumentError] if [peer] is not a host peer, and a
   /// [StateError] if the session is not disconnected.
+  /// Throws [UnsupportedError] before taking ownership if [peer] cannot
+  /// provide every delivery mode and channel required by the schema.
   void host(MultiplayerPeer peer) {
     if (!peer.isHost) {
       throw ArgumentError.value(peer, 'peer', 'must be a host peer');
@@ -439,6 +468,8 @@ final class MultiplayerSession {
   /// invalid for the codec, cannot make a codec and wire round trip, or is
   /// given without a codec. Throws a [StateError] if the session is not
   /// disconnected.
+  /// Throws [UnsupportedError] before taking ownership if [peer] cannot
+  /// provide every delivery mode and channel required by the schema.
   void join(MultiplayerPeer peer, {Object? request}) {
     if (peer.isHost) {
       throw ArgumentError.value(peer, 'peer', 'must be a client peer');
@@ -512,6 +543,8 @@ final class MultiplayerSession {
         if (_peer != peer) return;
       }
       _applyAdmissions();
+      if (_peer != peer) return;
+      _delivery.drain();
       if (_peer != peer) return;
       _states.apply();
       if (_peer != peer) return;
@@ -801,6 +834,8 @@ final class MultiplayerSession {
   /// Sends a state [message] about [entity], whose fields encode as [fields],
   /// to every joined client except [except], with a new revision.
   ///
+  /// Independent state takes a revision only if a client that is not ready
+  /// yet receives it on the control channel, and those clients share it.
   /// Clients with held state or a congested connection hold the message
   /// instead; see [stateBackpressure].
   void _replicateState(
@@ -809,13 +844,16 @@ final class MultiplayerSession {
     Map<FieldId, Uint8List> fields, {
     _Remote? except,
   }) {
-    final revision = _nextRevision();
+    var revision = _delivery.independent(message) ? null : _nextRevision();
     final refused = <_Remote>[];
     for (final remote in _peers.values.toList()) {
       if (identical(remote, except)) continue;
       if (remote.held.isNotEmpty || _congested(remote)) {
         _hold(remote, entity, message, fields);
-      } else if (!_transmit(remote, message, revision: revision)) {
+        continue;
+      }
+      if (!_delivery.sequenced(remote, message)) revision ??= _nextRevision();
+      if (!_delivery.transmitState(remote, message, revision: revision)) {
         refused.add(remote);
       }
     }
@@ -835,7 +873,7 @@ final class MultiplayerSession {
       _hold(remote, entity, message, fields);
       return true;
     }
-    if (_transmit(remote, message)) return true;
+    if (_delivery.transmitState(remote, message)) return true;
     _refused(remote);
     return false;
   }
@@ -886,8 +924,7 @@ final class MultiplayerSession {
         held.fields,
         sampledAt: held.sampledAt,
       )) {
-        final revision = _isHost ? _nextRevision() : 0;
-        if (!_transmit(remote, message, revision: revision)) return false;
+        if (!_delivery.transmitState(remote, message)) return false;
       }
     }
     return true;
@@ -932,6 +969,7 @@ final class MultiplayerSession {
     if (_state != SessionState.disconnected) {
       throw StateError('The session is already ${_state.name}.');
     }
+    _delivery.checkCapabilities(peer.capabilities);
     _peer = peer;
     _isHost = isHost;
     _rejectionReason = null;
@@ -949,6 +987,7 @@ final class MultiplayerSession {
     _spawns.clear();
     _authorities.clear();
     _states.clear();
+    _delivery.clear();
     registry.clear();
     _staticEntities.clear();
     // Every peer of the session takes the same IDs for the static entities,
@@ -965,9 +1004,14 @@ final class MultiplayerSession {
     switch (event) {
       case ConnectionOpened(:final connection):
         _opened(connection);
-      case MessageReceived(:final connection, :final message):
+      case MessageReceived(
+        :final connection,
+        :final message,
+        :final mode,
+        :final channel,
+      ):
         final remote = _remotes[connection];
-        if (remote != null) _receive(remote, message);
+        if (remote != null) _receive(remote, message, mode, channel);
       case ConnectionClosed(:final connection, :final reason):
         final remote = _remotes[connection];
         if (remote != null) {
@@ -1001,7 +1045,12 @@ final class MultiplayerSession {
     _setState(SessionState.handshaking);
   }
 
-  void _receive(_Remote remote, Uint8List bytes) {
+  void _receive(
+    _Remote remote,
+    Uint8List bytes,
+    DeliveryMode mode,
+    int channel,
+  ) {
     final MessageEnvelope envelope;
     try {
       envelope = _codec.decode(bytes);
@@ -1028,6 +1077,10 @@ final class MultiplayerSession {
       return;
     }
     if (remote.peer != null) remote.lastReceivedAt = _clock.now;
+    _delivery.receive(remote, envelope, mode, channel, bytes.length);
+  }
+
+  void _dispatch(_Remote remote, MessageEnvelope envelope) {
     if (_isHost) {
       _receiveFromClient(remote, envelope);
     } else {
@@ -1507,6 +1560,12 @@ final class MultiplayerSession {
   /// Offers [message] to [remote]'s transport, returning whether it was
   /// accepted. A caller must remove a refusing [remote] with [_refused].
   bool _transmit(_Remote remote, ProtocolMessage message, {int revision = 0}) {
+    final delivery = _delivery.outgoing(message);
+    if (message is RpcMessage || message is RpcDeliveryMessage) {
+      if (delivery != _defaultDelivery) {
+        revision = _isHost ? remote.sentRevision : _revision;
+      }
+    }
     final bytes = _codec.encode(
       MessageEnvelope(
         message,
@@ -1514,7 +1573,18 @@ final class MultiplayerSession {
         revision: revision,
       ),
     );
-    if (!remote.connection.send(bytes)) return false;
+    if (!remote.connection.send(
+      bytes,
+      mode: delivery.mode,
+      channel: delivery.channel,
+    )) {
+      return false;
+    }
+    if (_isHost &&
+        delivery == _defaultDelivery &&
+        (message is! StateMessage || message.sequence == null)) {
+      remote.sentRevision = max(remote.sentRevision, revision);
+    }
     _count(remote.sent, _sent, message.kind, bytes.length);
     return true;
   }
@@ -1610,6 +1680,13 @@ final class _Remote {
 
   /// The revision of the baseline that the host welcomed a client with.
   var baseline = 0;
+  var sentRevision = 0;
+
+  /// Reliable messages on other channels waiting for lifecycle changes, in
+  /// arrival order, with their total size and their number per channel.
+  final pendingDelivery = Queue<_PendingDelivery>();
+  var pendingDeliveryBytes = 0;
+  final pendingChannels = <int, int>{};
   var state = _RemoteState.handshaking;
   Duration? deadline;
 
