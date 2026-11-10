@@ -33,8 +33,8 @@ Use `flutter pub add` with the same arguments in a Flutter project.
 | Annotation | On | Declares |
 | ---------- | -- | -------- |
 | `@Networked` | class | Generated handles, their registration, a binding mixin, and typed RPC senders; optionally the class's spawn type. |
-| `@RpcMethod` | method | The RPC that the method handles, with its caller, target, and local policies. |
-| `@SyncedField` | field or getter | A synchronized field. |
+| `@RpcMethod` | method | The RPC that the method handles, with caller, target, local, delivery mode, and channel settings. |
+| `@SyncedField` | field or getter | A synchronized field with sampling mode, delivery mode, and channel settings. |
 | `@NetworkCodec` | class | A generated `ValueCodec` for the class. |
 | `@WireKey` | field | The wire key of a field in a generated codec. |
 | `@Range`, `@MaxLength`, `@UseCodec` | parameter, field, or getter | The codec of a value. |
