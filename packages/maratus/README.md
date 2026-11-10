@@ -24,6 +24,7 @@ focus on your game.
 - Replicated spawning and selected property synchronization.
 - Authority transfer, so players can take control of shared objects.
 - Late joining with the current world state.
+- Player lists on every peer: who joined, who is ready, and who left.
 - WebSockets for real connections and an in-memory network for testing.
 - Optional code generation from annotations.
 
@@ -123,6 +124,37 @@ steers an avatar, the host moves it, and its position is synchronized back. The
 does the same with annotations.
 For a playable Flutter app and a dedicated Dart host, see the
 [chat example](https://github.com/bszarlej/maratus/tree/master/examples/chat).
+
+## Follow who is playing
+
+The host and every client report players joining, becoming ready, and
+leaving with the same events, so a lobby or player list works the same on
+every peer:
+
+```dart
+for (var event = session.poll(); event != null; event = session.poll()) {
+  switch (event) {
+    case PeerJoined(:final peer) || PeerReady(:final peer):
+      lobby.show(peer, ready: session.isReady(peer));
+    case PeerLeft(:final peer, :final reason):
+      lobby.remove(peer, reason);
+    default:
+  }
+}
+```
+
+`session.peers` lists the other peers: the clients on the host, and the host
+and the other clients on a client. A client doesn't report itself or the
+host. `session.isReady(peer)` tells whether a peer has finished joining, for
+example before a client sends it an RPC that targets one peer.
+
+Clients learn about other players in order with the rest of the world: a
+client hears that a player joined before it receives any entity the player
+owns, and that a player left before the host despawns the player's entities.
+Clients that join later receive the current players and their readiness with
+the world. A client appears only once the host admits it: not while the
+host's `onJoinRequest` handler is still deciding, and never if the host
+rejects it.
 
 ## Transfer authority
 
