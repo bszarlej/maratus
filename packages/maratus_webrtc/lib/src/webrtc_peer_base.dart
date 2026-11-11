@@ -750,7 +750,10 @@ final class _WebRtcConnection implements PeerConnection {
   }
 
   void _receive(int lane, Uint8List frame) {
-    if (!_open) return;
+    if (!_open) {
+      _receiveWhileDraining(lane, frame);
+      return;
+    }
     if (lane < 0 || lane >= _peer._laneCount || frame.length < _headerSize) {
       _end(CloseReason.lost, discardIncoming: true);
       return;
@@ -788,6 +791,22 @@ final class _WebRtcConnection implements PeerConnection {
         _receiveReliable(lane, kind, mode, sequence, frame);
       default:
         _end(CloseReason.lost, discardIncoming: true);
+    }
+  }
+
+  /// Releases a locally closed connection once the remote has closed it too,
+  /// so that closing both ends at once need not wait for the close timeout.
+  void _receiveWhileDraining(int lane, Uint8List frame) {
+    if (lane.isOdd ||
+        lane >= _peer._laneCount ||
+        frame.length != _headerSize ||
+        frame[0] != _kindClose) {
+      return;
+    }
+    _closedChannels.add(lane >> 1);
+    if (_closedChannels.length == _peer.channelCount) {
+      _peer._release(_id!);
+      _peer._disposeIfIdle();
     }
   }
 
