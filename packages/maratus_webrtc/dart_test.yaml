@@ -1,0 +1,7 @@
+# Chrome hides local addresses behind mDNS names by default. Peers in the
+# same page then depend on multicast name resolution, which headless
+# environments may lack, so the browser tests use the addresses directly.
+override_platforms:
+  chrome:
+    settings:
+      arguments: --disable-features=WebRtcHideLocalIpsWithMdns
