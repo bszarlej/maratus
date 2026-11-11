@@ -1,4 +1,6 @@
 @TestOn('browser')
+// Native helper startup includes cold compilation.
+@Timeout(Duration(minutes: 2))
 library;
 
 import 'dart:async';
@@ -21,6 +23,9 @@ final class _NativePeer {
 
   Map<Object?, Object?> get setup => reports.first! as Map<Object?, Object?>;
 
+  // Hybrid channels decode JavaScript numbers as doubles under dart2wasm.
+  int get port => (setup['port']! as num).toInt();
+
   bool get opened => reports.contains('opened');
 
   String? get closed => reports
@@ -33,12 +38,13 @@ final class _NativePeer {
 Future<void> _until(
   bool Function() condition, {
   void Function()? update,
+  Duration timeout = const Duration(seconds: 20),
 }) async {
   final deadline = Stopwatch()..start();
   while (true) {
     update?.call();
     if (condition()) return;
-    if (deadline.elapsed > const Duration(seconds: 20)) {
+    if (deadline.elapsed > timeout) {
       fail('Interoperability condition timed out.');
     }
     await Future<void>.delayed(const Duration(milliseconds: 5));
@@ -96,10 +102,11 @@ void main() {
   test('a browser client connects to a native host', () async {
     final native = _NativePeer('host');
     addTearDown(native.channel.sink.close);
-    await _until(() => native.reports.isNotEmpty);
-    final server = Uri.parse(
-      'ws://127.0.0.1:${native.setup['port']}/signaling',
+    await _until(
+      () => native.reports.isNotEmpty,
+      timeout: const Duration(minutes: 1),
     );
+    final server = Uri.parse('ws://127.0.0.1:${native.port}/signaling');
     final client = WebRtcClient.connect(
       WebSocketSignalingChannel.join(
         server,
@@ -126,10 +133,11 @@ void main() {
   test('a native client connects to a browser host', () async {
     final native = _NativePeer('client');
     addTearDown(native.channel.sink.close);
-    await _until(() => native.reports.isNotEmpty);
-    final server = Uri.parse(
-      'ws://127.0.0.1:${native.setup['port']}/signaling',
+    await _until(
+      () => native.reports.isNotEmpty,
+      timeout: const Duration(minutes: 1),
     );
+    final server = Uri.parse('ws://127.0.0.1:${native.port}/signaling');
     final signaling = await WebSocketHostSignaling.connect(server);
     final host = WebRtcHost(signaling: signaling, channelCount: 2);
     addTearDown(() async {

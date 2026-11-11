@@ -35,7 +35,8 @@ void main() {
       'support/signaling_server_hybrid.dart',
       stayAlive: true,
     );
-    final port = await channel.stream.first as int;
+    // Hybrid channels decode JavaScript numbers as doubles under dart2wasm.
+    final port = (await channel.stream.first as num).toInt();
     server = Uri.parse('ws://127.0.0.1:$port/signaling');
   });
 
