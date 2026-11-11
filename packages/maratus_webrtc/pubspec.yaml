@@ -1,0 +1,25 @@
+name: maratus_webrtc
+description: >-
+  WebRTC data-channel transport for maratus multiplayer sessions, with browser
+  hosting, reliable and unreliable delivery, independent channels, and bounded
+  message queues.
+version: 0.1.0
+repository: https://github.com/bszarlej/maratus/tree/master/packages/maratus_webrtc
+issue_tracker: https://github.com/bszarlej/maratus/issues
+topics:
+  - multiplayer
+  - networking
+  - gamedev
+  - webrtc
+
+environment:
+  sdk: ^3.11.0
+
+resolution: workspace
+
+dependencies:
+  maratus: ^0.2.0
+
+dev_dependencies:
+  lints: ^6.0.0
+  test: ^1.26.3
