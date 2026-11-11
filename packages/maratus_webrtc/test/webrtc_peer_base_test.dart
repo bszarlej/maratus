@@ -1502,6 +1502,38 @@ void main() {
       expect(h.driver.disposeCalls, 1);
     });
 
+    test('closing both ends at once releases without a timeout', () async {
+      final p = pair(channelCount: 2);
+      final (hostConnection, clientConnection) = await p.connect();
+      hostConnection.close();
+      clientConnection.close();
+      expect(p.hostDriver.closed, isEmpty);
+      expect(p.clientDriver.closed, isEmpty);
+      p.flush();
+      expect(p.hostDriver.closed, [1]);
+      expect(p.clientDriver.closed, [1]);
+      expect(p.host.poll(), isNull);
+      expect(p.client.poll(), isNull);
+      await p.client.done;
+    });
+
+    test(
+      'a draining connection waits for close markers on every channel',
+      () async {
+        final h = host(channelCount: 2);
+        final connection = await h.connect();
+        connection.close();
+        h
+          ..receive(_frame(_kindMessage, 1, [1]))
+          ..receive(_frame(_kindClose, 0), lane: 1)
+          ..receive(_closeMarker());
+        expect(h.driver.closed, isEmpty);
+        h.receive(_closeMarker(), lane: 2);
+        expect(h.driver.closed, [1]);
+        expect(h.peer.poll(), isNull);
+      },
+    );
+
     test('a client releases the driver once its connection ends', () async {
       final c = client();
       final connection = await c.connect();
