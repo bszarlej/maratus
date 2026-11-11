@@ -20,7 +20,9 @@ resolution: workspace
 dependencies:
   maratus: ^0.2.0
   web: ^1.1.1
+  web_socket: ^1.0.1
 
 dev_dependencies:
   lints: ^6.0.0
+  stream_channel: ^2.1.0
   test: ^1.26.3
