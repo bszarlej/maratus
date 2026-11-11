@@ -1,9 +1,12 @@
 /// A STUN or TURN server that helps peers find a network path to each other.
 ///
-/// Peers on the same network connect without any servers. Peers behind
-/// different routers usually need a STUN server to discover their public
-/// addresses, and a TURN server relays their traffic when no direct path
-/// exists.
+/// Peers on the same network can connect without STUN or TURN servers;
+/// signaling is still required. Peers behind different routers usually need a
+/// STUN server to discover their public addresses, and a TURN server relays
+/// their traffic when no direct path exists.
+///
+/// Native peers support UDP STUN and TURN only. They skip `stuns:`, `turns:`,
+/// and TURN URLs requesting `transport=tcp`. Browser support varies.
 final class IceServer {
   /// Describes a server reachable at any of [urls], such as
   /// `stun:stun.example.com:3478` or `turn:turn.example.com:3478`.
