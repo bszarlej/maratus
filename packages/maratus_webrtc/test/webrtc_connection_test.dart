@@ -1,6 +1,3 @@
-@TestOn('browser')
-library;
-
 import 'dart:async';
 import 'dart:typed_data';
 
@@ -24,7 +21,7 @@ Future<void> _until(
     }
     if (condition()) return;
     if (deadline.elapsed > const Duration(seconds: 20)) {
-      fail('Browser WebRTC condition timed out.');
+      fail('WebRTC condition timed out.');
     }
     await Future<void>.delayed(const Duration(milliseconds: 5));
   }
@@ -40,7 +37,7 @@ Future<void> _sessionsUntil(
     update();
     if (condition()) return;
     if (deadline.elapsed > const Duration(seconds: 20)) {
-      fail('Browser WebRTC session condition timed out.');
+      fail('WebRTC session condition timed out.');
     }
     await Future<void>.delayed(const Duration(milliseconds: 5));
   }
@@ -79,12 +76,12 @@ void main() {
 
   setUp(() => signaling = InMemorySignaling());
 
-  test('browsers support WebRTC hosting', () {
+  test('this platform supports WebRTC hosting', () {
     expect(WebRtcHost.isSupported, isTrue);
     expect(host().capabilities.canHost, isTrue);
   });
 
-  test('peers in one page exchange every delivery mode and close', () async {
+  test('peers in one process exchange every delivery mode and close', () async {
     final server = host(channelCount: 2);
     final peer = client(channelCount: 2);
     final hostEvents = <PeerEvent>[];
@@ -110,7 +107,7 @@ void main() {
     expect(_messages(hostEvents).last.channel, 1);
     await _until(() => clientConnection.outgoing.messages == 0, both);
 
-    // Datagrams can be lost even in one page, so send until one arrives.
+    // Datagrams can be lost even locally, so send until one arrives.
     for (final (mode, channel) in [
       (DeliveryMode.unreliableOrdered, 0),
       (DeliveryMode.unreliable, 1),
@@ -339,7 +336,7 @@ void main() {
         update: update,
       );
       // Retransmission here belongs to the test's application, since an
-      // unreliable RPC is allowed to disappear even within one page.
+      // unreliable RPC is allowed to disappear even locally.
       await _sessionsUntil(
         () => received.every((calls) => calls.isNotEmpty) && values[1] == 42,
         update: () {

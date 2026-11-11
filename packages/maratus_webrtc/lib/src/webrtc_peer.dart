@@ -56,7 +56,9 @@ final class WebRtcHost implements MultiplayerPeer {
     );
     return WebRtcHost._(
       WebRtcPeerBase.host(
-        driver: createWebRtcDriver(),
+        driver: createWebRtcDriver(
+          maxQueuedBytes: _maxQueuedBytes(incomingLimits),
+        ),
         signaling: signaling,
         iceServers: List.of(iceServers),
         channelCount: channelCount,
@@ -132,7 +134,9 @@ final class WebRtcClient implements MultiplayerPeer {
     );
     return WebRtcClient._(
       WebRtcPeerBase.client(
-        driver: createWebRtcDriver(),
+        driver: createWebRtcDriver(
+          maxQueuedBytes: _maxQueuedBytes(incomingLimits),
+        ),
         signaling: signaling,
         iceServers: List.of(iceServers),
         channelCount: channelCount,
@@ -184,3 +188,9 @@ void _validate({
   connectTimeout: connectTimeout,
   closeTimeout: closeTimeout,
 );
+
+/// Bounds a connection's received data that the transport has not polled:
+/// twice the incoming queue, which leaves room for framing and for data that
+/// arrives between polls.
+int _maxQueuedBytes(QueueLimits incomingLimits) =>
+    2 * incomingLimits.maxBytes + 1024 * 1024;
