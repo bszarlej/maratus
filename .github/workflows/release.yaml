@@ -3,10 +3,11 @@ name: Release
 on:
   push:
     tags:
-      - 'maratus-v*'
-      - 'maratus_annotations-v*'
-      - 'maratus_flame-v*'
-      - 'maratus_generator-v*'
+      - 'maratus-v[0-9]+.[0-9]+.[0-9]+*'
+      - 'maratus_annotations-v[0-9]+.[0-9]+.[0-9]+*'
+      - 'maratus_enet-v[0-9]+.[0-9]+.[0-9]+*'
+      - 'maratus_flame-v[0-9]+.[0-9]+.[0-9]+*'
+      - 'maratus_generator-v[0-9]+.[0-9]+.[0-9]+*'
 
 permissions:
   contents: read
