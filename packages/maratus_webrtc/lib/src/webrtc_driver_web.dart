@@ -13,7 +13,11 @@ import 'webrtc_driver.dart';
 bool get supportsWebRtc => globalContext.has('RTCPeerConnection');
 
 /// Creates a driver backed by the browser's WebRTC implementation.
-WebRtcDriver createWebRtcDriver() => _BrowserDriver();
+///
+/// Browsers deliver received data as it arrives, so [maxQueuedBytes] does
+/// not apply.
+WebRtcDriver createWebRtcDriver({required int maxQueuedBytes}) =>
+    _BrowserDriver();
 
 final class _BrowserDriver implements WebRtcDriver {
   final _events = Queue<WebRtcDriverEvent>();
