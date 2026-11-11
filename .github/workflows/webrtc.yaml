@@ -1,0 +1,228 @@
+name: WebRTC
+
+# Runs only when the WebRTC package, the core API it builds on, or this
+# workflow changes. The CI workflow still analyzes and tests maratus_webrtc on
+# Linux as part of the whole workspace.
+on:
+  push:
+    branches: [master]
+    paths:
+      - packages/maratus/lib/**
+      - packages/maratus/pubspec.yaml
+      - packages/maratus_webrtc/**
+      - .github/workflows/webrtc.yaml
+  pull_request:
+    paths:
+      - packages/maratus/lib/**
+      - packages/maratus/pubspec.yaml
+      - packages/maratus_webrtc/**
+      - .github/workflows/webrtc.yaml
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+concurrency:
+  group: webrtc-${{ github.ref }}
+  cancel-in-progress: true
+
+jobs:
+  webrtc-native:
+    name: WebRTC on ${{ matrix.os }} / Dart ${{ matrix.sdk }}
+    runs-on: ${{ matrix.os }}
+    timeout-minutes: 45
+    strategy:
+      fail-fast: false
+      matrix:
+        os: [ubuntu-latest, macos-latest, windows-latest]
+        sdk: [3.11.0, stable]
+    defaults:
+      run:
+        shell: pwsh
+    steps:
+      - uses: actions/checkout@v7
+
+      - uses: dart-lang/setup-dart@v1
+        with:
+          sdk: ${{ matrix.sdk }}
+
+      - name: Copy native packages into a Dart-only workspace
+        run: |
+          $workspace = Join-Path $env:RUNNER_TEMP 'maratus-webrtc-workspace'
+          New-Item -ItemType Directory -Path $workspace | Out-Null
+          Copy-Item -Recurse -LiteralPath packages/maratus -Destination $workspace
+          Copy-Item -Recurse -LiteralPath packages/maratus_webrtc -Destination $workspace
+          @'
+          name: maratus_webrtc_native_ci
+          publish_to: none
+          environment:
+            sdk: ^3.11.0
+          workspace:
+            - maratus
+            - maratus_webrtc
+          '@ | Set-Content -LiteralPath (Join-Path $workspace 'pubspec.yaml')
+
+      - name: Resolve dependencies without Flutter
+        working-directory: ${{ runner.temp }}/maratus-webrtc-workspace
+        run: dart pub get
+
+      - name: Downgrade direct dependencies
+        if: matrix.sdk == '3.11.0'
+        working-directory: ${{ runner.temp }}/maratus-webrtc-workspace
+        run: dart pub downgrade code_assets crypto ffi hooks lints native_toolchain_c stream_channel test web web_socket
+
+      - name: Analyze
+        working-directory: ${{ runner.temp }}/maratus-webrtc-workspace/maratus_webrtc
+        run: dart analyze --fatal-infos
+
+      - name: Test native WebRTC
+        working-directory: ${{ runner.temp }}/maratus-webrtc-workspace/maratus_webrtc
+        run: dart test
+
+  webrtc-browser:
+    name: WebRTC in Chrome (${{ matrix.compiler }})
+    runs-on: ubuntu-latest
+    timeout-minutes: 45
+    strategy:
+      fail-fast: false
+      matrix:
+        compiler: [dart2js, dart2wasm]
+    steps:
+      - uses: actions/checkout@v7
+
+      - uses: dart-lang/setup-dart@v1
+
+      - name: Copy packages into a Dart-only workspace
+        run: |
+          workspace="$RUNNER_TEMP/maratus-webrtc-workspace"
+          mkdir -p "$workspace"
+          cp -r packages/maratus packages/maratus_webrtc "$workspace"
+          cat > "$workspace/pubspec.yaml" <<'EOF'
+          name: maratus_webrtc_browser_ci
+          publish_to: none
+          environment:
+            sdk: ^3.11.0
+          workspace:
+            - maratus
+            - maratus_webrtc
+          EOF
+
+      - name: Resolve dependencies without Flutter
+        working-directory: ${{ runner.temp }}/maratus-webrtc-workspace
+        run: dart pub get
+
+      # Includes connections between Chrome and native peers, which run in
+      # VM isolates beside the browser tests.
+      - name: Test browser WebRTC
+        working-directory: ${{ runner.temp }}/maratus-webrtc-workspace/maratus_webrtc
+        run: dart test --platform chrome --compiler ${{ matrix.compiler }}
+
+  webrtc-mobile-build:
+    name: WebRTC ${{ matrix.platform }} build
+    runs-on: ${{ matrix.os }}
+    timeout-minutes: 60
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - platform: android
+            os: ubuntu-latest
+          - platform: ios
+            os: macos-latest
+    defaults:
+      run:
+        shell: pwsh
+    steps:
+      - uses: actions/checkout@v7
+
+      - uses: actions/setup-java@v5
+        if: matrix.platform == 'android'
+        with:
+          distribution: temurin
+          java-version: '21'
+
+      - uses: subosito/flutter-action@v2
+        with:
+          channel: stable
+          flutter-version: 3.47.x
+          cache: true
+
+      - name: Create a temporary app that uses the native library
+        run: |
+          $fixture = Join-Path $env:RUNNER_TEMP 'webrtc-mobile-build'
+          flutter create --empty --no-pub --platforms=${{ matrix.platform }} --project-name webrtc_build_check $fixture
+          if ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE }
+          $packageRoot = Join-Path $fixture 'packages'
+          New-Item -ItemType Directory -Path $packageRoot | Out-Null
+          Copy-Item -Recurse -LiteralPath packages/maratus -Destination $packageRoot
+          Copy-Item -Recurse -LiteralPath packages/maratus_webrtc -Destination $packageRoot
+          foreach ($package in @('maratus', 'maratus_webrtc')) {
+            $pubspec = Join-Path $packageRoot "$package/pubspec.yaml"
+            (Get-Content -LiteralPath $pubspec) |
+              Where-Object { $_ -ne 'resolution: workspace' } |
+              Set-Content -LiteralPath $pubspec
+          }
+          @'
+          name: webrtc_build_check
+          publish_to: none
+          environment:
+            sdk: ^3.11.0
+          dependencies:
+            flutter:
+              sdk: flutter
+            maratus_webrtc:
+              path: packages/maratus_webrtc
+          dependency_overrides:
+            maratus:
+              path: packages/maratus
+          '@ | Set-Content -LiteralPath (Join-Path $fixture 'pubspec.yaml')
+          @'
+          import 'package:flutter/widgets.dart';
+          import 'package:maratus_webrtc/maratus_webrtc.dart';
+
+          Future<void> main() async {
+            WidgetsFlutterBinding.ensureInitialized();
+            final peer = WebRtcClient.connect(
+              WebSocketSignalingChannel.join(
+                Uri.parse('ws://127.0.0.1:1/signaling'),
+                room: 'build-check',
+              ),
+            );
+            peer.close();
+            await peer.done;
+            runApp(const SizedBox.shrink());
+          }
+          '@ | Set-Content -LiteralPath (Join-Path $fixture 'lib/main.dart')
+
+      - name: Build Android release APK
+        if: matrix.platform == 'android'
+        working-directory: ${{ runner.temp }}/webrtc-mobile-build
+        run: flutter build apk --release
+
+      - name: Verify Android native libraries are packaged
+        if: matrix.platform == 'android'
+        working-directory: ${{ runner.temp }}/webrtc-mobile-build
+        run: |
+          $apk = [System.IO.Compression.ZipFile]::OpenRead((Join-Path $PWD 'build/app/outputs/flutter-apk/app-release.apk'))
+          try {
+            foreach ($abi in @('armeabi-v7a', 'arm64-v8a', 'x86_64')) {
+              $entry = "lib/$abi/libmaratus_webrtc.so"
+              if ($null -eq $apk.GetEntry($entry)) { throw "Missing native library: $entry" }
+            }
+          } finally {
+            $apk.Dispose()
+          }
+
+      - name: Build unsigned iOS release app
+        if: matrix.platform == 'ios'
+        working-directory: ${{ runner.temp }}/webrtc-mobile-build
+        run: flutter build ios --release --no-codesign
+
+      - name: Verify iOS native library is packaged
+        if: matrix.platform == 'ios'
+        working-directory: ${{ runner.temp }}/webrtc-mobile-build
+        run: |
+          $framework = 'build/ios/iphoneos/Runner.app/Frameworks/maratus_webrtc.framework/maratus_webrtc'
+          if (-not (Test-Path -LiteralPath $framework)) {
+            throw "Missing native framework: $framework"
+          }

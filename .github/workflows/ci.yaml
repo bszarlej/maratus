@@ -17,7 +17,8 @@ jobs:
   check:
     name: Flutter ${{ matrix.flutter }} (${{ matrix.name }})
     runs-on: ubuntu-latest
-    timeout-minutes: 20
+    # Includes building the WebRTC package's bundled native libraries.
+    timeout-minutes: 30
     strategy:
       fail-fast: false
       matrix:
@@ -45,7 +46,7 @@ jobs:
 
       - name: Downgrade direct dependencies
         if: matrix.resolve == 'downgrade'
-        run: flutter pub downgrade analyzer build build_runner build_test code_assets crypto ffi hooks native_toolchain_c web flame flame_test flutter_lints lints melos meta source_gen test
+        run: flutter pub downgrade analyzer build build_runner build_test code_assets crypto ffi hooks native_toolchain_c stream_channel web web_socket flame flame_test flutter_lints lints melos meta source_gen test
 
       - name: Check formatting
         if: matrix.current
