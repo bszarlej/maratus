@@ -6,41 +6,51 @@
   </picture>
 </p>
 
-<p align="center">
-  Annotations for generating <a href="https://pub.dev/packages/maratus">maratus</a> multiplayer code.
-</p>
-
----
-
 # maratus_annotations
 
-Declare a class's RPC handlers, synchronized fields, and spawn type, or a data
-class's codec, with annotations.
-[`maratus_generator`](https://pub.dev/packages/maratus_generator) turns them
-into the handles, codecs, and schema fingerprint that hand-written registration
-produces, plus the code that binds and calls them.
+Annotations for declaring RPC handlers, synchronized fields, spawn types, and
+value codecs in [maratus](https://pub.dev/packages/maratus). Use with
+[`maratus_generator`](https://pub.dev/packages/maratus_generator) to generate
+protocol registration and entity bindings. Both packages work with pure Dart;
+Flame components also receive typed RPC senders.
 
-## Install
+## Installation
 
 ```sh
-dart pub add maratus_annotations dev:maratus_generator dev:build_runner
+dart pub add maratus maratus_annotations dev:maratus_generator dev:build_runner
 ```
 
-Use `flutter pub add` with the same arguments in a Flutter project.
+For a Flame project:
+
+```sh
+flutter pub add maratus_flame maratus_annotations dev:maratus_generator dev:build_runner
+```
+
+Follow the [generator setup and example](https://pub.dev/packages/maratus_generator)
+to add a generated part, register the protocol, and bind entities.
 
 ## Annotations
 
 | Annotation | On | Declares |
 | ---------- | -- | -------- |
-| `@Networked` | class | Generated handles, their registration, a binding mixin, and typed RPC senders; optionally the class's spawn type. |
-| `@RpcMethod` | method | The RPC that the method handles, with caller, target, local, delivery mode, and channel settings. |
-| `@SyncedField` | field or getter | A synchronized field with sampling mode, delivery mode, and channel settings. |
-| `@NetworkCodec` | class | A generated `ValueCodec` for the class. |
-| `@WireKey` | field | The wire key of a field in a generated codec. |
-| `@Range`, `@MaxLength`, `@UseCodec` | parameter, field, or getter | The codec of a value. |
+| `@Networked` | Class | Protocol handles and bindings; optional spawn type and synchronization timing. |
+| `@RpcMethod` | Method | RPC identifier, caller permissions, routing, and delivery settings. |
+| `@SyncedField` | Field or getter | Field identifier, sampling, delivery, and optional interpolation. |
+| `@NetworkCodec` | Class | A `ValueCodec` with an explicit descriptor. |
+| `@WireKey` | Field | A stable key in a generated data codec. |
+| `@Range` | Parameter, field, or getter | Inclusive numeric bounds. |
+| `@MaxLength` | Parameter, field, or getter | Maximum string or list length. |
+| `@UseCodec` | Parameter, field, or getter | A custom const codec for the declared type. |
 
-The [`maratus_generator` README](https://pub.dev/packages/maratus_generator)
-shows how to use them.
+RPCs default to any caller, the host target, no local execution, and reliable
+delivery on channel zero. Synchronized fields default to `SyncMode.onChange`
+with reliable delivery on channel zero. Set caller permissions explicitly when
+an RPC should be restricted to an entity's owner, authority, or the host.
+
+Built-in codecs cover `bool`, `int`, `double`, `String`, lists, and nullable
+types. Strings and lists default to a maximum length of 256. Other types need
+`@NetworkCodec` or `@UseCodec`; a custom codec cannot be combined with `@Range`
+or `@MaxLength` on the same value.
 
 ## License
 
