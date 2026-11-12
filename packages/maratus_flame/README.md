@@ -6,6 +6,10 @@
   </picture>
 </p>
 
+<p align="center">
+  <a title="Pub" href="https://pub.dev/packages/maratus_flame" ><img alt="pub version" src="https://img.shields.io/pub/v/maratus_flame.svg"></a>
+</p>
+
 # maratus_flame
 
 Flame bindings for [`maratus`](https://pub.dev/packages/maratus). This package connects

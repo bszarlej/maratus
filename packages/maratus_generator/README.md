@@ -6,6 +6,10 @@
   </picture>
 </p>
 
+<p align="center">
+  <a title="Pub" href="https://pub.dev/packages/maratus_generator" ><img alt="pub version" src="https://img.shields.io/pub/v/maratus_generator.svg"></a>
+</p>
+
 # maratus_generator
 
 Generates [maratus](https://pub.dev/packages/maratus) protocol handles, entity

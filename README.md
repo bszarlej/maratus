@@ -6,6 +6,11 @@
   </picture>
 </p>
 
+<p align="center">
+  <a title="CI" href="https://github.com/bszarlej/maratus/actions/workflows/ci.yaml"><img alt="CI" src="https://github.com/bszarlej/maratus/actions/workflows/ci.yaml/badge.svg"/></a>
+  <a title="Melos" href="https://github.com/invertase/melos"><img alt="maintained with melos" src="https://img.shields.io/badge/maintained%20with-melos-f700ff.svg"/></a>
+</p>
+
 # Maratus
 
 Godot-inspired multiplayer for Dart and Flame: typed RPCs, replicated spawning,
@@ -32,14 +37,14 @@ Requires Dart `>=3.11.0 <4.0.0`. Flame integration also requires Flutter
 
 ## Packages
 
-| Package | Purpose |
-| ------- | ------- |
-| [maratus](packages/maratus) | Sessions, RPCs, replication, WebSockets, and an in-memory transport. No Flutter dependency. |
-| [maratus_flame](packages/maratus_flame) | Component lifecycle integration, spawning, and vector interpolation. Re-exports the core API. |
-| [maratus_enet](packages/maratus_enet) | Optional native ENet transport over UDP. |
-| [maratus_webrtc](packages/maratus_webrtc) | Optional WebRTC transport and WebSocket signaling server. |
-| [maratus_annotations](packages/maratus_annotations) | Annotations for networked classes and data codecs. |
-| [maratus_generator](packages/maratus_generator) | Generates protocol registrations, bindings, RPC senders, and codecs. Development dependency. |
+| Package | Version | Purpose |
+| ------- | ------- | ------- |
+| [maratus](packages/maratus) | [![pub version](https://img.shields.io/pub/v/maratus.svg)](https://pub.dev/packages/maratus) | Sessions, RPCs, replication, WebSockets, and an in-memory transport. No Flutter dependency. |
+| [maratus_flame](packages/maratus_flame) | [![pub version](https://img.shields.io/pub/v/maratus_flame.svg)](https://pub.dev/packages/maratus_flame) | Component lifecycle integration, spawning, and vector interpolation. Re-exports the core API. |
+| [maratus_enet](packages/maratus_enet) | [![pub version](https://img.shields.io/pub/v/maratus_enet.svg)](https://pub.dev/packages/maratus_enet) | Optional native ENet transport over UDP. |
+| [maratus_webrtc](packages/maratus_webrtc) | [![pub version](https://img.shields.io/pub/v/maratus_webrtc.svg)](https://pub.dev/packages/maratus_webrtc) | Optional WebRTC transport and WebSocket signaling server. |
+| [maratus_annotations](packages/maratus_annotations) | [![pub version](https://img.shields.io/pub/v/maratus_annotations.svg)](https://pub.dev/packages/maratus_annotations) | Annotations for networked classes and data codecs. |
+| [maratus_generator](packages/maratus_generator) | [![pub version](https://img.shields.io/pub/v/maratus_generator.svg)](https://pub.dev/packages/maratus_generator) | Generates protocol registrations, bindings, RPC senders, and codecs. Development dependency. |
 
 Start with the [Flame setup guide](packages/maratus_flame/README.md) or the
 [core API guide](packages/maratus/README.md). Protocols use explicit identifiers

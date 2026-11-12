@@ -6,6 +6,10 @@
   </picture>
 </p>
 
+<p align="center">
+  <a title="Pub" href="https://pub.dev/packages/maratus_annotations" ><img alt="pub version" src="https://img.shields.io/pub/v/maratus_annotations.svg"></a>
+</p>
+
 # maratus_annotations
 
 Annotations for declaring RPC handlers, synchronized fields, spawn types, and

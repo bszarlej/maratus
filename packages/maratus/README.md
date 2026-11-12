@@ -6,6 +6,10 @@
   </picture>
 </p>
 
+<p align="center">
+  <a title="Pub" href="https://pub.dev/packages/maratus" ><img alt="pub version" src="https://img.shields.io/pub/v/maratus.svg"></a>
+</p>
+
 # maratus
 
 Multiplayer sessions, typed RPCs, replicated entities, and property synchronization

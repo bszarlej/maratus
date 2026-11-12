@@ -6,6 +6,10 @@
   </picture>
 </p>
 
+<p align="center">
+  <a title="Pub" href="https://pub.dev/packages/maratus_enet" ><img alt="pub version" src="https://img.shields.io/pub/v/maratus_enet.svg"></a>
+</p>
+
 # maratus_enet
 
 ENet over UDP for [maratus](https://pub.dev/packages/maratus). This optional transport
