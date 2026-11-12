@@ -255,16 +255,6 @@ The initial release focuses on small sessions, such as 2–4 players. Connection
 use WebSockets or the optional native ENet transport and currently require a
 directly reachable host.
 
-Planned work:
-
-- Android/iOS support and larger-session tuning: compatibility and performance
-  validation are still pending.
-- Relays/NAT traversal,
-  built-in client-side prediction and reconciliation, interest management, and state
-  compression: **not implemented yet**.
-
-The documentation website is coming soon. Start with the examples above.
-
 ## Wire format
 
 Sessions use self-contained binary packets with variable-length integers and
