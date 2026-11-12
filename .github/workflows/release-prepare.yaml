@@ -21,9 +21,11 @@ jobs:
       contents: write
       pull-requests: write
     steps:
+      # Use the release identity so PR workflows start without manual approval.
       - uses: actions/checkout@v7
         with:
           fetch-depth: 0
+          token: ${{ secrets.RELEASE_TOKEN }}
 
       - uses: subosito/flutter-action@v2
         with:
@@ -34,6 +36,7 @@ jobs:
       - uses: bluefireteam/melos-action@v3
         with:
           melos-version: ^8.10.0
+          token: ${{ secrets.RELEASE_TOKEN }}
           run-versioning: ${{ inputs.prerelease == false }}
           run-versioning-prerelease: ${{ inputs.prerelease == true }}
           publish-dry-run: true
