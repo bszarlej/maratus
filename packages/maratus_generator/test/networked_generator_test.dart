@@ -50,6 +50,7 @@ final class Avatar with _\$Avatar {
     expect(output, isNot(contains('local:')));
     expect(output, isNot(contains('deliveryMode:')));
     expect(output, isNot(contains('channel:')));
+    expect(output, isNot(contains('writer:')));
     expect(output, contains("id: FieldId('test.avatar.health'),"));
     expect(output, contains('..addSpawnTypeDefinition(spawnType)'));
     expect(output, contains('..addRpcDefinition(hit)'));
@@ -171,6 +172,9 @@ final class Mover with _\$Mover {
 
   @SyncedField('test.mover.health', channel: 3)
   int health = 100;
+
+  @SyncedField('test.mover.input', writer: m.FieldWriter.owner)
+  int input = 0;
 }
 ''');
 
@@ -185,6 +189,8 @@ final class Mover with _\$Mover {
       expect(output, contains('channel: 2,'));
       expect(output, contains('channel: 3,'));
       expect(output, contains('mode: m.SyncMode.always'));
+      expect(output, contains('writer: m.FieldWriter.owner,'));
+      expect('writer:'.allMatches(output), hasLength(1));
     },
   );
 
