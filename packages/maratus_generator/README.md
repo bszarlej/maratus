@@ -136,6 +136,22 @@ loss; initial snapshots remain reliable. `@RpcMethod` accepts the same
 delivery with transport-specific channel configuration; WebSockets support
 reliable channel zero only. See the core [delivery guide](https://pub.dev/packages/maratus#delivery).
 
+## Let the owner write a field
+
+Fields default to their entity's authority as the writer. Select the owner for
+input that the owning player controls, next to the fields that the authority
+writes:
+
+```dart
+@SyncedField('arena.player.input', writer: FieldWriter.owner)
+@Range(min: -1, max: 1)
+int input = 0;
+```
+
+The owner then samples the member, and the host and other clients write the
+received values to it. See the core guide on
+[replicated state](https://pub.dev/packages/maratus#replicated-entities-and-state).
+
 ## Declaration rules
 
 - Use stable, explicit identifiers such as `arena.player.emote`. Renaming the

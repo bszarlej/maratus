@@ -118,6 +118,7 @@ final class _Field {
     required this.mode,
     required this.deliveryMode,
     required this.channel,
+    required this.writer,
     required this.interpolator,
     required this.isWritable,
     required this.codec,
@@ -129,6 +130,7 @@ final class _Field {
   final String mode;
   final String deliveryMode;
   final int channel;
+  final String writer;
   final CopiedExpression? interpolator;
   final bool isWritable;
   final CodecSource codec;
@@ -456,6 +458,7 @@ final class _NetworkedClass {
           mode: mode,
           deliveryMode: deliveryMode,
           channel: _channel(reader, member),
+          writer: _enumName(reader.read('writer').objectValue),
           interpolator: interpolator,
           isWritable: isWritable,
           codec: await codecs.resolve(member, type, description),
@@ -635,6 +638,7 @@ static const ${field.name} = ${maratus}SyncField(
   id: ${maratus}FieldId(${stringLiteral(field.id)}),
   codec: ${constant('${publicPart(field.name)}Codec', field.codec.expression, field.codec.freeNames)},
   ${_delivery(field.deliveryMode, field.channel).join('\n')}
+  ${field.writer != 'authority' ? 'writer: ${maratus}FieldWriter.${field.writer},' : ''}
 );''');
       registrations.add('addFieldDefinition(${field.name})');
       final interpolator = field.interpolator;
