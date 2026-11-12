@@ -68,8 +68,10 @@ final class _RecordingPeer implements MultiplayerPeer {
       :final mode,
       :final channel,
     )) {
-      if (codec.decode(message).message case final StateMessage state) {
-        received.add((state, mode, channel));
+      for (final envelope in codec.decodePacket(message)) {
+        if (envelope.message case final StateMessage state) {
+          received.add((state, mode, channel));
+        }
       }
     }
     return event;
@@ -177,13 +179,14 @@ final class _Joining {
             ),
           );
         case MessageReceived(:final message, :final channel):
-          final envelope = codec.decode(message);
-          if (envelope.message case final StateMessage state) {
-            states.add((
-              message: state,
-              revision: envelope.revision,
-              channel: channel,
-            ));
+          for (final envelope in codec.decodePacket(message)) {
+            if (envelope.message case final StateMessage state) {
+              states.add((
+                message: state,
+                revision: envelope.revision,
+                channel: channel,
+              ));
+            }
           }
         case ConnectionClosed():
           break;

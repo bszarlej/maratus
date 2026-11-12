@@ -60,10 +60,10 @@ void main() {
     final json = ProtocolCodec(schema(), wire: const JsonWireCodec());
     final binaryBytes = sender.encode(messages.first).length;
     final jsonBytes = json.encode(messages.first).length;
-    expect(binaryBytes, 30);
+    expect(binaryBytes, 22);
     expect(sender.encode(messages.first), [
       77,
-      1,
+      2,
       1,
       16,
       1,
@@ -73,24 +73,16 @@ void main() {
       1,
       2,
       0,
-      5,
+      9,
       0,
       0,
-      0,
-      0,
-      0,
-      0,
-      244,
+      160,
       63,
       1,
-      5,
+      9,
       0,
       0,
-      0,
-      0,
-      0,
-      0,
-      244,
+      160,
       191,
     ]);
     expect(jsonBytes, 100);
@@ -132,17 +124,46 @@ void main() {
     expect(codec.decode(codec.encode(value)), value);
   });
 
+  test('uses float32 only when every bit of the value is preserved', () {
+    final cases = <double, List<int>>{
+      1.5: [9, 0, 0, 192, 63],
+      -1.5: [9, 0, 0, 192, 191],
+      1.401298464324817e-45: [9, 1, 0, 0, 0], // Smallest subnormal.
+      1.1754943508222875e-38: [9, 0, 0, 128, 0], // Smallest normal.
+      3.4028234663852886e38: [9, 255, 255, 127, 127], // Largest finite.
+      9007199254740992.0: [9, 0, 0, 0, 90], // Beyond safe integer range.
+      0.1: [5, 154, 153, 153, 153, 153, 153, 185, 63],
+      1.0000000000000002: [5, 1, 0, 0, 0, 0, 0, 240, 63],
+    };
+    for (final entry in cases.entries) {
+      expect(codec.encode(entry.key), entry.value, reason: '${entry.key}');
+      expect(codec.decode(Uint8List.fromList(entry.value)), entry.key);
+    }
+    // Underflow and overflow must fall back to float64, without rounding.
+    for (final value in [1e-50, -1e-50, 1e100, -1e100]) {
+      final bytes = codec.encode(value);
+      expect(bytes.first, 5);
+      expect(bytes.length, 9);
+      expect(codec.decode(bytes), value);
+    }
+    expect(codec.encode(0.0), [3, 0]);
+    expect(codec.encode(1.0), [3, 1]);
+    expect(codec.encode(-1.0), [4, 0]);
+    expect(codec.encode(-0.0), [9, 0, 0, 0, 128]);
+    expect((codec.decode(codec.encode(-0.0))! as num).isNegative, isTrue);
+  });
+
   test(
     'rejects unknown identifiers, tags, overflowing and overlong varints',
     () {
       for (final bytes in <List<int>>[
-        [77, 2],
-        [77, 1, 1, 99],
-        [77, 1, 129, 0],
-        [77, 1, ...List.filled(8, 255)],
-        [77, 1, 1, 0, 0, 0, 2, 99],
-        [77, 1, 1, 16, 0, 0, 2, 1, 99, 0],
-        [77, 1, 1, 16, 0, 0, 2, 2, 0, 0, 0, 0],
+        [77, 1],
+        [77, 2, 1, 99],
+        [77, 2, 129, 0],
+        [77, 2, ...List.filled(8, 255)],
+        [77, 2, 1, 0, 0, 0, 2, 99],
+        [77, 2, 1, 16, 0, 0, 2, 1, 99, 0],
+        [77, 2, 1, 16, 0, 0, 2, 2, 0, 0, 0, 0],
       ]) {
         expect(
           () => codec.decodeEnvelope(Uint8List.fromList(bytes)),
@@ -152,12 +173,31 @@ void main() {
     },
   );
 
+  test('rejects incompatible binary formats before reading an envelope', () {
+    for (final version in [1, 3]) {
+      expect(
+        () => codec.decodeEnvelope(Uint8List.fromList([77, version])),
+        throwsA(
+          isA<ProtocolException>().having(
+            (error) => error.code,
+            'code',
+            ProtocolErrorCode.unsupportedVersion,
+          ),
+        ),
+      );
+    }
+  });
+
   test('rejects malformed scalar values and duplicate object keys', () {
     for (final bytes in <List<int>>[
       [6, 1, 255], // Invalid UTF-8.
       [6, 127], // Truncated string.
       [5, 0, 0, 0, 0, 0, 0, 240, 127], // Infinity.
       [5, 0, 0, 0, 0, 0, 0, 248, 127], // NaN.
+      [9, 0, 0, 128, 127], // Float32 infinity.
+      [9, 0, 0, 128, 255], // Float32 negative infinity.
+      [9, 0, 0, 192, 127], // Float32 NaN.
+      [9, 0, 0, 0], // Truncated float32.
       [8, 2, 1, 97, 0, 1, 97, 0], // Duplicate key.
       [7, 127], // Truncated collection.
       [99], // Unknown tag.
@@ -201,7 +241,7 @@ void main() {
     final protocol = ProtocolCodec(schema());
     for (var i = 0; i < 3000; i++) {
       final bytes = Uint8List.fromList([
-        if (i.isEven) ...[77, 1, 1],
+        if (i.isEven) ...[77, 2, 1],
         for (var j = 0; j < random.nextInt(100); j++) random.nextInt(256),
       ]);
       try {

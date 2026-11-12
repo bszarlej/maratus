@@ -268,8 +268,9 @@ The documentation website is coming soon. Start with the examples above.
 ## Wire format
 
 Sessions use self-contained binary packets with variable-length integers and
-little-endian IEEE-754 doubles. Exactly integral doubles in the safe integer
-range use integer encoding consistently on native and JavaScript platforms;
+little-endian IEEE-754 numbers. Values that round-trip exactly through a 32-bit
+float use four bytes; other fractional values retain all eight bytes of a double.
+Exactly integral doubles in the safe integer range use integer encoding consistently on native and JavaScript platforms;
 negative zero retains its IEEE-754 representation. Strings remain UTF-8.
 Custom value codecs keep their existing null/bool/number/string/list/map model.
 
@@ -279,18 +280,43 @@ The handshake checks the schema fingerprint before accepting application data.
 No dictionary updates or previous packets are needed to decode a message, so
 packet loss, duplication, and reordering do not affect decoding.
 
-The envelope starts with `0x4d`, binary format version `1`, then varints for the
+The envelope starts with `0x4d`, binary format version `2`, then varints for the
 protocol version, message kind, generation, revision, and body presence mask.
 Body entries follow a fixed mask order; state fields carry numeric IDs and tagged
 values. Decoding rejects unknown IDs, duplicate keys, invalid tags, overflowing
 or noncanonical varints, non-finite doubles, truncation, and trailing bytes.
 Message, collection, and nesting limits remain enforced.
 
-All session peers must upgrade together: this replaces the JSON wire format.
+All session peers must upgrade together: binary format version 2 replaces both
+the original JSON representation and binary format version 1.
 The internal protocol codec still supports JSON for diagnostics; sessions do not
 negotiate a fallback. A two-position-field regression fixture measures 100 bytes
-in JSON and 30 bytes in binary (3.3x smaller). Actual savings depend on payloads.
+in JSON and 22 bytes in binary (4.5x smaller). Actual savings depend on payloads.
 CPU performance has not been benchmarked.
+
+During `update()` and `captureState()`, consecutive state messages for the same
+peer, delivery mode, and channel share a packet. Each message keeps its revision,
+sequence, and sample time. Batches share the generation and format headers, flush
+before control/RPC messages and before the call returns, and target at most 1200
+bytes (or a smaller transport limit). Large standalone reliable messages retain
+their existing behavior. Every packet remains independently decodable; no previous
+snapshot is needed. Diagnostics count logical messages and actual packet bytes,
+including batch framing once.
+
+Use `QuantizedDoubleCodec` when a field may intentionally lose precision:
+
+```dart
+final position = builder.addField(
+  const FieldId('player.position.x'),
+  QuantizedDoubleCodec(min: -1000, max: 1000, step: 0.01),
+);
+```
+
+This maps values to integer grid indices, rounding to the nearest hundredth.
+The range must contain a whole number of steps; invalid configurations and values
+outside the range are rejected. The range and step enter the schema fingerprint.
+Movements that round to the same value do not trigger `SyncMode.onChange`
+updates. Quantization is opt-in: `DoubleCodec` continues to preserve exact values.
 
 ## License
 

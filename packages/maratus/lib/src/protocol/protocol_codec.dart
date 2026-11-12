@@ -5,6 +5,7 @@ import 'identifiers.dart';
 import 'messages.dart';
 import 'protocol_exception.dart';
 import 'schema.dart';
+import 'state_batch_codec.dart';
 import 'value_codec.dart';
 import 'wire_codec.dart';
 
@@ -116,6 +117,17 @@ final class ProtocolCodec {
     }
     return bytes;
   }
+
+  /// Decodes a transport packet containing one envelope or a state batch.
+  ///
+  /// All envelopes are validated before any are returned to the caller.
+  List<MessageEnvelope> decodePacket(Uint8List bytes) => [
+    for (final message
+        in wire is BinaryWireCodec
+            ? StateBatchCodec(limits: limits).decode(bytes)
+            : [bytes])
+      decode(message),
+  ];
 
   /// Decodes and validates received [bytes].
   ///

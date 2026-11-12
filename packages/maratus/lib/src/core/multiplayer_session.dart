@@ -10,6 +10,7 @@ import '../protocol/protocol_exception.dart';
 import '../protocol/rpc.dart';
 import '../protocol/schema.dart';
 import '../protocol/spawn_type.dart';
+import '../protocol/state_batch_codec.dart';
 import '../protocol/static_entity.dart';
 import '../protocol/sync_field.dart';
 import '../protocol/value_codec.dart';
@@ -25,6 +26,7 @@ part 'entity_attachment.dart';
 part 'session_diagnostics.dart';
 part 'session_membership.dart';
 part 'session_delivery.dart';
+part 'state_batches.dart';
 part '../replication/authority_replicator.dart';
 part '../replication/interpolation.dart';
 part '../replication/spawn_replicator.dart';
@@ -213,6 +215,7 @@ final class MultiplayerSession {
   late final _authorities = _AuthorityReplicator(this);
   late final _states = _StateReplicator(this);
   late final _delivery = _SessionDelivery(this);
+  late final _batches = _StateBatches(this);
 
   /// How long this session waits for each stage of joining.
   final SessionTimeouts timeouts;
@@ -242,7 +245,8 @@ final class MultiplayerSession {
   /// stops polling, newer state for an entity replaces state that has not
   /// been sent, keeping one waiting entry per entity. Waiting state is sent
   /// once the queue drains, and before any other message is sent to that
-  /// peer. Delivery ordering depends on each field's mode and channel. Other
+  /// peer. Pending state batches also count toward these limits.
+  /// Delivery ordering depends on each field's mode and channel. Other
   /// messages are not replaceable and still close a connection whose
   /// transport queue overflows.
   final QueueLimits stateBackpressure;
@@ -535,6 +539,7 @@ final class MultiplayerSession {
     final peer = _peer;
     if (peer == null) return;
     _updating = true;
+    _batches.begin();
     try {
       _rpcDispatcher.prune();
       _attachments.reconcile();
@@ -558,7 +563,11 @@ final class MultiplayerSession {
       if (_peer != peer) return;
       _enforceDeadlines();
     } finally {
-      _updating = false;
+      try {
+        _batches.end();
+      } finally {
+        _updating = false;
+      }
     }
   }
 
@@ -573,13 +582,20 @@ final class MultiplayerSession {
   /// sends it to the host, which relays it. State for a congested peer waits,
   /// replaced by newer values, as [stateBackpressure] describes. Failures
   /// are reported as [PropertySyncFailed] events. Has no effect unless
-  /// hosting or ready. Throws a [StateError] if called recursively, during
+  /// hosting or ready. State from multiple entities may share a packet when
+  /// its delivery mode and channel match. Packets flush before this returns.
+  /// Throws a [StateError] if called recursively, during
   /// [update], or from an RPC or spawn handler.
   void captureState() {
     _checkNotRunning();
     if (_state != SessionState.hosting && _state != SessionState.ready) return;
-    _states.capture();
-    _drainHeld();
+    _batches.begin();
+    try {
+      _states.capture();
+      _drainHeld();
+    } finally {
+      _batches.end();
+    }
   }
 
   void _checkNotRunning() {
@@ -880,7 +896,7 @@ final class MultiplayerSession {
 
   /// Whether [remote]'s outgoing queue reached [stateBackpressure].
   bool _congested(_Remote remote) =>
-      !stateBackpressure.accepts(remote.connection.outgoing, 0);
+      !stateBackpressure.accepts(_batches.outgoing(remote), 0);
 
   /// Holds state [message] for [remote], replacing the held values of the
   /// same fields of [entity] and moving its entry behind the others.
@@ -988,6 +1004,7 @@ final class MultiplayerSession {
     _authorities.clear();
     _states.clear();
     _delivery.clear();
+    _batches.clear();
     registry.clear();
     _staticEntities.clear();
     // Every peer of the session takes the same IDs for the static entities,
@@ -1051,9 +1068,12 @@ final class MultiplayerSession {
     DeliveryMode mode,
     int channel,
   ) {
-    final MessageEnvelope envelope;
+    final List<Uint8List> messages;
+    final List<MessageEnvelope> envelopes;
     try {
-      envelope = _codec.decode(bytes);
+      messages = _batches.codec.decode(bytes);
+      // Validate every child before allowing any to affect the session.
+      envelopes = [for (final message in messages) _codec.decode(message)];
     } on ProtocolException catch (error) {
       _count(remote.received, _received, null, bytes.length);
       _drop(
@@ -1065,19 +1085,40 @@ final class MultiplayerSession {
       );
       return;
     }
-    _count(remote.received, _received, envelope.message.kind, bytes.length);
-    // A welcome assigns the connection's generation, which every other
-    // message must carry.
-    final assigning =
-        !_isHost &&
-        remote.state == _RemoteState.handshaking &&
-        envelope.message is WelcomeMessage;
-    if (!assigning && envelope.generation != remote.generation) {
-      _staleMessages++;
+    for (var i = 0; i < envelopes.length; i++) {
+      final envelope = envelopes[i];
+      final share =
+          bytes.length ~/ envelopes.length +
+          (i < bytes.length % envelopes.length ? 1 : 0);
+      _count(remote.received, _received, envelope.message.kind, share);
+    }
+    if (envelopes.length > 1 &&
+        envelopes.any(
+          (envelope) =>
+              envelope.generation == remote.generation &&
+              !_delivery._valid(envelope.message, (
+                mode: mode,
+                channel: channel,
+              )),
+        )) {
+      _drop(remote, DisconnectReason.protocolViolation, notify: true);
       return;
     }
-    if (remote.peer != null) remote.lastReceivedAt = _clock.now;
-    _delivery.receive(remote, envelope, mode, channel, bytes.length);
+    for (var i = 0; i < envelopes.length; i++) {
+      if (_remotes[remote.connection] != remote) break;
+      final envelope = envelopes[i];
+      // A welcome assigns the connection's generation.
+      final assigning =
+          !_isHost &&
+          remote.state == _RemoteState.handshaking &&
+          envelope.message is WelcomeMessage;
+      if (!assigning && envelope.generation != remote.generation) {
+        _staleMessages++;
+        continue;
+      }
+      if (remote.peer != null) remote.lastReceivedAt = _clock.now;
+      _delivery.receive(remote, envelope, mode, channel, messages[i].length);
+    }
   }
 
   void _dispatch(_Remote remote, MessageEnvelope envelope) {
@@ -1485,6 +1526,7 @@ final class MultiplayerSession {
     if (_remotes[remote.connection] != remote) return;
     // State held for a peer that is leaving is never sent.
     remote.held.clear();
+    _batches.forget(remote);
     final goodbye = notify ? _goodbyeFor(reason) : null;
     if (goodbye != null &&
         !_send(remote, GoodbyeMessage(goodbye, detail: detail))) {
@@ -1513,6 +1555,7 @@ final class MultiplayerSession {
     final peer = _peer;
     if (peer == null) return;
     _peer = null;
+    _batches.clear();
     peer.close();
     _remotes.clear();
     _peers.clear();
@@ -1573,19 +1616,12 @@ final class MultiplayerSession {
         revision: revision,
       ),
     );
-    if (!remote.connection.send(
-      bytes,
-      mode: delivery.mode,
-      channel: delivery.channel,
-    )) {
-      return false;
-    }
+    if (!_batches.send(remote, message, bytes, delivery)) return false;
     if (_isHost &&
         delivery == _defaultDelivery &&
         (message is! StateMessage || message.sequence == null)) {
       remote.sentRevision = max(remote.sentRevision, revision);
     }
-    _count(remote.sent, _sent, message.kind, bytes.length);
     return true;
   }
 
