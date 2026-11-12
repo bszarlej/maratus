@@ -265,6 +265,33 @@ Planned work:
 
 The documentation website is coming soon. Start with the examples above.
 
+## Wire format
+
+Sessions use self-contained binary packets with variable-length integers and
+little-endian IEEE-754 doubles. Exactly integral doubles in the safe integer
+range use integer encoding consistently on native and JavaScript platforms;
+negative zero retains its IEEE-754 representation. Strings remain UTF-8.
+Custom value codecs keep their existing null/bool/number/string/list/map model.
+
+Fields, RPCs, and spawn types each get a separate zero-based numeric ID table,
+sorted lexicographically by identifier. Registration order does not matter.
+The handshake checks the schema fingerprint before accepting application data.
+No dictionary updates or previous packets are needed to decode a message, so
+packet loss, duplication, and reordering do not affect decoding.
+
+The envelope starts with `0x4d`, binary format version `1`, then varints for the
+protocol version, message kind, generation, revision, and body presence mask.
+Body entries follow a fixed mask order; state fields carry numeric IDs and tagged
+values. Decoding rejects unknown IDs, duplicate keys, invalid tags, overflowing
+or noncanonical varints, non-finite doubles, truncation, and trailing bytes.
+Message, collection, and nesting limits remain enforced.
+
+All session peers must upgrade together: this replaces the JSON wire format.
+The internal protocol codec still supports JSON for diagnostics; sessions do not
+negotiate a fallback. A two-position-field regression fixture measures 100 bytes
+in JSON and 30 bytes in binary (3.3x smaller). Actual savings depend on payloads.
+CPU performance has not been benchmarked.
+
 ## License
 
 MIT. See [LICENSE](LICENSE).

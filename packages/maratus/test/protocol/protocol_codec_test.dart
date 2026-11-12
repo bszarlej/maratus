@@ -719,7 +719,31 @@ final _invalidInputs = <_InvalidInput>[
 Uint8List _bytes(String text) => utf8.encode(text);
 
 void main() {
-  final codec = ProtocolCodec(buildTestSchema());
+  final codec = _jsonCodec(buildTestSchema());
+
+  group('binary fixtures', () {
+    final binary = ProtocolCodec(buildTestSchema());
+    for (final entry in _fixtures.entries) {
+      test('round-trips ${entry.key} through independent codecs', () {
+        final bytes = binary.encode(_envelopes[entry.key]!);
+        final decoded = ProtocolCodec(buildTestSchema()).decode(bytes);
+        expect(
+          jsonDecode(utf8.decode(codec.encode(decoded))),
+          jsonDecode(entry.value),
+        );
+        for (var end = 0; end < bytes.length; end++) {
+          expect(
+            () => binary.decode(Uint8List.sublistView(bytes, 0, end)),
+            throwsA(isA<ProtocolException>()),
+          );
+        }
+        expect(
+          () => binary.decode(Uint8List.fromList([...bytes, 0])),
+          throwsA(isA<ProtocolException>()),
+        );
+      });
+    }
+  });
 
   group('encode', () {
     for (final MapEntry(key: name, value: fixture) in _fixtures.entries) {
@@ -851,7 +875,7 @@ void main() {
         final schema =
             (ProtocolSchemaBuilder()..setJoinRequest(const StringCodec()))
                 .build();
-        final withJoinRequest = ProtocolCodec(schema);
+        final withJoinRequest = _jsonCodec(schema);
         for (final request in <Object?>[
           null,
           false,
@@ -940,10 +964,7 @@ void main() {
         (limits: const WireLimits(maxMessageBytes: 128), request: 'a' * 129),
       ];
       for (final testCase in cases) {
-        final limited = ProtocolCodec(
-          buildTestSchema(),
-          limits: testCase.limits,
-        );
+        final limited = _jsonCodec(buildTestSchema(), limits: testCase.limits);
         final envelope = MessageEnvelope(
           HelloMessage(fingerprint: _fingerprint, request: testCase.request),
         );
@@ -1119,7 +1140,7 @@ void main() {
     });
 
     test('rejects oversized messages before parsing them', () {
-      final small = ProtocolCodec(
+      final small = _jsonCodec(
         buildTestSchema(),
         limits: const WireLimits(maxMessageBytes: 32),
       );
@@ -1131,7 +1152,7 @@ void main() {
     });
 
     test('rejects values nested deeper than the limit', () {
-      final shallow = ProtocolCodec(
+      final shallow = _jsonCodec(
         buildTestSchema(),
         limits: const WireLimits(maxDepth: 2),
       );
@@ -1143,7 +1164,7 @@ void main() {
     });
 
     test('rejects collections longer than the limit', () {
-      final narrow = ProtocolCodec(
+      final narrow = _jsonCodec(
         buildTestSchema(),
         limits: const WireLimits(maxCollectionLength: 4),
       );
@@ -1431,7 +1452,7 @@ void main() {
     });
 
     test('messages larger than the limit', () {
-      final small = ProtocolCodec(
+      final small = _jsonCodec(
         buildTestSchema(),
         limits: const WireLimits(maxMessageBytes: 32),
       );
@@ -1442,7 +1463,7 @@ void main() {
 
   group('with a replacement wire codec', () {
     test('round-trips messages in its byte representation', () {
-      final reversed = ProtocolCodec(
+      final reversed = _jsonCodec(
         buildTestSchema(),
         wire: const _ReversedJsonWireCodec(),
       );
@@ -1463,7 +1484,7 @@ void main() {
         },
         <Object?>{1},
       ]) {
-        final codec = ProtocolCodec(
+        final codec = _jsonCodec(
           buildTestSchema(),
           wire: _FixedWireCodec(value),
         );
@@ -1477,7 +1498,7 @@ void main() {
     });
 
     test('reports its format errors as malformed input', () {
-      final codec = ProtocolCodec(
+      final codec = _jsonCodec(
         buildTestSchema(),
         wire: const _FailingWireCodec(),
       );
@@ -1550,3 +1571,9 @@ final class _FailingWireCodec implements WireCodec {
   Object? decode(Uint8List bytes) =>
       throw const FormatException('unreadable bytes');
 }
+
+ProtocolCodec _jsonCodec(
+  ProtocolSchema schema, {
+  WireCodec wire = const JsonWireCodec(),
+  WireLimits limits = const WireLimits(),
+}) => ProtocolCodec(schema, wire: wire, limits: limits);
