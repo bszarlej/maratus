@@ -1,187 +1,125 @@
+<p align="center">
+  <picture>
+    <source media="(prefers-color-scheme: dark)" srcset="https://raw.githubusercontent.com/bszarlej/maratus/master/assets/maratus-lockup-on-dark.svg">
+    <source media="(prefers-color-scheme: light)" srcset="https://raw.githubusercontent.com/bszarlej/maratus/master/assets/maratus-lockup-on-light.svg">
+    <img src="https://raw.githubusercontent.com/bszarlej/maratus/master/assets/maratus-lockup-on-light.svg" alt="Maratus logo" width="300">
+  </picture>
+</p>
+
 # maratus_enet
 
-Native ENet over UDP for [maratus](https://pub.dev/packages/maratus), with
-reliable and unreliable delivery, independent channels, and bounded queues.
-The package implements `MultiplayerPeer` as an optional transport for the core
-package. It has no Flutter dependency and can run in a standalone Dart host or
-a native Flutter application.
+ENet over UDP for [maratus](https://pub.dev/packages/maratus). This optional transport
+provides reliable and unreliable delivery with independent channels. It runs
+in standalone Dart hosts and native Flutter applications without depending on
+Flutter. Browsers are not supported.
 
-## Install
+## Installation
 
 ```sh
 dart pub add maratus maratus_enet
 ```
+
+Requires Dart `>=3.11.0 <4.0.0` and a native C compiler. The build hook compiles
+and bundles ENet 1.3.18 from the included sources; no separate ENet installation
+or runtime download is needed.
+
+| Target | Build requirements |
+| ------ | ------------------ |
+| Windows | Visual Studio or Build Tools with **Desktop development with C++** |
+| macOS | Xcode command-line tools |
+| Linux | A C toolchain, such as `build-essential` on Ubuntu |
+| Android | Flutter with Dart 3.11 or newer, Android SDK and NDK |
+| iOS | Flutter with Dart 3.11 or newer, Xcode on macOS |
+
+[CI](https://github.com/bszarlej/maratus/blob/master/.github/workflows/enet.yaml) is configured to run native transport
+tests on Windows, macOS, and Linux with Dart 3.11.0 and stable. Android and iOS
+jobs check release builds and native-library packaging; they do not run mobile
+transport tests.
+
+## Connect a session
+
+Import the core and transport APIs:
 
 ```dart
 import 'package:maratus/maratus.dart';
 import 'package:maratus_enet/maratus_enet.dart';
 ```
 
-In a Flame game, import `maratus_flame` for the core and Flame APIs alongside
-`maratus_enet` for the transport.
+Create a `MultiplayerSession` named `session` using your game's shared protocol
+schema, then choose one of the following. See the
+[core guide](https://pub.dev/packages/maratus) for schema and session setup.
 
-Requires Dart `>=3.11.0 <4.0.0` and a native C compiler. A Dart build hook
-compiles the bundled ENet 1.3.18 sources; no separately installed ENet library
-or runtime download is needed.
-
-| Platform | Compiler setup | Support |
-| -------- | -------------- | ------- |
-| Windows | Visual Studio or Build Tools with **Desktop development with C++** | Native host and client; CI configured. |
-| macOS | Xcode command-line tools (`xcode-select --install`) | Native host and client; CI configured. |
-| Linux | A C toolchain, such as `build-essential` on Ubuntu | Native host and client; CI configured. |
-| Android | Flutter with the Android SDK and NDK | Release packaging verified for ARMv7, ARM64, and x64; device behavior unverified. |
-| iOS | Flutter with Xcode on macOS | Native host and client intended; build CI configured, device behavior unverified. |
-| Browser | — | Unsupported; use the core WebSocket client. |
-
-CI is configured to test the ENet package in a Dart-only workspace on Windows,
-macOS, and Linux, using Dart 3.11.0 and stable.
-
-Android release compilation and packaging have been checked with Flutter 3.47.7
-and Dart 3.13.5. Build-only CI jobs also compile temporary Android and iOS apps;
-iOS compilation and mobile device behavior have not yet been verified locally.
-
-The build hook selects ENet's Windows or Unix backend and the target compiler.
-Android and iOS compatibility is expected from that native code path and
-[Flutter's build-hook support](https://docs.flutter.dev/interop/bind-native-code);
-mobile device validation is still required. Use a Flutter SDK containing Dart
-3.11 or newer. Native libraries are built and bundled with the app automatically.
-
-## Application permissions
-
-The containing application must configure its platform permissions:
-
-- **Android:** declare `android.permission.INTERNET` in
-  `android/app/src/main/AndroidManifest.xml`, including release builds. See
-  [Flutter's networking setup](https://docs.flutter.dev/cookbook/networking/fetch-data).
-  For LAN connections on Android 17 or later when targeting API 37 or higher,
-  also declare and request `android.permission.ACCESS_LOCAL_NETWORK` before
-  connecting. Apps targeting API 36 or lower should follow the existing
-  `INTERNET` permission behavior instead. See
-  [Android's local-network requirements](https://developer.android.com/privacy-and-security/local-network-permission).
-- **iOS and macOS apps:** add `NSLocalNetworkUsageDescription` to `Info.plist`
-  when connecting over a LAN. The operating system can block traffic while
-  permission is pending or denied; allow retrying a connection after permission
-  is granted. See
-  [Apple's local-network privacy guidance](https://developer.apple.com/documentation/technotes/tn3179-understanding-local-network-privacy).
-- **Sandboxed macOS apps:** enable both `com.apple.security.network.client`
-  and `com.apple.security.network.server` in the app's debug/profile and release
-  entitlements. UDP needs permission to send and receive for both hosting and
-  joining. See
-  [Apple's network entitlement documentation](https://developer.apple.com/documentation/bundleresources/entitlements/com.apple.security.network.client).
-
-## Connect a session
-
-Create each `MultiplayerSession` with your application's shared protocol schema,
-then supply an ENet peer:
+Host:
 
 ```dart
-final hostPeer = await EnetHost.bind(
-  address: '0.0.0.0',
-  port: 7777,
-);
-hostSession.host(hostPeer);
-
-final clientPeer = EnetClient.connect('192.168.1.10', port: 7777);
-clientSession.join(clientPeer);
+final peer = await EnetHost.bind(address: '0.0.0.0', port: 7777);
+session.host(peer);
 ```
 
-Continue updating both sessions from their game loops, as with WebSockets.
-The client constructor returns immediately; resolving the host and connecting
-happen asynchronously. Failed or timed-out connections report
-`ConnectionClosed` with `CloseReason.connectFailed` through polling.
-
-`EnetHost.bind` defaults to `127.0.0.1:7777`, which accepts local clients only.
-Bind `0.0.0.0` to accept IPv4 LAN connections and connect to the host's reachable
-address. Port zero selects an available port, exposed by `hostPeer.port`.
-Connections currently use IPv4. The host defaults to at most 64 connections.
-
-Sessions support delivery modes and channels per RPC and synchronized field:
+Client:
 
 ```dart
-final move = builder.addRpc(
-  const RpcId('player.move'),
-  const IntCodec(min: -1, max: 1),
-  deliveryMode: DeliveryMode.unreliableOrdered,
-  channel: 1,
-);
+final peer = EnetClient.connect('192.168.1.10', port: 7777);
+session.join(peer);
 ```
 
-Configure both peers with `channelCount: 2` for this example. Synchronized
-fields accept the same settings and require `SyncMode.always` when unreliable,
-so later samples recover lost values. Defaults remain reliable channel zero;
-initial snapshots and session control always use that reliable lane. See the
-[core delivery guide](../maratus/README.md#choose-delivery-per-rpc-and-field)
-for ordering, size limits, and deterministic testing.
+Use the host's reachable IPv4 address in the client. The default bind address
+is `127.0.0.1`, which accepts local clients only. Port zero selects an available
+port, exposed by `peer.port` on the host.
 
-## Transport messages and channels
+Call `session.update()` from the game loop to process connection events and
+messages. Client connection work is asynchronous and uses a ten-second
+`connectTimeout` by default. See
+[session lifecycle](https://pub.dev/packages/maratus#session-lifecycle) for connection state
+and failure handling. In Flame, `MultiplayerScope` handles session updates.
 
-When using the transport directly, drain `peer.poll()` in your update loop.
-`ConnectionOpened` exposes a `PeerConnection`; use it to send bytes:
+## Delivery and limits
+
+ENet supports `DeliveryMode.reliable`, `unreliableOrdered`, and `unreliable`.
+Set delivery mode and channel on RPCs and synchronized fields as described in
+the [delivery guide](https://pub.dev/packages/maratus#delivery).
+
+| Setting | Default | Constraint |
+| ------- | ------- | ---------- |
+| `channelCount` | `1` | 1–85 channels, numbered from zero; must match on both peers |
+| `maxConnections` (host) | `64` | Includes connections with unpolled lifecycle events |
+| `incomingLimits`, `outgoingLimits` | 1,024 messages and 4 MiB each | Per connection, configurable with `QueueLimits` |
+| Unreliable payload size | 1,000 bytes maximum | Applies to both unreliable modes |
+| `closeTimeout` | Two seconds | Bounds connection draining during shutdown |
+
+Ordering is independent across channels and delivery modes. Reliable payloads
+can exceed the unreliable limit, subject to the configured queue limits.
+
+Queue overflow closes the affected connection with `CloseReason.overflow`.
+Incoming unreliable messages that do not fit are dropped instead. Reliable
+outgoing messages count toward the limit until the receiver polls them and its
+acknowledgement arrives; this is not a gameplay acknowledgement. When using
+`PeerConnection` directly, check the boolean result of `send()`.
+
+Close the session and await transport cleanup before exiting:
 
 ```dart
-connection.send(
-  Uint8List.fromList([1, 2, 3]),
-  mode: DeliveryMode.unreliableOrdered,
-  channel: 1,
-);
+session.close();
+await peer.done;
 ```
 
-Import `dart:typed_data` for `Uint8List`. Configure both peers with
-`channelCount: 2` for this example. `channelCount` defaults to one and accepts
-1–85 logical channels, numbered from zero. `MessageReceived` includes the
-received `mode` and `channel` as well as the payload.
+Closing discards pending local events and allows accepted sends to drain up to
+`closeTimeout`. Timeout or connection loss can prevent delivery.
 
-| Delivery mode | Guarantee while connected |
-| ------------- | ------------------------- |
-| `reliable` | Each accepted message arrives once, in send order within its channel. |
-| `unreliableOrdered` | Messages may be lost; late messages are discarded after a newer one arrives. |
-| `unreliable` | Messages may be lost or arrive out of order. |
+## Deployment
 
-Each logical channel uses three native ENet channels, one per delivery mode.
-Reliable traffic therefore does not impose its ordering on unreliable traffic,
-and different logical channels have independent ordering. There is no global
-ordering guarantee across modes or channels. Unsupported channels throw
-`UnsupportedError` when sending.
+The host must be reachable over IPv4 UDP. This transport does not provide
+encryption, transport authentication, NAT traversal, relays, or compression.
+Use session admission control to validate joining players. The package's
+framing is specific to maratus and does not interoperate with Godot or other
+ENet applications.
 
-Unreliable payloads are limited to 1,000 bytes to keep datagrams small. ENet can
-still fragment packets or transmit them reliably internally; the public delivery
-guarantees remain those described above. Reliable payloads can be larger,
-subject to the configured queue limits.
+Configure the containing application's network permissions for its target:
 
-## Queues and shutdown
-
-Both peer constructors accept `incomingLimits` and `outgoingLimits` as
-`QueueLimits`. Defaults are 1,024 messages and 4 MiB in each direction, per
-connection. Exceeding either limit closes that connection with
-`CloseReason.overflow`; check the boolean result of `connection.send`. A
-received unreliable message that does not fit the incoming queue is discarded
-instead, as if the network had lost it.
-
-Reliable outgoing messages count toward the limit until the receiver polls
-them and its acknowledgement arrives. This bounds traffic when a receiver
-stops consuming messages; it is not a gameplay acknowledgement. Unreliable
-messages release their outgoing credit when ENet sends or drops them. Read
-`connection.incoming` and `connection.outgoing` for current queue depths.
-Consumption acknowledgements have a separate bounded control queue, limited
-to `outgoingLimits.maxMessages` packets of ten bytes each per connection.
-
-Closing a peer discards its pending events immediately. Native connections
-then have up to `closeTimeout` (two seconds by default) to drain before their
-resources are released. Await `done` when shutting down a process or a test:
-
-```dart
-clientPeer.close();
-hostPeer.close();
-await Future.wait([clientPeer.done, hostPeer.done]);
-```
-
-## Current scope
-
-This transport requires a directly reachable UDP host. Encryption/DTLS,
-authentication at the transport layer, NAT traversal, relays, and compression
-are not provided. The maratus framing includes queue-consumption
-acknowledgements; it is not wire-compatible with Godot or arbitrary ENet
-applications.
+- [Flutter networking setup](https://docs.flutter.dev/cookbook/networking/fetch-data)
+- [Android local-network access](https://developer.android.com/privacy-and-security/local-network-permission)
+- [Apple local-network privacy](https://developer.apple.com/documentation/technotes/tn3179-understanding-local-network-privacy)
+- [macOS network entitlements](https://developer.apple.com/documentation/bundleresources/entitlements/com.apple.security.network.client)
 
 ## License
 
