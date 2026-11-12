@@ -49,21 +49,24 @@ void main() {
     expect(annotation.mode, field.property(get: () => 0).mode);
     expect(annotation.deliveryMode, field.deliveryMode);
     expect(annotation.channel, field.channel);
+    expect(annotation.writer, field.writer);
     expect(annotation.interpolator, isNull);
   });
 
-  test('SyncedField keeps its mode and interpolator', () {
+  test('SyncedField keeps its mode, writer, and interpolator', () {
     const annotation = SyncedField(
       'arena.player.speed',
       mode: SyncMode.always,
       deliveryMode: DeliveryMode.unreliable,
       channel: 2,
+      writer: FieldWriter.owner,
       interpolator: DoubleInterpolator(teleportDistance: 50),
     );
 
     expect(annotation.mode, SyncMode.always);
     expect(annotation.deliveryMode, DeliveryMode.unreliable);
     expect(annotation.channel, 2);
+    expect(annotation.writer, FieldWriter.owner);
     expect(
       annotation.interpolator,
       isA<DoubleInterpolator>().having(

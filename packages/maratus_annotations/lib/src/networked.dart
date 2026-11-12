@@ -132,9 +132,10 @@ final class RpcMethod {
 /// The generated handle has the same codec and fingerprint as a call to
 /// [ProtocolSchemaBuilder.addField] with the same arguments. The generated
 /// mixin synchronizes every annotated member of a class with one
-/// [EntityAttachment.synchronize] call: the entity's authority reads the
-/// member, and other peers write received values to it, if it can be
-/// written. A getter is written through a setter of the same name.
+/// [EntityAttachment.synchronize] call: the field's [writer], the entity's
+/// authority or its owner, reads the member, and other peers write received
+/// values to it, if it can be written. A getter is written through a setter
+/// of the same name.
 ///
 /// To synchronize an inherited value, such as a Flame component's `position`,
 /// annotate a getter that returns it.
@@ -146,6 +147,7 @@ final class SyncedField {
     this.mode = SyncMode.onChange,
     this.deliveryMode = DeliveryMode.reliable,
     this.channel = 0,
+    this.writer = FieldWriter.authority,
     this.interpolator,
   });
 
@@ -153,7 +155,7 @@ final class SyncedField {
   /// change.
   final String id;
 
-  /// When the entity's authority sends the value.
+  /// When the field's [writer] sends the value.
   final SyncMode mode;
 
   /// How incremental updates are delivered.
@@ -166,6 +168,10 @@ final class SyncedField {
   ///
   /// The transport must support [deliveryMode] on this channel.
   final int channel;
+
+  /// The peer that writes the value: the entity's authority, the default,
+  /// or its owner, as for input that the owner controls.
+  final FieldWriter writer;
 
   /// Blends received values for [MultiplayerSynchronizer.interpolated], or
   /// `null` if the value is not interpolated.
