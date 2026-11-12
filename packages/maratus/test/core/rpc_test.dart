@@ -1,8 +1,7 @@
 import 'dart:async';
-import 'dart:convert';
-import 'dart:typed_data';
 
 import 'package:maratus/maratus.dart';
+import 'package:maratus/src/protocol/binary_wire_codec.dart';
 import 'package:maratus/src/protocol/messages.dart';
 import 'package:maratus/src/protocol/protocol_codec.dart';
 import 'package:test/test.dart';
@@ -193,17 +192,13 @@ final class _RawClient {
 
   void sendBody(Map<String, Object?> body, {String kind = 'rpc'}) =>
       connection!.send(
-        Uint8List.fromList(
-          utf8.encode(
-            jsonEncode({
-              'v': ProtocolCodec.version,
-              'k': kind,
-              'g': generation,
-              'r': 0,
-              'b': body,
-            }),
-          ),
-        ),
+        (codec.wire as BinaryWireCodec).encodeEnvelope({
+          'v': ProtocolCodec.version,
+          'k': kind,
+          'g': generation,
+          'r': 0,
+          'b': body,
+        }),
       );
 
   /// Reports ready, acknowledging the baseline.
@@ -902,7 +897,20 @@ void main() {
       test('$name is a protocol violation and never invokes a handler', () {
         final harness = _Harness();
         final raw = harness.rawClient();
-        raw.sendBody(body);
+        if (name == 'unknown method') {
+          final bytes = (raw.codec.wire as BinaryWireCodec).encodeEnvelope({
+            'v': 1,
+            'k': 'rpc',
+            'g': raw.generation,
+            'r': 0,
+            'b': <String, Object?>{...body, 'm': 'player.action'},
+          });
+          // The RPC index is the last entry in this body's mask order.
+          bytes[bytes.length - 1] = 127;
+          raw.connection!.send(bytes);
+        } else {
+          raw.sendBody(body);
+        }
         harness.run();
         expect(
           _drain(harness.host),

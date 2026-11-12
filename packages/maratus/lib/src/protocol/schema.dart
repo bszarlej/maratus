@@ -143,6 +143,10 @@ final class ProtocolSchema {
   /// All registered RPC handles, including their delivery settings.
   Iterable<Rpc<Object?>> get rpcDefinitions => _rpcDefinitions.values;
 
+  /// All registered spawn type handles.
+  Iterable<SpawnType<Object?>> get spawnTypeDefinitions =>
+      _spawnTypeDefinitions.values;
+
   /// The registration for synchronized field [id], or `null` if there is
   /// none.
   SchemaEntry<Object?>? field(FieldId id) => _fields[id.value];

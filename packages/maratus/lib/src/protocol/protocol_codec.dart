@@ -1,5 +1,6 @@
 import 'dart:typed_data';
 
+import 'binary_wire_codec.dart';
 import 'identifiers.dart';
 import 'messages.dart';
 import 'protocol_exception.dart';
@@ -13,7 +14,9 @@ import 'wire_codec.dart';
 /// whose structure, identifiers, and values have all been validated, or
 /// throws a [ProtocolException].
 ///
-/// An encoded envelope is an object with these keys:
+/// Sessions use a self-contained binary encoding with schema-derived numeric
+/// identifiers. A custom [wire] codec can be supplied for diagnostics.
+/// The logical envelope, before binary packing, has these keys:
 ///
 /// - `v`: the protocol [version]. Every protocol version keeps this key, so
 ///   peers can always detect a version mismatch.
@@ -41,9 +44,9 @@ final class ProtocolCodec {
   /// Creates a codec for the messages of [schema].
   ProtocolCodec(
     this.schema, {
-    this.wire = const JsonWireCodec(),
+    WireCodec? wire,
     this.limits = const WireLimits(),
-  });
+  }) : wire = wire ?? BinaryWireCodec(schema, limits: limits);
 
   /// The protocol version that this codec writes and accepts.
   ///
@@ -101,7 +104,10 @@ final class ProtocolCodec {
     } on ProtocolException catch (error) {
       throw ArgumentError('Envelope cannot be encoded: ${error.message}');
     }
-    final bytes = wire.encode(value);
+    final bytes = switch (wire) {
+      BinaryWireCodec binary => binary.encodeEnvelope(value),
+      _ => wire.encode(value),
+    };
     if (bytes.length > limits.maxMessageBytes) {
       throw ArgumentError(
         'Envelope encodes to ${bytes.length} bytes, more than the limit of '
@@ -126,7 +132,10 @@ final class ProtocolCodec {
     }
     final Object? decoded;
     try {
-      decoded = wire.decode(bytes);
+      decoded = switch (wire) {
+        BinaryWireCodec binary => binary.decodeEnvelope(bytes),
+        _ => wire.decode(bytes),
+      };
     } on FormatException catch (error) {
       throw ProtocolException(ProtocolErrorCode.malformed, error.message);
     }
