@@ -2,7 +2,7 @@ part of '../core/multiplayer_session.dart';
 
 /// Blends values of a synchronized field for presentation.
 ///
-/// Peers other than an entity's authority receive its synchronized values
+/// Peers other than the writer of a synchronized field receive its values
 /// as samples, a few times a second. With an interpolator,
 /// [MultiplayerSynchronizer.interpolated] presents values between those
 /// samples, so motion looks smooth while the authoritative state that
@@ -90,11 +90,11 @@ final class InterpolatedValue<T> {
   String toString() => 'InterpolatedValue($value, ${state.name})';
 }
 
-/// Maps an authority's sample times onto this peer's clock.
+/// Maps a writer's sample times onto this peer's clock.
 ///
 /// Peers' clocks are not synchronized, so the timeline estimates their
 /// offset: the smallest difference between a sample's local arrival and
-/// its authority's sample time over a recent window, which includes the
+/// its writer's sample time over a recent window, which includes the
 /// fastest delivery. Later arrivals, such as a burst after a stall, do not
 /// move it, while a lasting latency change does once the window passes.
 final class _Timeline {
@@ -112,7 +112,7 @@ final class _Timeline {
   /// The span of arrivals over which the smallest offset is taken.
   static const _window = Duration(seconds: 1);
 
-  /// Records a sample taken at [sampledAt] on the authority's clock that
+  /// Records a sample taken at [sampledAt] on the writer's clock that
   /// arrived [at] this peer's time.
   void observe(Duration at, Duration sampledAt) {
     final offset = at - sampledAt;
@@ -123,7 +123,7 @@ final class _Timeline {
     _expire(at);
   }
 
-  /// The time on the authority's clock to present at [now], or `null`
+  /// The time on the writer's clock to present at [now], or `null`
   /// before any arrival.
   ///
   /// The time never decreases, so presentation pauses instead of rewinding
@@ -161,7 +161,7 @@ final class _Samples {
     if (_entries.length > _capacity) _entries.removeFirst();
   }
 
-  /// The value to present at [time] on the authority's clock.
+  /// The value to present at [time] on the writer's clock.
   ///
   /// Samples before the one in effect at [time] are forgotten. [copy]
   /// decodes a sample into a new value. After a pause longer than twice
@@ -204,7 +204,7 @@ final class _Samples {
 final class _Sample {
   const _Sample(this.sampledAt, this.bytes, this.value);
 
-  /// When the authority sampled the value, on its clock.
+  /// When the writer sampled the value, on its clock.
   final Duration sampledAt;
 
   /// The canonical encoding, which [_Samples.evaluate] decodes into copies.

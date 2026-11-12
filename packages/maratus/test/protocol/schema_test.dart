@@ -166,6 +166,7 @@ void main() {
       expect(health.codec, isA<IntCodec>());
       expect(health.deliveryMode, DeliveryMode.reliable);
       expect(health.channel, 0);
+      expect(health.writer, FieldWriter.authority);
       expect(schema.fieldDefinition(health.id), same(health));
       expect(schema.field(health.id)?.codec, same(health.codec));
       expect(schema.fieldDefinition(const FieldId('player.mana')), isNull);
@@ -237,6 +238,44 @@ void main() {
                   deliveryMode: DeliveryMode.unreliable,
                   channel: 3,
                 ),
+              ))
+            .build()
+            .fingerprint,
+      );
+    });
+
+    test('retains the writer of a field', () {
+      final builder = ProtocolSchemaBuilder();
+      final input = builder.addField(
+        const FieldId('player.input'),
+        const IntCodec(min: -1, max: 1),
+        writer: FieldWriter.owner,
+      );
+      const aim = SyncField(
+        id: FieldId('player.aim'),
+        codec: DoubleCodec(),
+        writer: FieldWriter.owner,
+      );
+      builder.addFieldDefinition(aim);
+      final schema = builder.build();
+
+      expect(input.writer, FieldWriter.owner);
+      expect(schema.fieldDefinition(input.id), same(input));
+      expect(schema.fieldDefinition(aim.id)!.writer, FieldWriter.owner);
+      expect(
+        schema.fingerprint,
+        (ProtocolSchemaBuilder()
+              ..addFieldDefinition(
+                const SyncField(
+                  id: FieldId('player.input'),
+                  codec: IntCodec(min: -1, max: 1),
+                  writer: FieldWriter.owner,
+                ),
+              )
+              ..addField(
+                const FieldId('player.aim'),
+                const DoubleCodec(),
+                writer: FieldWriter.owner,
               ))
             .build()
             .fingerprint,
@@ -695,6 +734,53 @@ void main() {
       }
       expect(fingerprints.add(forDelivery(rpcChannel: 1)), isTrue);
       expect(fingerprints.add(forDelivery(fieldChannel: 1)), isTrue);
+    });
+
+    test('describes an owner-written field with its writer', () {
+      final schema =
+          (ProtocolSchemaBuilder()
+                ..addField(
+                  const FieldId('player.health'),
+                  const IntCodec(min: 0, max: 100),
+                )
+                ..addField(
+                  const FieldId('player.input'),
+                  const IntCodec(min: -1, max: 1),
+                  writer: FieldWriter.owner,
+                ))
+              .build();
+      const canonical =
+          '{"format":5,"spawnTypes":[],"rpcs":[],'
+          '"fields":[["player.health","int(min=0,max=100)","reliable",0],'
+          '["player.input","int(min=-1,max=1)","reliable",0,"owner"]],'
+          '"staticEntities":[],"joinRequest":null}';
+
+      expect(
+        schema.fingerprint,
+        sha256.convert(utf8.encode(canonical)).toString(),
+      );
+    });
+
+    test('changes with the writer of a field', () {
+      String forWriter(FieldWriter writer) => fingerprintOf([
+        (b) => b.addField(
+          const FieldId('health'),
+          const IntCodec(),
+          writer: writer,
+        ),
+      ]);
+
+      expect(
+        forWriter(FieldWriter.owner),
+        isNot(forWriter(FieldWriter.authority)),
+      );
+      // Authority-written fields keep the description of earlier schemas.
+      expect(
+        forWriter(FieldWriter.authority),
+        fingerprintOf([
+          (b) => b.addField(const FieldId('health'), const IntCodec()),
+        ]),
+      );
     });
   });
 

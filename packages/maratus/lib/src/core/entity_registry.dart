@@ -22,11 +22,13 @@ final class NetworkEntity {
   final EntityId id;
 
   /// The peer that controls this entity's input, and so may call its
-  /// owner-only RPCs.
+  /// owner-only RPCs and writes its owner-written synchronized fields.
+  ///
+  /// The owner never changes during the entity's lifetime.
   final PeerId owner;
 
   /// The peer whose copy of this entity is the source of truth, and which
-  /// writes its synchronized properties.
+  /// writes its authority-written synchronized fields.
   ///
   /// The host can transfer the authority of a replicated or static entity
   /// with `MultiplayerSession.transferAuthority`, and every peer reports
