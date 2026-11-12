@@ -1,3 +1,11 @@
+## 0.3.0
+
+> Note: This release has breaking changes.
+
+ - **DOCS**: update README.md. ([d056d8ce](https://github.com/bszarlej/maratus/commit/d056d8ced702261ed45b38db9f6f7dc8cbaead10))
+ - **BREAKING** **FEAT**: batch state updates and optimize numeric encoding. ([8a3b7fd5](https://github.com/bszarlej/maratus/commit/8a3b7fd5577cda8079e2e1d9cf8f7bdec9ff04f9))
+ - **BREAKING** **FEAT**: use compact binary encoding for session messages. ([38209f4d](https://github.com/bszarlej/maratus/commit/38209f4d51b52bc64fd0bad4ea729a8d4c10f34d))
+
 ## 0.2.0
 
 > Note: This release has breaking changes.

@@ -3,7 +3,7 @@ description: >-
   WebRTC data-channel transport for maratus multiplayer sessions, with browser
   hosting, reliable and unreliable delivery, independent channels, and bounded
   message queues.
-version: 0.1.0
+version: 0.1.1
 repository: https://github.com/bszarlej/maratus/tree/master/packages/maratus_webrtc
 issue_tracker: https://github.com/bszarlej/maratus/issues
 topics:
@@ -21,7 +21,7 @@ dependencies:
   code_assets: ^1.0.0
   ffi: ^2.1.4
   hooks: ^1.0.2
-  maratus: ^0.2.0
+  maratus: ^0.3.0
   native_toolchain_c: ^0.17.6
   web: ^1.1.1
   web_socket: ^1.0.1
