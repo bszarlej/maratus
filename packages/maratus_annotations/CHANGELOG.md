@@ -1,3 +1,7 @@
+## 0.1.3
+
+ - Update a dependency to the latest release.
+
 ## 0.1.2
 
  - **FEAT**: add delivery settings to RpcMethod and SyncedField. ([efae4be0](https://github.com/bszarlej/maratus/commit/efae4be0d9033444213a5e60ed8866023ac9a55b))

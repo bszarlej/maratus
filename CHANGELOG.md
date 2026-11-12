@@ -3,6 +3,43 @@
 All notable changes to this project will be documented in this file.
 See [Conventional Commits](https://conventionalcommits.org) for commit guidelines.
 
+## 2026-11-12
+
+### Changes
+
+---
+
+Packages with breaking changes:
+
+ - [`maratus` - `v0.3.0`](#maratus---v030)
+
+Packages with other changes:
+
+ - [`maratus_annotations` - `v0.1.3`](#maratus_annotations---v013)
+ - [`maratus_enet` - `v0.1.1`](#maratus_enet---v011)
+ - [`maratus_flame` - `v0.1.4`](#maratus_flame---v014)
+ - [`maratus_webrtc` - `v0.1.1`](#maratus_webrtc---v011)
+ - [`maratus_generator` - `v0.1.3`](#maratus_generator---v013)
+
+Packages with dependency updates only:
+
+> Packages listed below depend on other packages in this workspace that have had changes. Their versions have been incremented to bump the minimum dependency versions of the packages they depend upon in this project.
+
+ - `maratus_annotations` - `v0.1.3`
+ - `maratus_enet` - `v0.1.1`
+ - `maratus_flame` - `v0.1.4`
+ - `maratus_webrtc` - `v0.1.1`
+ - `maratus_generator` - `v0.1.3`
+
+---
+
+#### `maratus` - `v0.3.0`
+
+ - **DOCS**: update README.md. ([d056d8ce](https://github.com/bszarlej/maratus/commit/d056d8ced702261ed45b38db9f6f7dc8cbaead10))
+ - **BREAKING** **FEAT**: batch state updates and optimize numeric encoding. ([8a3b7fd5](https://github.com/bszarlej/maratus/commit/8a3b7fd5577cda8079e2e1d9cf8f7bdec9ff04f9))
+ - **BREAKING** **FEAT**: use compact binary encoding for session messages. ([38209f4d](https://github.com/bszarlej/maratus/commit/38209f4d51b52bc64fd0bad4ea729a8d4c10f34d))
+
+
 ## 2026-11-10
 
 ### Changes
