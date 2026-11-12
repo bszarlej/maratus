@@ -386,9 +386,9 @@ final class AuthorityMessage extends ProtocolMessage {
 /// revision.
 ///
 /// A client sends it once it has applied a transfer that makes it, or stops
-/// it being, the entity's authority. State that the client sends about the
-/// entity follows the acknowledgement, so the host can tell it from state
-/// sent before the client applied the transfer.
+/// it being, the entity's authority. Authority-written state that the
+/// client sends about the entity follows the acknowledgement, so the host
+/// can tell it from state sent before the client applied the transfer.
 final class AuthorityAckMessage extends ProtocolMessage {
   /// Creates a message that acknowledges the transfer of [entity].
   const AuthorityAckMessage({required this.entity});
@@ -465,9 +465,12 @@ final class RpcDeliveryMessage extends ProtocolMessage {
 }
 
 /// Carries new values of an entity's synchronized fields.
+///
+/// Sessions send the values of authority-written and owner-written fields
+/// in separate messages, as different peers may write them.
 final class StateMessage extends ProtocolMessage {
-  /// Creates a message that sets the [values] of fields of [entity], as the
-  /// entity's authority sampled them at [sampledAt], if given.
+  /// Creates a message that sets the [values] of fields of [entity], as
+  /// their writer sampled them at [sampledAt], if given.
   StateMessage({
     required this.entity,
     required Map<FieldId, Object?> values,
@@ -482,14 +485,14 @@ final class StateMessage extends ProtocolMessage {
   /// field.
   final Map<FieldId, Object?> values;
 
-  /// When the entity's authority sampled [values], on the authority's
-  /// session clock, or `null` for values that the entity's current
-  /// authority did not sample.
+  /// When the writer of [values], the entity's authority or its owner,
+  /// sampled them on its session clock, or `null` for values that their
+  /// current writer did not sample.
   ///
-  /// The host relays state with its authority's time. Peers' clocks are not
+  /// The host relays state with its writer's time. Peers' clocks are not
   /// synchronized, so a time is only comparable with other times from the
-  /// same authority, for example to interpolate values at the pace they
-  /// were sampled. After an authority transfer, the host sends values that
+  /// same writer, for example to interpolate values at the pace they were
+  /// sampled. After an authority transfer, the host sends values that
   /// a previous authority sampled without a time: in a joining client's
   /// baseline, and to the previous authority, to replace the values it sent
   /// after the transfer. Clients always send a time. The protocol layer

@@ -1,6 +1,6 @@
 part of '../core/multiplayer_session.dart';
 
-/// When an entity's authority sends a synchronized property.
+/// When the writer of a synchronized property sends it.
 enum SyncMode {
   /// Send the value when it differs from the last value sent, checking once
   /// per synchronizer interval.
@@ -12,7 +12,8 @@ enum SyncMode {
 
 /// Binds a synchronized field to a local value through a getter and a setter.
 ///
-/// The entity's authority samples [get] and sends the field as [mode]
+/// The field's writer, the entity's authority or its owner as
+/// [SyncField.writer] selects, samples [get] and sends the field as [mode]
 /// describes; every other peer receives it and passes a copy to [set]. A
 /// sample is the field codec's encoding of the value, so sampling copies
 /// mutable values such as vectors, and a value is unchanged while its encoding
@@ -35,15 +36,17 @@ final class SyncProperty<T> {
   /// The registered field that this property replicates.
   final SyncField<T> field;
 
-  /// Reads the local value. The authority calls it when sampling.
+  /// Reads the local value. The field's writer calls it when sampling.
   final T Function() get;
 
-  /// Writes a received value. Peers other than the authority call it.
+  /// Writes a received value. Peers other than the field's writer call it,
+  /// so the owner of an entity never receives its own owner-written values.
   ///
-  /// A peer that becomes the entity's authority also calls it, with the
-  /// values it received before, ahead of its first sample. A peer that
-  /// stops being the authority calls it with the latest values that the
-  /// host accepted, which replace any local changes since then.
+  /// For an authority-written field, a peer that becomes the entity's
+  /// authority also calls it, with the values it received before, ahead of
+  /// its first sample. A peer that stops being the authority calls it with
+  /// the latest values that the host accepted, which replace any local
+  /// changes since then.
   ///
   /// A thrown error produces [PropertySyncFailed]. The same encoded value
   /// is not applied again until it changes, a replacement synchronizer is
@@ -51,7 +54,7 @@ final class SyncProperty<T> {
   /// failures on every update.
   final void Function(T value)? set;
 
-  /// When the authority sends this property.
+  /// When the field's writer sends this property.
   final SyncMode mode;
 
   /// Blends received values for [MultiplayerSynchronizer.interpolated], or
@@ -103,7 +106,8 @@ extension SyncFieldProperty<T> on SyncField<T> {
   );
 }
 
-/// The latest authoritative value of a synchronized field on this peer.
+/// The latest value of a synchronized field on this peer, as its writer sent
+/// it.
 final class SyncSnapshot<T> {
   const SyncSnapshot._(this.value, this.time);
 
@@ -114,15 +118,20 @@ final class SyncSnapshot<T> {
   final Duration time;
 }
 
-/// Replicates selected properties of one attached entity from its authority
-/// to every other peer.
+/// Replicates selected properties of one attached entity from the peers
+/// that write them to every other peer.
 ///
-/// Create one with [EntityAttachment.synchronize]. On the entity's authority,
-/// [MultiplayerSession.captureState] samples the [properties] at most once per
-/// [interval] of the session's clock, independent of how often it is called,
-/// and groups the fields that are due by delivery mode and channel. On every
-/// other peer,
-/// [MultiplayerSession.update] passes the latest authoritative values to the
+/// Each property's field selects its writer with [SyncField.writer]: the
+/// entity's authority, or its owner, so one synchronizer can combine the
+/// input that an owner writes with the state that the authority computes
+/// from it.
+///
+/// Create one with [EntityAttachment.synchronize]. On a peer that writes
+/// some of the [properties], [MultiplayerSession.captureState] samples them
+/// at most once per [interval] of the session's clock, independent of how
+/// often it is called, and groups the fields that are due by writer,
+/// delivery mode, and channel. [MultiplayerSession.update] passes the
+/// latest values of the properties that this peer does not write to their
 /// setters while the attachment is ready, so a component that becomes ready
 /// later still receives the current values. Applying received values never
 /// sends anything, so it cannot cause a replication feedback loop.
@@ -131,11 +140,12 @@ final class SyncSnapshot<T> {
 /// samples, so [interpolated] can present smoothed values between them.
 ///
 /// When [MultiplayerSession.transferAuthority] moves the entity's
-/// authority, synchronizers switch roles as each peer applies the transfer.
-/// The previous authority stops sampling and applies the values it
-/// receives: first the latest ones the host accepted, then the new
-/// authority's. The new authority applies the values it received before,
-/// then samples its local state from the next capture.
+/// authority, synchronizers switch the roles of authority-written
+/// properties as each peer applies the transfer. The previous authority
+/// stops sampling them and applies the values it receives: first the latest
+/// ones the host accepted, then the new authority's. The new authority
+/// applies the values it received before, then samples its local state from
+/// the next capture. Owner-written properties keep their writer.
 final class MultiplayerSynchronizer {
   MultiplayerSynchronizer._(
     this._replicator,
@@ -145,26 +155,33 @@ final class MultiplayerSynchronizer {
     this.interpolationDelay,
   ) {
     for (final property in properties) {
+      _writers.add(property.field.writer);
       if (!property._interpolates) continue;
       _interpolators[property.field.id] = property;
       _samples[property.field.id] = _Samples();
+      // Each writer samples on its own clock.
+      _timelines.putIfAbsent(
+        property.field.writer,
+        () => _Timeline(interpolationDelay),
+      );
     }
-    if (_samples.isNotEmpty) _timeline = _Timeline(interpolationDelay);
   }
 
   final _StateReplicator _replicator;
   final EntityAttachment _attachment;
+  final _writers = <FieldWriter>{};
   final _applied = <FieldId, Uint8List>{};
   final _interpolators = <FieldId, SyncProperty<Object?>>{};
   final _samples = <FieldId, _Samples>{};
-  _Timeline? _timeline;
+  final _timelines = <FieldWriter, _Timeline>{};
   Duration? _due;
   var _disposed = false;
 
   /// The properties that this synchronizer replicates.
   final List<SyncProperty<Object?>> properties;
 
-  /// The minimum time between two samples on the authority.
+  /// The minimum time between two samples on a peer that writes some of the
+  /// [properties].
   final Duration interval;
 
   /// How far [interpolated] values trail the newest sample, after the
@@ -181,12 +198,12 @@ final class MultiplayerSynchronizer {
   /// Whether this synchronizer was disposed, by itself or with its attachment.
   bool get isDisposed => _disposed || _attachment.isDisposed;
 
-  /// The latest authoritative value of [field] for this entity on this peer,
-  /// or `null` if none was sent or received.
+  /// The latest value of [field] for this entity on this peer, or `null` if
+  /// none was sent or received.
   ///
-  /// On the authority, this is the last value sent; elsewhere, the last value
-  /// received. Values are kept with the entity, not with this synchronizer.
-  /// Throws an [ArgumentError] for a foreign [field] handle.
+  /// On the field's writer, this is the last value sent; elsewhere, the last
+  /// value received. Values are kept with the entity, not with this
+  /// synchronizer. Throws an [ArgumentError] for a foreign [field] handle.
   SyncSnapshot<T>? snapshot<T>(SyncField<T> field) =>
       _replicator._snapshot(entity, field);
 
@@ -194,18 +211,20 @@ final class MultiplayerSynchronizer {
   /// [SyncProperty.interpolator].
   ///
   /// Received samples are placed on a timeline that follows the times the
-  /// authority sampled them, so bursts and frame jitter in their arrival do
-  /// not distort motion. The value presented is the one that timeline
-  /// reached [interpolationDelay] behind the newest sample. Between two
-  /// samples it is blended; with no newer sample yet it holds the newest,
-  /// without extrapolating; a teleport shows as a jump. The presentation
-  /// time never moves backwards. See [InterpolationState].
+  /// field's writer sampled them, so bursts and frame jitter in their
+  /// arrival do not distort motion. The value presented is the one that
+  /// timeline reached [interpolationDelay] behind the newest sample. Between
+  /// two samples it is blended; with no newer sample yet it holds the
+  /// newest, without extrapolating; a teleport shows as a jump. The
+  /// presentation time never moves backwards. See [InterpolationState].
   ///
-  /// Samples from different authorities are never blended, as their clocks
-  /// are not comparable: an authority transfer restarts the timeline, and
-  /// until the new authority's first sample arrives, the latest value holds.
+  /// Authority-written and owner-written fields follow separate timelines,
+  /// as their writers' clocks are not comparable. For the same reason,
+  /// samples from different authorities are never blended: an authority
+  /// transfer restarts the timeline of authority-written fields, and until
+  /// the new authority's first sample arrives, the latest value holds.
   ///
-  /// Returns `null` on the entity's authority, which presents its own
+  /// Returns `null` on the peer that writes [field], which presents its own
   /// state, before any value of [field] was received, and once this
   /// synchronizer is disposed. The value is a copy that the caller may
   /// change. Throws an [ArgumentError] for a foreign [field] handle, or a
@@ -220,13 +239,15 @@ final class MultiplayerSynchronizer {
     _replicator._unbind(this);
   }
 
-  /// Forgets the samples of the previous authority, whose clock the next
-  /// authority's sample times are not comparable with.
+  /// Forgets the samples of authority-written fields from the previous
+  /// authority, whose clock the next authority's sample times are not
+  /// comparable with.
   void _restartPresentation() {
-    if (_timeline == null) return;
-    _timeline = _Timeline(interpolationDelay);
-    for (final field in _samples.keys) {
-      _samples[field] = _Samples();
+    if (!_timelines.containsKey(FieldWriter.authority)) return;
+    _timelines[FieldWriter.authority] = _Timeline(interpolationDelay);
+    for (final property in _interpolators.values) {
+      if (property.field.writer != FieldWriter.authority) continue;
+      _samples[property.field.id] = _Samples();
     }
   }
 }
@@ -237,8 +258,8 @@ final class _StateReplicator {
   final MultiplayerSession session;
   final _synchronizers = <EntityId, MultiplayerSynchronizer>{};
 
-  /// The latest authoritative values of each entity, by field: the last ones
-  /// sent on the authority, and the last ones received elsewhere.
+  /// The latest values of each entity, by field: the last ones sent on the
+  /// field's writer, and the last ones received elsewhere.
   final _values = <NetworkEntity, Map<FieldId, _FieldValue>>{};
 
   /// The newest independent-lane sample accepted for each field. Sequences
@@ -280,22 +301,49 @@ final class _StateReplicator {
     _catchingUp.removeWhere(gone);
   }
 
+  /// Which peer writes [field]: the entity's authority or its owner.
+  FieldWriter writerOf(FieldId field) =>
+      session._schema.fieldDefinition(field)!.writer;
+
+  /// The peer that writes [field] of [entity].
+  PeerId _writer(NetworkEntity entity, FieldId field) =>
+      writerOf(field) == FieldWriter.owner ? entity.owner : entity.authority;
+
+  bool _byAuthority(FieldId field) => writerOf(field) == FieldWriter.authority;
+
+  /// Whether [local] writes any of [synchronizer]'s properties.
+  bool _writesAny(MultiplayerSynchronizer synchronizer, PeerId local) {
+    final entity = synchronizer.entity;
+    return (entity.authority == local &&
+            synchronizer._writers.contains(FieldWriter.authority)) ||
+        (entity.owner == local &&
+            synchronizer._writers.contains(FieldWriter.owner));
+  }
+
   /// Switches the roles of [entity]'s synchronizer after its authority
   /// moved from [previous] on this peer.
+  ///
+  /// Only authority-written fields change their writer. Owner-written
+  /// fields keep their values, sample times, and sequences.
   void transferred(NetworkEntity entity, PeerId previous) {
-    _sequences.remove(entity);
+    _sequences[entity]?.removeWhere((field, _) => _byAuthority(field));
     final local = session._localPeer;
     final values = _values[entity];
     if (!session._isHost && previous == local) {
       // The host may have rejected values that this client sent, and it
       // follows the transfer with the values it accepted. Held values
       // would be rejected too.
-      _values.remove(entity);
-      session._peers[PeerId.host]?.held.remove(entity.id);
+      values?.removeWhere((field, _) => _byAuthority(field));
+      session._peers[PeerId.host]?.held.remove((
+        entity: entity.id,
+        writer: FieldWriter.authority,
+      ));
     } else if (values != null) {
       // The values were sampled on the previous authority's clock.
       values.updateAll(
-        (_, value) => _FieldValue(value.bytes, value.time, null),
+        (field, value) => _byAuthority(field)
+            ? _FieldValue(value.bytes, value.time, null)
+            : value,
       );
     }
     if (entity.authority == local) {
@@ -311,20 +359,22 @@ final class _StateReplicator {
     synchronizer._due = null;
     // Values this peer sent replace the ones it applied before, so apply
     // the replicated values again.
-    if (previous == local) synchronizer._applied.clear();
+    if (previous == local) {
+      synchronizer._applied.removeWhere((field, _) => _byAuthority(field));
+    }
     synchronizer._restartPresentation();
   }
 
-  /// Sends [remote], the previous authority of [entity], the values that
-  /// the host accepted from it, without sample times, to replace any values
-  /// it sent after the transfer. Returns `false` if its transport refused
-  /// one, which removes [remote].
+  /// Sends [remote], the previous authority of [entity], the values of its
+  /// authority-written fields that the host accepted from it, without
+  /// sample times, to replace any values it sent after the transfer.
+  /// Returns `false` if its transport refused one, which removes [remote].
   bool resync(_Remote remote, NetworkEntity entity) {
     final fields = _values[entity];
     if (fields == null) return true;
     final values = {
       for (final MapEntry(key: field, :value) in fields.entries)
-        field: value.bytes,
+        if (_byAuthority(field)) field: value.bytes,
     };
     for (final message in _messages(
       entity,
@@ -402,8 +452,9 @@ final class _StateReplicator {
     attachment._synchronizer = synchronizer;
     // Start presentation from the values received before this binding.
     final retained = _values[entity];
-    if (retained != null && entity.authority != session._localPeer) {
+    if (retained != null) {
       for (final MapEntry(key: field, :value) in retained.entries) {
+        if (_writer(entity, field) == session._localPeer) continue;
         _buffer(synchronizer, field, value.bytes, value.time, value.sampledAt);
       }
     }
@@ -413,8 +464,8 @@ final class _StateReplicator {
   /// Adds a received value of [field] to [synchronizer]'s presentation, if
   /// it interpolates the field. The value arrived [at] this peer's time.
   ///
-  /// A value without a sample time on the current authority's clock is
-  /// never blended, as its time is not comparable with the others.
+  /// A value without a sample time on its current writer's clock is never
+  /// blended, as its time is not comparable with the others.
   void _buffer(
     MultiplayerSynchronizer synchronizer,
     FieldId field,
@@ -433,7 +484,7 @@ final class _StateReplicator {
       // value reports that failure.
       return;
     }
-    synchronizer._timeline!.observe(at, sampledAt);
+    synchronizer._timelines[writerOf(field)]!.observe(at, sampledAt);
     samples.add(sampledAt, bytes, value);
   }
 
@@ -459,8 +510,8 @@ final class _StateReplicator {
   bool _isCurrent(MultiplayerSynchronizer synchronizer, int lifetime) =>
       _lifetime == lifetime && _isLive(synchronizer) && _lifetime == lifetime;
 
-  /// Samples the ready synchronizers of entities this peer is the authority
-  /// for, and sends the fields that are due.
+  /// Samples the ready synchronizers with properties that this peer writes,
+  /// and sends the fields that are due.
   void capture() {
     final local = session._localPeer;
     if (local == null) return;
@@ -472,7 +523,7 @@ final class _StateReplicator {
       for (final synchronizer in _synchronizers.values.toList()) {
         if (_lifetime != lifetime) return;
         if (!_isCurrent(synchronizer, lifetime) ||
-            synchronizer.entity.authority != local ||
+            !_writesAny(synchronizer, local) ||
             !synchronizer._attachment._isReady() ||
             !_isCurrent(synchronizer, lifetime)) {
           continue;
@@ -502,10 +553,12 @@ final class _StateReplicator {
   void _sample(MultiplayerSynchronizer synchronizer, Duration now) {
     final lifetime = _lifetime;
     final entity = synchronizer.entity;
+    final local = session._localPeer;
     final sent = _values[entity];
     final due = <FieldId, Uint8List>{};
     for (final property in synchronizer.properties) {
       final field = property.field.id;
+      if (_writer(entity, field) != local) continue;
       final Uint8List bytes;
       try {
         bytes = _encode(field, property._get());
@@ -539,9 +592,12 @@ final class _StateReplicator {
     }
   }
 
-  /// Applies a state message that [sender] sent, if it may write the entity.
+  /// Applies a state message that [sender] sent, if it may write each of
+  /// its fields.
   ///
-  /// A host relays accepted messages from [origin] to the other clients.
+  /// A host accepts each field only from its writer, and relays accepted
+  /// messages from [origin] to the other clients. A client accepts the
+  /// fields that it does not write itself.
   void receive(PeerId sender, MessageEnvelope envelope, {_Remote? origin}) {
     final lifetime = _lifetime;
     final message = envelope.message as StateMessage;
@@ -550,24 +606,34 @@ final class _StateReplicator {
       _reject(message.entity, sender, StateRejection.unknownEntity);
       return;
     }
-    // A late update for a removed entity is a harmless race, and so is state
-    // that a client sent before applying a transfer of the entity's
-    // authority that the host has made.
-    if (entity.state == EntityState.removed ||
-        (session._isHost && session._authorities.awaits(entity, sender))) {
-      return;
+    // A late update for a removed entity is a harmless race.
+    if (entity.state == EntityState.removed) return;
+    // So is authority-written state that a client sent before applying a
+    // transfer of the entity's authority that the host has made.
+    final transferring =
+        session._isHost && session._authorities.awaits(entity, sender);
+    final local = session._localPeer;
+    final fields = <FieldId>[];
+    for (final field in message.values.keys) {
+      final byAuthority = _byAuthority(field);
+      if (transferring && byAuthority) continue;
+      final writer = _writer(entity, field);
+      if (session._isHost ? writer != sender : writer == local) {
+        _reject(
+          entity.id,
+          sender,
+          byAuthority ? StateRejection.notAuthority : StateRejection.notOwner,
+        );
+        return;
+      }
+      fields.add(field);
     }
-    final writer = session._isHost
-        ? entity.authority == sender
-        : entity.authority != session._localPeer;
-    if (!writer) {
-      _reject(entity.id, sender, StateRejection.notAuthority);
-      return;
-    }
+    if (fields.isEmpty) return;
     final received = <FieldId, Uint8List>{};
     final sequence = message.sequence;
     var current = sequence == null;
-    for (final MapEntry(key: field, :value) in message.values.entries) {
+    for (final field in fields) {
+      final value = message.values[field];
       final previous = _sequences[entity]?[field];
       if (sequence != null && previous != null && sequence <= previous) {
         continue;
@@ -631,31 +697,39 @@ final class _StateReplicator {
   /// Sends the retained values as part of [remote]'s baseline. Returns
   /// `false` if its transport refused one, which removes [remote].
   ///
-  /// Values that the entity's current authority sampled keep its latest
-  /// sample time; values that a previous authority sampled are sent
-  /// without one.
+  /// Values that their current writer sampled keep its latest sample time;
+  /// values that a previous authority sampled are sent without one.
   bool sendBaseline(_Remote remote) {
     _prune();
     for (final MapEntry(key: entity, value: fields)
         in _values.entries.toList()) {
       final settled = <FieldId, Uint8List>{};
-      final sampled = <FieldId, Uint8List>{};
-      Duration? sampledAt;
+      final sampled = <FieldWriter, Map<FieldId, Uint8List>>{};
+      final sampledAt = <FieldWriter, Duration>{};
       for (final MapEntry(key: field, :value) in fields.entries) {
         final time = value.sampledAt;
         if (time == null) {
           settled[field] = value.bytes;
           continue;
         }
-        sampled[field] = value.bytes;
-        // Each capture samples every property of the entity, and a field it
-        // did not send was unchanged, so all values that the authority
-        // sampled were current at its latest sample.
-        if (sampledAt == null || time > sampledAt) sampledAt = time;
+        final writer = writerOf(field);
+        (sampled[writer] ??= {})[field] = value.bytes;
+        // Each capture samples every property that its peer writes, and a
+        // field it did not send was unchanged, so all values that a writer
+        // sampled were current at its latest sample. The authority and the
+        // owner sample on their own clocks.
+        final latest = sampledAt[writer];
+        if (latest == null || time > latest) sampledAt[writer] = time;
       }
       for (final message in [
         ..._messages(entity, settled, sampledAt: null, reliable: true),
-        ..._messages(entity, sampled, sampledAt: sampledAt, reliable: true),
+        for (final MapEntry(key: writer, value: values) in sampled.entries)
+          ..._messages(
+            entity,
+            values,
+            sampledAt: sampledAt[writer],
+            reliable: true,
+          ),
       ]) {
         if (!session._send(remote, message, revision: session._revision)) {
           return false;
@@ -665,10 +739,9 @@ final class _StateReplicator {
     return true;
   }
 
-  /// Passes the latest authoritative values to the setters of ready
-  /// synchronizers on peers other than the entity's authority, and on an
-  /// authority that has not applied the values it received before it
-  /// became the authority.
+  /// Passes the latest values of the fields that this peer does not write
+  /// to the setters of ready synchronizers, as well as the values that a new
+  /// authority received before it became the authority.
   void apply() {
     _prune();
     final lifetime = _lifetime;
@@ -677,7 +750,10 @@ final class _StateReplicator {
       if (_lifetime != lifetime) return;
       final entity = synchronizer.entity;
       if (!_isCurrent(synchronizer, lifetime) ||
-          (entity.authority == local && !_catchingUp.contains(entity))) {
+          (!_catchingUp.contains(entity) &&
+              synchronizer.properties.every(
+                (property) => _writer(entity, property.field.id) == local,
+              ))) {
         continue;
       }
       final completed = _applyValues(synchronizer, lifetime);
@@ -687,18 +763,27 @@ final class _StateReplicator {
   }
 
   /// Passes the retained values of [synchronizer]'s entity that it has not
-  /// applied yet to its setters. Returns whether every property was
-  /// handled while the synchronizer stayed live and ready.
+  /// applied yet to its setters, except for the fields that this peer
+  /// writes. A new authority that is catching up also applies the values of
+  /// authority-written fields that it received before. Returns whether every
+  /// property was handled while the synchronizer stayed live and ready.
   bool _applyValues(MultiplayerSynchronizer synchronizer, int lifetime) {
-    final values = _values[synchronizer.entity];
+    final entity = synchronizer.entity;
+    final values = _values[entity];
     if (values == null) return true;
+    final local = session._localPeer;
+    final catchingUp = _catchingUp.contains(entity);
     for (final property in synchronizer.properties) {
+      final field = property.field.id;
+      if (_writer(entity, field) == local &&
+          !(catchingUp && _byAuthority(field))) {
+        continue;
+      }
       if (!_isCurrent(synchronizer, lifetime) ||
           !synchronizer._attachment._isReady() ||
           !_isCurrent(synchronizer, lifetime)) {
         return false;
       }
-      final field = property.field.id;
       final value = values[field];
       if (value == null ||
           _sameBytes(synchronizer._applied[field], value.bytes)) {
@@ -757,7 +842,7 @@ final class _StateReplicator {
       );
     }
     if (synchronizer.isDisposed ||
-        synchronizer.entity.authority == session._localPeer) {
+        _writer(synchronizer.entity, field.id) == session._localPeer) {
       return null;
     }
     if (samples.isEmpty) {
@@ -774,7 +859,9 @@ final class _StateReplicator {
         return null;
       }
     }
-    final time = synchronizer._timeline!.presentationAt(session._clock.now);
+    final time = synchronizer._timelines[field.writer]!.presentationAt(
+      session._clock.now,
+    );
     if (time == null) return null;
     return samples.evaluate<T>(
       time,
@@ -797,11 +884,14 @@ final class _StateReplicator {
     }
   }
 
-  /// Groups [fields] by delivery mode and channel, then splits groups to
-  /// fit the wire and transport limits, stamped with the authority's
-  /// [sampledAt], if any. Baselines and authority resyncs use [reliable]
-  /// delivery on the control channel regardless of field configuration, so
-  /// all of their fields share one group.
+  /// Groups [fields] by writer, delivery mode, and channel, then splits
+  /// groups to fit the wire and transport limits, stamped with their
+  /// writer's [sampledAt], if any. Baselines and authority resyncs use
+  /// [reliable] delivery on the control channel regardless of field
+  /// configuration, so their fields are grouped by writer only.
+  ///
+  /// Keeping each message to the fields of one writer lets receivers handle
+  /// owner-written values independently of authority transfers.
   List<StateMessage> _messages(
     NetworkEntity entity,
     Map<FieldId, Uint8List> fields, {
@@ -810,14 +900,18 @@ final class _StateReplicator {
   }) {
     if (fields.isEmpty) return const [];
     final lifetime = _lifetime;
-    final groups = <_Delivery, Map<FieldId, Object?>>{};
+    final groups =
+        <({FieldWriter writer, _Delivery delivery}), Map<FieldId, Object?>>{};
     for (final MapEntry(key: field, value: bytes) in fields.entries) {
       try {
         final value = _decode(field, bytes);
         final definition = session._schema.fieldDefinition(field)!;
-        final group = reliable
-            ? _defaultDelivery
-            : (mode: definition.deliveryMode, channel: definition.channel);
+        final group = (
+          writer: definition.writer,
+          delivery: reliable
+              ? _defaultDelivery
+              : (mode: definition.deliveryMode, channel: definition.channel),
+        );
         groups.putIfAbsent(group, () => {})[field] = value;
       } on Object catch (error, stackTrace) {
         if (_lifetime != lifetime) return const [];
@@ -950,7 +1044,7 @@ final class _FieldValue {
   /// When this peer sent or received the value.
   final Duration time;
 
-  /// When the entity's authority sampled the value, on its own clock, or
-  /// `null` if the current authority did not sample it.
+  /// When the field's writer sampled the value, on its own clock, or `null`
+  /// if its current writer did not sample it.
   final Duration? sampledAt;
 }

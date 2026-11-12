@@ -137,15 +137,37 @@ Attach that representation with `session.attachEntity`; its `isReady` and
 
 Each entity has two separate roles:
 
-- **Owner:** the peer allowed to call RPCs declared with `RpcCaller.owner`.
-- **Authority:** the peer that writes the entity's synchronized properties.
-  The host is the default authority, including for client-owned entities.
+- **Owner:** the peer that controls the entity's input. It may call RPCs
+  declared with `RpcCaller.owner` and writes owner-written fields. The owner
+  never changes.
+- **Authority:** the peer that writes the entity's other synchronized
+  properties. The host is the default authority, including for client-owned
+  entities.
 
 Bind registered `SyncField<T>` handles through `attachment.synchronize`, with
 getters for sampling and setters for received values. Fields support initial-only,
 changed-value, and periodic updates. Sampling defaults to a 50 ms interval,
 independent of render frequency. Interpolation provides presentation values
 without replacing authoritative state.
+
+Register a field with `writer: FieldWriter.owner` to let the entity's owner
+write it, such as a player's movement input:
+
+```dart
+final input = builder.addField(
+  const FieldId('arena.player.input'),
+  const IntCodec(min: -1, max: 1),
+  writer: FieldWriter.owner,
+);
+```
+
+The host accepts owner-written values only from the owner and relays them to the
+other clients, while the authority keeps writing the fields that result from
+them, such as the player's position. One synchronizer can bind both kinds of
+fields: each peer samples the fields it writes and applies the others. Unlike
+RPCs, state is replaceable, so newer input replaces input that a congested
+connection has not sent yet. Late joiners receive owner-written values in their
+initial state.
 
 Use `QuantizedDoubleCodec(min: -1000, max: 1000, step: 0.01)` when a field can
 trade precision for smaller encoded values. `DoubleCodec` preserves values exactly.
@@ -158,7 +180,8 @@ the same bindings declared with annotations.
 The host can transfer an entity's authority to a ready client or back to itself
 with `session.transferAuthority(entity, peer)`. Transfers report
 `AuthorityChanged`; state from the previous authority is rejected after the
-transfer. When an authority disconnects, the host takes over surviving entities.
+transfer. Owner-written fields keep their writer. When an authority
+disconnects, the host takes over surviving entities.
 Set `onOwnerLeft: OwnerLeftPolicy.despawn` when spawning entities that should be
 removed with their owner.
 

@@ -158,11 +158,21 @@ final class _SessionDelivery {
     _dispatch(remote, envelope);
   }
 
+  /// Whether [message] sets authority-written fields, whose writer an
+  /// authority transfer changes. Sessions never combine them with
+  /// owner-written fields in one message.
+  bool _byAuthority(StateMessage message) => message.values.keys.any(
+    (field) => session._states.writerOf(field) == FieldWriter.authority,
+  );
+
+  /// Whether [envelope] holds authority-written state that its sender
+  /// sampled before the latest transfer of the entity's authority.
   bool _staleAuthority(MessageEnvelope envelope) {
-    if (envelope.message case StateMessage(:final entity)) {
+    if (envelope.message case StateMessage(:final entity) && final message) {
       final live = session.registry[entity];
       if (live != null &&
-          envelope.revision < session._authorities.lastTransfer(live)) {
+          envelope.revision < session._authorities.lastTransfer(live) &&
+          _byAuthority(message)) {
         return true;
       }
     }
@@ -172,9 +182,11 @@ final class _SessionDelivery {
   bool _waitsForControl(_Remote remote, MessageEnvelope envelope) {
     if (!session._isHost) return envelope.revision > session._revision;
     if (remote.state != _RemoteState.ready) return true;
-    if (envelope.message case StateMessage(:final entity)) {
+    if (envelope.message case StateMessage(:final entity) && final message) {
       final live = session.registry[entity];
-      if (live != null && session._authorities.awaits(live, remote.peer!)) {
+      if (live != null &&
+          session._authorities.awaits(live, remote.peer!) &&
+          _byAuthority(message)) {
         return true;
       }
     }

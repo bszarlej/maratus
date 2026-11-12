@@ -224,8 +224,13 @@ enum StateRejection {
   /// The entity is not registered on the receiving peer.
   unknownEntity,
 
-  /// The sender is not the entity's authority, or the receiving peer is.
+  /// The message sets an authority-written field, and the sender is not the
+  /// entity's authority, or the receiving peer is.
   notAuthority,
+
+  /// The message sets an owner-written field, and the sender is not the
+  /// entity's owner, or the receiving peer is.
+  notOwner,
 }
 
 /// A state message was ignored, so it changed nothing.

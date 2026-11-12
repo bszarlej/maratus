@@ -62,13 +62,15 @@ final class EntityAttachment {
     return binding;
   }
 
-  /// Synchronizes [properties] of this attachment's entity between its
-  /// authority and every other peer, sampling at most once per [interval].
+  /// Synchronizes [properties] of this attachment's entity between the
+  /// peers that write them and every other peer, sampling at most once per
+  /// [interval].
   ///
-  /// The entity's authority sends the properties when
+  /// Each property's field selects its writer with [SyncField.writer]: the
+  /// entity's authority or its owner. The writer sends the property when
   /// [MultiplayerSession.captureState] runs; every other peer applies the
-  /// latest authoritative values during [MultiplayerSession.update] while
-  /// this attachment is ready. Values received before then, including those
+  /// latest values during [MultiplayerSession.update] while this attachment
+  /// is ready. Values received before then, including those
   /// in a joining client's baseline, are applied once it is ready. Disposing
   /// this attachment disposes the synchronizer; the values stay with the
   /// entity, so a replacement attachment receives them again.

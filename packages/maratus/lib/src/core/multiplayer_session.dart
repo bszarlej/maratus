@@ -68,7 +68,7 @@ final class SessionTimeouts {
 
 /// Observes a state message after the session accepted it, with its sender.
 ///
-/// A message is accepted once its sender may write the entity, even if
+/// A message is accepted once its sender may write its fields, even if
 /// some of its values then fail validation. A sequenced sample that is
 /// older than the newest sample of each of its fields is obsolete and is
 /// not passed on.
@@ -126,12 +126,14 @@ typedef SessionMessageHandler =
 /// soon as it starts hosting or joining; [staticEntity] returns them. The
 /// host creates replicated entities with [spawn] and removes them with
 /// [despawn]; each peer creates their local representation through
-/// [bindSpawn] handlers. Each entity's authority sends its synchronized
-/// properties when [captureState] runs, and the host relays them, so only
-/// the authority writes them. The host can move an entity's authority to
-/// another peer with [transferAuthority]. A joining client receives the
-/// live entities, their authorities, and their latest values in its
-/// baseline, and every later change after it.
+/// [bindSpawn] handlers. Each synchronized field has one writer per entity:
+/// the entity's authority, or for owner-written fields, its owner. The
+/// writer sends the field when [captureState] runs, and the host accepts it
+/// only from that writer and relays it. The host can move an entity's
+/// authority to another peer with [transferAuthority]; its owner never
+/// changes. A joining client receives the live entities, their
+/// authorities, and their latest values in its baseline, and every later
+/// change after it.
 final class MultiplayerSession {
   /// Creates a session for the messages of [schema], timed by [clock].
   ///
@@ -243,7 +245,8 @@ final class MultiplayerSession {
   /// Synchronized state is replaceable: while a connection's
   /// [PeerConnection.outgoing] queue reaches either limit, as when its peer
   /// stops polling, newer state for an entity replaces state that has not
-  /// been sent, keeping one waiting entry per entity. Waiting state is sent
+  /// been sent, keeping one waiting entry per entity and writer, so an
+  /// owner's newer input replaces its unsent input too. Waiting state is sent
   /// once the queue drains, and before any other message is sent to that
   /// peer. Pending state batches also count toward these limits.
   /// Delivery ordering depends on each field's mode and channel. Other
@@ -524,7 +527,7 @@ final class MultiplayerSession {
   /// Received spawn, despawn, and state records are applied as their events
   /// are handled. A host then applies the admission decisions completed
   /// since the previous update. Ready synchronizers then receive the latest
-  /// values of the entities this peer does not write, before queued RPCs for
+  /// values of the fields this peer does not write, before queued RPCs for
   /// attached entities run. A joining client then reports ready if every
   /// entity of its baseline is ready, and pings that are due are sent.
   /// Deadlines are checked last, at this update boundary, so a queued reply,
@@ -571,15 +574,17 @@ final class MultiplayerSession {
     }
   }
 
-  /// Samples the synchronized properties of the entities this peer is the
-  /// authority for, and sends the fields that are due.
+  /// Samples the synchronized properties that this peer writes, and sends
+  /// the fields that are due: the authority-written fields of the entities
+  /// it is the authority of, and the owner-written fields of the entities
+  /// it owns.
   ///
   /// Call this after gameplay has updated those properties, as
   /// `MultiplayerScope` does after `captureNetworkState`. Each
   /// [MultiplayerSynchronizer] samples at most once per interval of the
   /// session's clock, however often this runs, and only while its attachment
   /// is ready. A host sends each change to every joined client; a client
-  /// sends it to the host, which relays it. State for a congested peer waits,
+  /// sends it to the host, which relays it to the other clients. State for a congested peer waits,
   /// replaced by newer values, as [stateBackpressure] describes. Failures
   /// are reported as [PropertySyncFailed] events. Has no effect unless
   /// hosting or ready. State from multiple entities may share a packet when
@@ -749,14 +754,16 @@ final class MultiplayerSession {
   /// receives each entity's current authority in its baseline. Every peer
   /// reports the change as an [AuthorityChanged] event while applying it.
   ///
-  /// The entity keeps a single writer. A client that the transfer makes, or
-  /// stops being, the authority acknowledges the transfer as it applies it.
-  /// The host drops the entity's state that such a client sent before its
-  /// acknowledgement, without reporting it: state that the previous
-  /// authority sent before it learned of the transfer, and state that a new
-  /// authority sent before applying it. The new authority's synchronizer
-  /// then samples its local state, and every other synchronizer applies the
-  /// values received from it. RPCs keep their routing: from the transfer
+  /// Each authority-written field keeps a single writer. A client that the
+  /// transfer makes, or stops being, the authority acknowledges the
+  /// transfer as it applies it. The host drops the authority-written state
+  /// that such a client sent before its acknowledgement, without reporting
+  /// it: state that the previous authority sent before it learned of the
+  /// transfer, and state that a new authority sent before applying it. The
+  /// new authority's synchronizer then samples its local state, and every
+  /// other synchronizer applies the values received from it. Owner-written
+  /// fields keep their writer, and the host keeps accepting them from the
+  /// entity's owner throughout. RPCs keep their routing: from the transfer
   /// on, the host checks [RpcCaller.authority] and selects
   /// [RpcTarget.authority] with the new authority.
   ///
@@ -900,20 +907,28 @@ final class MultiplayerSession {
 
   /// Holds state [message] for [remote], replacing the held values of the
   /// same fields of [entity] and moving its entry behind the others.
+  ///
+  /// Each message carries the fields of one writer, sampled on its clock,
+  /// so the entity's owner-written and authority-written fields are held
+  /// in separate entries.
   void _hold(
     _Remote remote,
     NetworkEntity entity,
     StateMessage message,
     Map<FieldId, Uint8List> fields,
   ) {
-    final previous = remote.held.remove(entity.id);
+    final key = (
+      entity: entity.id,
+      writer: _states.writerOf(message.values.keys.first),
+    );
+    final previous = remote.held.remove(key);
     if (previous != null) {
       remote.coalescedStates++;
       _coalescedStates++;
     }
-    // Only an authority's samples and their relays are held, and they all
+    // Only a writer's samples and their relays are held, and they all
     // carry a sample time.
-    remote.held[entity.id] = _HeldState(entity, {
+    remote.held[key] = _HeldState(entity, {
       ...?previous?.fields,
       ...fields,
     }, message.sampledAt!);
@@ -928,10 +943,9 @@ final class MultiplayerSession {
   /// with [_refused].
   bool _flush(_Remote remote, {required bool all}) {
     while (remote.held.isNotEmpty && (all || !_congested(remote))) {
-      final id = remote.held.keys.first;
-      final held = remote.held.remove(id)!;
+      final held = remote.held.remove(remote.held.keys.first)!;
       final entity = held.entity;
-      if (!identical(registry[id], entity) ||
+      if (!identical(registry[entity.id], entity) ||
           entity.state == EntityState.removed) {
         continue;
       }
@@ -1741,9 +1755,9 @@ final class _Remote {
   final sent = _Traffic();
   final received = _Traffic();
 
-  /// The state waiting for this connection to drain, by entity, in the
-  /// order to send it.
-  final held = <EntityId, _HeldState>{};
+  /// The state waiting for this connection to drain, by entity and writer,
+  /// in the order to send it.
+  final held = <({EntityId entity, FieldWriter writer}), _HeldState>{};
   var coalescedStates = 0;
 
   /// The encoded size of the held field values.
@@ -1756,7 +1770,8 @@ final class _Remote {
 }
 
 /// State waiting to be sent to a congested connection: the latest values of
-/// some fields of [entity], as its authority sampled them at [sampledAt].
+/// some fields of [entity] that one writer, its authority or its owner,
+/// sampled at [sampledAt].
 final class _HeldState {
   const _HeldState(this.entity, this.fields, this.sampledAt);
 

@@ -115,7 +115,8 @@ final class ProtocolSchema {
   /// A SHA-256 digest, in lowercase hexadecimal, of every identifier and
   /// codec descriptor in this schema, including each RPC's caller, target,
   /// and local-invocation policies, every RPC's and field's delivery mode and
-  /// channel, the static entities, and the join request codec.
+  /// channel, each field's writer, the static entities, and the join request
+  /// codec.
   ///
   /// Equal registrations produce equal fingerprints on every platform,
   /// regardless of the order in which they were registered.
@@ -205,6 +206,10 @@ final class ProtocolSchema {
             fields[id]!.codec.descriptor,
             fields[id]!.deliveryMode.name,
             fields[id]!.channel,
+            // Authority-written fields keep the description they had before
+            // fields could have another writer.
+            if (fields[id]!.writer != FieldWriter.authority)
+              fields[id]!.writer.code,
           ],
       ],
       'staticEntities': staticEntities.toList()..sort(),
@@ -296,6 +301,10 @@ final class ProtocolSchemaBuilder {
   /// Registers synchronized field [id] with the [codec] for its values and
   /// returns its handle. Incremental updates use [deliveryMode] on [channel].
   ///
+  /// [writer] selects the peer that writes the field of each entity: its
+  /// authority, or its owner. The writer, [deliveryMode], and [channel] are
+  /// included in the schema fingerprint.
+  ///
   /// Throws an [ArgumentError] if [id] is not a valid identifier or is
   /// already registered as a field, or [channel] is negative.
   SyncField<T> addField<T>(
@@ -303,12 +312,14 @@ final class ProtocolSchemaBuilder {
     ValueCodec<T> codec, {
     DeliveryMode deliveryMode = DeliveryMode.reliable,
     int channel = 0,
+    FieldWriter writer = FieldWriter.authority,
   }) => addFieldDefinition(
     SyncField<T>(
       id: id,
       codec: codec,
       deliveryMode: deliveryMode,
       channel: channel,
+      writer: writer,
     ),
   );
 
@@ -317,7 +328,7 @@ final class ProtocolSchemaBuilder {
   ///
   /// The schema retains [field] itself, so sessions accept exactly this
   /// handle. Registering a handle has the same effect on the fingerprint as
-  /// passing its identifier and codec to [addField].
+  /// passing its identifier, codec, and settings to [addField].
   ///
   /// Throws an [ArgumentError] if the identifier of [field] is not valid or
   /// is already registered as a field, or its channel is negative.

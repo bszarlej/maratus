@@ -78,7 +78,7 @@ final class PeerDiagnostics {
   final TrafficCounts received;
 
   /// The state waiting for this congested connection to drain: one entry
-  /// per entity, and the encoded size of its values. See
+  /// per entity and writer, and the encoded size of its values. See
   /// [MultiplayerSession.stateBackpressure].
   final QueueDepth heldState;
 
