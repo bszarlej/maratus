@@ -6,76 +6,68 @@
   </picture>
 </p>
 
-<p align="center">
-  Godot-inspired multiplayer for Dart and Flame.
-</p>
+# Maratus
 
-Add multiplayer to your game with typed RPCs, replicated spawning, synchronized
-properties, and late joining. Use Flame components on the client and run a host
-in your game or in a separate Dart process.
+Godot-inspired multiplayer for Dart and Flame: typed RPCs, replicated spawning,
+property synchronization, and late joining. The host manages the session and
+entity lifecycle; each entity has an owner and a separate state authority.
+Hosts can run inside a game or in a standalone Dart process.
 
-Documentation (coming soon) ·
-[Try the demo](examples/chat) ·
-[Report an issue](https://github.com/bszarlej/maratus/issues)
+## Installation
 
-## Get started
-
-For a Flame game:
+For Flame games:
 
 ```sh
 flutter pub add maratus_flame
 ```
 
-```dart
-import 'package:maratus_flame/maratus_flame.dart';
+For Dart applications and dedicated hosts:
+
+```sh
+dart pub add maratus
 ```
 
-| Package | Use it for |
-| ------- | ---------- |
-| [maratus_flame](packages/maratus_flame) | Networked Flame components, spawning, and position smoothing. Includes the core APIs. |
-| [maratus](packages/maratus) | Shared game protocols and standalone Dart hosts, without Flutter. Install with `dart pub add maratus`. |
-| [maratus_enet](packages/maratus_enet) | Optional native ENet transport over UDP, with reliable and unreliable delivery and independent channels. Use alongside the core or Flame package. |
-| [maratus_webrtc](packages/maratus_webrtc) | Optional WebRTC transport for browsers and native platforms, with browser hosting, connections across routers through STUN and TURN servers, and the same delivery options as ENet. Use alongside the core or Flame package. |
-| [maratus_annotations](packages/maratus_annotations) | Annotations that declare RPC handlers, synchronized fields, spawn types, and data codecs. |
-| [maratus_generator](packages/maratus_generator) | Generates handles, bindings, typed RPC senders, and codecs from those annotations, as a dev dependency. |
+Requires Dart `>=3.11.0 <4.0.0`. Flame integration also requires Flutter
+`>=3.41.0` and Flame `^1.38.2`.
 
-Declare your protocol by registering it with `ProtocolSchemaBuilder`, or with
-annotations: both produce the same schema.
+## Packages
+
+| Package | Purpose |
+| ------- | ------- |
+| [maratus](packages/maratus) | Sessions, RPCs, replication, WebSockets, and an in-memory transport. No Flutter dependency. |
+| [maratus_flame](packages/maratus_flame) | Component lifecycle integration, spawning, and vector interpolation. Re-exports the core API. |
+| [maratus_enet](packages/maratus_enet) | Optional native ENet transport over UDP. |
+| [maratus_webrtc](packages/maratus_webrtc) | Optional WebRTC transport and WebSocket signaling server. |
+| [maratus_annotations](packages/maratus_annotations) | Annotations for networked classes and data codecs. |
+| [maratus_generator](packages/maratus_generator) | Generates protocol registrations, bindings, RPC senders, and codecs. Development dependency. |
+
+Start with the [Flame setup guide](packages/maratus_flame/README.md) or the
+[core API guide](packages/maratus/README.md). Protocols use explicit identifiers
+and typed codecs, registered by hand or through code generation.
+
+## Transports
+
+| Transport | Host / client platforms | Delivery | Connection setup |
+| --------- | ----------------------- | -------- | ---------------- |
+| WebSocket | Desktop and mobile hosts and clients; browser clients | Reliable, ordered; one channel | Reachable TCP endpoint; `wss:` for HTTPS browser apps. |
+| ENet | Desktop and mobile hosts and clients | Reliable and unreliable; independent channels | Reachable UDP endpoint. |
+| WebRTC | Desktop, mobile, and browser hosts and clients | Reliable and unreliable; independent channels | Signaling service; STUN/TURN servers for connections across networks. |
+
+RPCs and synchronized fields select their delivery mode and channel. Session
+control, spawning, and initial snapshots remain reliable. See the
+[delivery guide](packages/maratus/README.md#delivery) and each transport's README
+for configuration and platform requirements.
 
 ## Examples
 
-- [Chat demo](examples/chat): host or join over WebSockets, see replicated
-  avatars, and try simulated latency and disconnects.
-- [Flame example](packages/maratus_flame/example/main.dart): steer replicated
-  avatars with a host and client running side by side.
-- [Dart example](packages/maratus/example/main.dart): run a session, send input,
-  and synchronize movement without Flutter.
-- [Generator example](packages/maratus_generator/example/main.dart): the same
-  session, with the avatar declared through annotations.
-
-## Current scope
-
-The initial release focuses on small sessions, such as 2–4 players. WebSockets
-provide reliable, ordered delivery: desktop apps can host or join, and browsers
-can join. The optional `maratus_enet` package adds native UDP connections with
-reliable, ordered-unreliable, and unordered-unreliable transport messages on
-independent channels. The optional `maratus_webrtc` package offers the same
-delivery options over WebRTC data channels, lets browsers host, and connects
-peers behind different routers through STUN and TURN servers, with a WebSocket
-signaling server for exchanging connection details. RPCs and synchronized
-fields select delivery modes and channels individually; session control and
-initial snapshots remain reliable. Over WebSockets and ENet, clients need a
-directly reachable host.
-
-Requires Dart `>=3.11.0 <4.0.0`; Flame integration also requires Flutter
-`>=3.41.0` and Flame `^1.38.2`.
-
-Planned work:
-
-- Android/iOS support and larger-session tuning: compatibility and performance
-  validation are still pending.
-- Built-in client-side prediction and reconciliation, interest management,
-  and state compression: **not implemented yet**.
+- [WebSocket chat](examples/chat): Windows or standalone Dart hosting, browser
+  clients, replicated avatars, and simulated connection problems.
+- [Flame](packages/maratus_flame/example/main.dart): host and client in one game,
+  with input RPCs and interpolated movement.
+- [Dart](packages/maratus/example/main.dart): spawning, input, and state
+  synchronization over a deterministic in-memory network.
+- [Code generation](packages/maratus_generator/example/main.dart): the Dart
+  example implemented with annotations.
 
 ## Contributing
 
@@ -89,15 +81,20 @@ dart run melos test
 dart run melos run test:browser --no-select
 ```
 
-Browser tests require Chrome. Set `CHROME_EXECUTABLE` if it is not found.
-The ENet package builds its bundled C library through a Dart build hook and
-requires a native C compiler; see its [setup instructions](packages/maratus_enet).
-The WebRTC package builds its bundled C and C++ libraries the same way and
-requires a C and C++ compiler; see its [setup instructions](packages/maratus_webrtc).
-Its browser tests, including connections between Chrome and native peers, run
-with `dart test --platform chrome` from `packages/maratus_webrtc`.
-After changing `maratus_generator` or annotated code, regenerate the committed
-`.g.dart` files with `dart run melos run generate --no-select`.
+Native transport tests require the compiler setups documented for
+[ENet](packages/maratus_enet) and [WebRTC](packages/maratus_webrtc).
+Browser tests require Chrome; set `CHROME_EXECUTABLE` if it is not found.
+Run WebRTC browser interoperability tests with `dart test --platform chrome`
+from `packages/maratus_webrtc`.
+
+After changing the generator or annotated code, regenerate committed outputs:
+
+```sh
+dart run melos run generate --no-select
+```
+
+Report bugs and feature requests in the
+[issue tracker](https://github.com/bszarlej/maratus/issues).
 
 ## License
 
