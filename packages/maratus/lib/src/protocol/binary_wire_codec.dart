@@ -10,6 +10,8 @@ import 'wire_codec.dart';
 ///
 /// Tables are sorted lexicographically, independently for each identifier kind.
 /// Peers must compare schema fingerprints before exchanging application data.
+/// Doubles use 32 bits only when the value is preserved exactly, including the
+/// sign of zero; other doubles retain their full 64-bit precision.
 final class BinaryWireCodec implements WireCodec {
   /// Creates a codec using [schema] and bounded decoding allocations.
   BinaryWireCodec(ProtocolSchema schema, {this.limits = const WireLimits()})
@@ -89,7 +91,7 @@ final class BinaryWireCodec implements WireCodec {
     final kind = envelope['k']! as String;
     final body = envelope['b']! as Map<String, Object?>;
     final writer = _Writer();
-    writer.bytes.add([77, 1]);
+    writer.bytes.add([77, 2]);
     writer.uint(envelope['v']! as int);
     final kindIndex = _kinds.indexOf(kind);
     if (kindIndex < 0) throw ArgumentError('Unknown message kind: $kind');
@@ -129,7 +131,7 @@ final class BinaryWireCodec implements WireCodec {
     if (bytes.length > limits.maxMessageBytes) _limit();
     final reader = _Reader(bytes, limits);
     if (reader.byte() != 77) _malformed();
-    if (reader.byte() != 1) {
+    if (reader.byte() != 2) {
       throw const ProtocolException(
         ProtocolErrorCode.unsupportedVersion,
         'unsupported binary format version',
@@ -251,11 +253,17 @@ final class _Writer {
               'outside safe integer range',
             );
           }
-          bytes.addByte(5);
-          bytes.add(
-            (ByteData(8)..setFloat64(0, value.toDouble(), Endian.little)).buffer
-                .asUint8List(),
-          );
+          final number = value.toDouble();
+          final data = ByteData(8)..setFloat32(0, number, Endian.little);
+          final rounded = data.getFloat32(0, Endian.little);
+          if (rounded == number && rounded.isNegative == number.isNegative) {
+            bytes.addByte(9);
+            bytes.add(data.buffer.asUint8List(0, 4));
+          } else {
+            bytes.addByte(5);
+            data.setFloat64(0, number, Endian.little);
+            bytes.add(data.buffer.asUint8List());
+          }
         }
       case String():
         bytes.addByte(6);
@@ -365,6 +373,16 @@ final class _Reader {
           if (result.containsKey(key)) _malformed();
           result[key] = value(depth + 1);
         }
+        return result;
+      case 9:
+        if (bytes.length - offset < 4) _malformed();
+        final result = ByteData.sublistView(
+          bytes,
+          offset,
+          offset + 4,
+        ).getFloat32(0, Endian.little);
+        offset += 4;
+        if (!result.isFinite) _malformed();
         return result;
       default:
         _malformed();

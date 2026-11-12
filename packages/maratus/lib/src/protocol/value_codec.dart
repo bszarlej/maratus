@@ -184,6 +184,106 @@ final class DoubleCodec extends ValueCodec<double> {
   };
 }
 
+/// Encodes a bounded [double] as the index of its nearest quantization step.
+///
+/// The grid starts at [min] and ends at [max], with [step] between values.
+/// Values halfway between steps round toward [max]. Quantization is lossy:
+/// decoded values differ from the input by at most half a step, apart from
+/// floating-point roundoff. Values outside the range are rejected, not clamped.
+///
+/// Integer wire values use compact variable-length encoding. Synchronized
+/// fields using `SyncMode.onChange` also skip changes within the same step.
+final class QuantizedDoubleCodec extends ValueCodec<double> {
+  /// Creates a grid from [min] to [max], inclusive, spaced by [step].
+  ///
+  /// For example, `QuantizedDoubleCodec(min: -1000, max: 1000, step: 0.01)`
+  /// rounds positions to hundredths relative to -1000.
+  ///
+  /// Throws an [ArgumentError] unless the bounds and step are finite,
+  /// `min < max`, and [step] is positive. The range must contain a whole
+  /// number of steps (allowing floating-point roundoff), from one to
+  /// [maxSteps]. Steps too small to resolve accurately at the bounds are
+  /// rejected as well.
+  factory QuantizedDoubleCodec({
+    required double min,
+    required double max,
+    required double step,
+  }) {
+    if (!min.isFinite || !max.isFinite || min >= max) {
+      throw ArgumentError('min and max must be finite with min < max');
+    }
+    if (!step.isFinite || step <= 0) {
+      throw ArgumentError.value(step, 'step', 'must be finite and positive');
+    }
+    final count = (max - min) / step;
+    if (!count.isFinite || count < 0.5 || count > maxSteps + 0.5) {
+      throw ArgumentError('the range must contain from 1 to $maxSteps steps');
+    }
+    final steps = count.round();
+    if (steps < 1 || steps > maxSteps) {
+      throw ArgumentError('the range must contain from 1 to $maxSteps steps');
+    }
+    // Eight double-precision epsilons allow arithmetic roundoff without
+    // accepting a materially shorter or longer final interval.
+    const tolerance = 8 * 2.220446049250313e-16;
+    if ((count - steps).abs() > tolerance * count) {
+      throw ArgumentError('the range must contain a whole number of steps');
+    }
+    final magnitude = min.abs() > max.abs() ? min.abs() : max.abs();
+    if (step < tolerance * magnitude) {
+      throw ArgumentError.value(
+        step,
+        'step',
+        'is too small to resolve accurately at these bounds',
+      );
+    }
+    return QuantizedDoubleCodec._(min, max, step, steps);
+  }
+
+  const QuantizedDoubleCodec._(this.min, this.max, this.step, this._steps);
+
+  /// The largest number of steps, keeping wire indices within 32 bits.
+  static const int maxSteps = 4294967295;
+
+  /// The smallest accepted value and the origin of the quantization grid.
+  final double min;
+
+  /// The largest accepted value, also the last point on the grid.
+  final double max;
+
+  /// The distance between quantized values, before floating-point roundoff.
+  final double step;
+
+  final int _steps;
+
+  @override
+  String get descriptor =>
+      'quantizedDouble('
+      'min=${_formatDouble(min)},max=${_formatDouble(max)},'
+      'step=${_formatDouble(step)})';
+
+  @override
+  int encode(double value) {
+    if (!value.isFinite || value < min || value > max) {
+      throw ArgumentError.value(
+        value,
+        'value',
+        'must be a finite number from $min to $max',
+      );
+    }
+    return ((value - min) / step).round();
+  }
+
+  @override
+  double decode(Object? wire) {
+    final index = IntCodec(min: 0, max: _steps).decode(wire);
+    // Preserve the exact bounds despite accumulated grid roundoff.
+    if (index == 0) return min;
+    if (index == _steps) return max;
+    return min + index * step;
+  }
+}
+
 /// A codec for [String] values up to a maximum length.
 final class StringCodec extends ValueCodec<String> {
   /// Creates a codec for strings of at most [maxLength] UTF-16 code units.

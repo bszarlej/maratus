@@ -78,11 +78,9 @@ final class _RecordingPeer implements MultiplayerPeer {
       :final mode,
       :final channel,
     )) {
-      received.add((
-        message: codec.decode(message).message,
-        mode: mode,
-        channel: channel,
-      ));
+      for (final envelope in codec.decodePacket(message)) {
+        received.add((message: envelope.message, mode: mode, channel: channel));
+      }
     }
     return event;
   }

@@ -2,7 +2,9 @@ part of 'multiplayer_session.dart';
 
 /// Counts of messages and their bytes, in total and by [MessageKind].
 ///
-/// Bytes are encoded message sizes, excluding transport framing. Totals also
+/// Counts refer to logical messages; a state batch can carry several in one
+/// transport packet. Bytes include batch framing once, excluding transport
+/// framing. Totals also
 /// include received messages that could not be decoded, which have no kind.
 final class TrafficCounts {
   TrafficCounts._(_Traffic traffic)

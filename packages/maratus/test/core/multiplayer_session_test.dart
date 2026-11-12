@@ -447,7 +447,7 @@ void main() {
       final raw = harness.rawClient();
       harness.run();
 
-      raw.sendBytes(Uint8List.fromList([77, 1, 2]));
+      raw.sendBytes(Uint8List.fromList([77, 2, 2]));
       harness.run();
 
       expect(raw.received, [
@@ -465,7 +465,7 @@ void main() {
       final harness = _RawHostHarness();
       harness.run();
 
-      harness.host.sendBytes(Uint8List.fromList([77, 1, 2]));
+      harness.host.sendBytes(Uint8List.fromList([77, 2, 2]));
       harness.run();
 
       expect(harness.client.disconnectReason, DisconnectReason.versionMismatch);
