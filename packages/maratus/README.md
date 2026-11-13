@@ -121,7 +121,8 @@ Drain `session.poll()` during updates to handle lifecycle events and errors:
 | `SessionStateChanged` | The local session changed state; includes a disconnect reason when applicable. |
 | `PeerJoined`, `PeerReady`, `PeerLeft` | A client was admitted, finished synchronizing, or left. |
 | `RpcRejected`, `RpcHandlerFailed` | An RPC was rejected or its handler failed. |
-| `SpawnHandlerFailed`, `PropertySyncFailed`, `AdmissionFailed` | A local spawn, property, or admission callback failed. |
+| `InputRejected` | The host ignored inputs from a client that does not own the entity, or that it does not predict. |
+| `SpawnHandlerFailed`, `PropertySyncFailed`, `AdmissionFailed` | A local spawn, property, prediction step, or admission callback failed. |
 
 `session.peers` excludes the local peer. On clients it includes the host and
 other clients, but membership events describe only other clients. Use
@@ -142,8 +143,8 @@ Attach that representation with `session.attachEntity`; its `isReady` and
 Each entity has two separate roles:
 
 - **Owner:** the peer that controls the entity's input. It may call RPCs
-  declared with `RpcCaller.owner` and writes owner-written fields. The owner
-  never changes.
+  declared with `RpcCaller.owner`, writes owner-written fields, and sends the
+  inputs of a prediction. The owner never changes.
 - **Authority:** the peer that writes the entity's other synchronized
   properties. The host is the default authority, including for client-owned
   entities.
@@ -189,6 +190,118 @@ disconnects, the host takes over surviving entities.
 Set `onOwnerLeft: OwnerLeftPolicy.despawn` when spawning entities that should be
 removed with their owner.
 
+## Client-side prediction
+
+With the host as authority, a player's input otherwise shows its effect only
+after a round trip. To let the owner see its movement at once, register an input
+stream with a fixed tick next to the field that the inputs advance:
+
+```dart
+final move = builder.addInput(
+  const InputId('arena.player.move'),
+  const IntCodec(min: -1, max: 1),
+  tick: const Duration(milliseconds: 20),
+);
+final x = builder.addField(
+  const FieldId('arena.player.x'),
+  const DoubleCodec(min: 0, max: 2048),
+);
+```
+
+On every peer, predict the field before synchronizing the entity, with a step
+function that applies one input for one tick, and bind the prediction's
+property:
+
+```dart
+double step(double x, int move) => (x + move * 4).clamp(0, 2048);
+
+final prediction = attachment.predict(
+  state: x,
+  input: move,
+  initial: spawnX,
+  step: step,
+  interpolator: const DoubleInterpolator(teleportDistance: 200),
+);
+attachment.synchronize([prediction.property()]);
+
+// Every frame, after session.update():
+final shown = entity.owner == session.localPeer
+    ? prediction.advance(readMove(), elapsed)
+    : prediction.presented;
+```
+
+- The owner calls `advance` every frame, also without input. Each whole tick
+  numbers the input, applies `step`, and keeps the input until the host
+  acknowledges it. `captureState` sends the inputs.
+- The host applies each input once and in order during `update`, and reports
+  the latest input it applied with the state it sends. It applies at most one
+  tick of inputs per tick of its own clock after a short burst.
+- When the host's state arrives, the owner resets to it and applies the inputs
+  that the host has not applied yet again. A difference blends out over
+  `smoothing` with the interpolator, or shows at once without one.
+- Every other peer presents the host's state, interpolated by the prediction's
+  interpolator.
+
+`step` must return the same state on the host and the owner for the same state
+and input. States and inputs pass through their codecs before each step, so a
+quantized codec does not make them drift apart. With unreliable delivery, each
+input message repeats the inputs that the host has not acknowledged, so the next
+message repairs a lost one.
+
+To change the state outside the step, such as to respawn a player, set it on
+the entity's authority:
+
+```dart
+prediction.state = spawnX; // On the host.
+```
+
+The new state replicates as usual. The owner resets to it when it arrives and
+applies its newer inputs again, so a jump that the interpolator treats as a
+teleport shows at once.
+
+The [prediction example](https://github.com/bszarlej/maratus/tree/master/examples/prediction)
+runs a host and a client side by side over a simulated network with latency.
+
+### Late inputs
+
+By default, the host waits for late inputs: the entity stands still on the host
+until they arrive, and the host then applies up to a quarter of a second of them
+at once. To keep the entity moving instead, so that gravity or momentum still
+act while the owner's connection stalls, pass the input that means no control:
+
+```dart
+final prediction = attachment.predict(
+  // ...
+  idleInput: 0, // As if the player let go of the controls.
+);
+```
+
+Once the owner's inputs are more than a quarter of a second late, the host
+applies `idleInput` for each further tick. When the late inputs then arrive
+together, as they do over an unreliable channel, the host applies the newest
+quarter of a second of them at once and skips the older ones, which the idle
+ticks replaced. Either way, the owner's prediction corrects to the host's state.
+
+### Limitations
+
+- The step sees only the entity's state and one input. Anything else that it
+  reads, such as a level captured in its closure, must be the same on the host
+  and the owner. The owner does not predict interactions with other entities,
+  such as collisions with moving objects: the host's state corrects them when
+  it arrives.
+- The host does not synchronize its clock with the owner's. Inputs that arrive
+  faster than it applies them, from an owner whose clock runs fast or in a
+  burst of more than a quarter of a second after a delay, wait on the host and
+  delay the entity for the other peers for as long as the owner keeps sending.
+  Beyond half a second, the host drops the oldest, and the owner's prediction
+  corrects. An idle input avoids this after late inputs that arrive together.
+- Prediction applies while the host is the entity's authority. An owner that
+  becomes the authority continues from its prediction and applies its inputs
+  directly; while another client is the authority, the owner's prediction
+  pauses and follows that client's state.
+- Prediction covers the entities a player controls; other entities are not
+  rolled back.
+
 ## Delivery
 
 RPCs and fields default to reliable delivery on channel zero. Optional
@@ -202,10 +315,10 @@ transports also support unreliable delivery and independent channels:
 | `DeliveryMode.unreliableOrdered` | Messages may be lost; messages older than the newest received one are discarded. |
 | `DeliveryMode.unreliable` | Messages may be lost or reordered. |
 
-Set `deliveryMode` and `channel` when registering an RPC or field. Configure
-both transport peers with enough channels, such as `channelCount: 2` to use
-channel one. `host` and `join` reject transports that cannot support the schema.
-WebSockets support only reliable channel zero.
+Set `deliveryMode` and `channel` when registering an RPC, field, or input
+stream. Configure both transport peers with enough channels, such as
+`channelCount: 2` to use channel one. `host` and `join` reject transports that
+cannot support the schema. WebSockets support only reliable channel zero.
 
 Unreliable fields require `SyncMode.always`, so later samples can recover a lost
 value even after it stops changing. Older state samples never overwrite newer

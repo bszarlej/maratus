@@ -240,9 +240,10 @@ final class MultiplayerSynchronizer {
   /// Returns `null` on the peer that writes [field], which presents its own
   /// state, on the owner of an entity whose [Prediction] of [field] it
   /// predicts, which presents the prediction, before any value of [field]
-  /// was received, and once this synchronizer is disposed. The value is a copy that the caller may
-  /// change. Throws an [ArgumentError] for a foreign [field] handle, or a
-  /// field without an interpolator in this synchronizer.
+  /// was received, and once this synchronizer is disposed. The value is a
+  /// copy that the caller may change. Throws an [ArgumentError] for a
+  /// foreign [field] handle, or a field without an interpolator in this
+  /// synchronizer.
   InterpolatedValue<T>? interpolated<T>(SyncField<T> field) =>
       _replicator._interpolated(this, field);
 
