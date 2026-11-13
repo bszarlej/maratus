@@ -29,11 +29,19 @@ final class _SessionDelivery {
     for (final field in session._schema.fieldDefinitions) {
       check(field.deliveryMode, field.channel, field.id.value);
     }
+    for (final input in session._schema.inputDefinitions) {
+      check(input.deliveryMode, input.channel, input.id.value);
+    }
   }
 
   _Delivery _field(FieldId id) {
     final field = session._schema.fieldDefinition(id)!;
     return (mode: field.deliveryMode, channel: field.channel);
+  }
+
+  _Delivery _input(InputId id) {
+    final input = session._schema.inputDefinition(id)!;
+    return (mode: input.deliveryMode, channel: input.channel);
   }
 
   _Delivery _rpc(RpcId id) {
@@ -46,6 +54,7 @@ final class _SessionDelivery {
   _Delivery outgoing(ProtocolMessage message) => switch (message) {
     RpcMessage(:final rpc) || RpcDeliveryMessage(:final rpc) => _rpc(rpc),
     StateMessage(sequence: _?, :final values) => _field(values.keys.first),
+    InputMessage(:final input) => _input(input),
     _ => _defaultDelivery,
   };
 
@@ -81,6 +90,7 @@ final class _SessionDelivery {
           values: message.values,
           sampledAt: message.sampledAt,
           sequence: ++_sequence,
+          inputSequence: message.inputSequence,
         ),
         revision: session._isHost ? remote.sentRevision : session._revision,
       );

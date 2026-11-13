@@ -31,7 +31,15 @@ final class SyncProperty<T> {
     this.set,
     this.mode = SyncMode.onChange,
     this.interpolator,
-  });
+  }) : _prediction = null;
+
+  /// The property of [prediction]'s field, which its state backs.
+  SyncProperty._predicted(Prediction<T, Object?> prediction, this.mode)
+    : field = prediction.field,
+      get = (() => prediction.state),
+      set = null,
+      interpolator = prediction.interpolator,
+      _prediction = prediction;
 
   /// The registered field that this property replicates.
   final SyncField<T> field;
@@ -63,6 +71,11 @@ final class SyncProperty<T> {
   /// Interpolation only affects presentation: [set] and snapshots still
   /// receive every authoritative value as it arrives.
   final Interpolator<T>? interpolator;
+
+  /// The prediction whose state this property replicates, if any. The
+  /// owner reconciles the prediction with the values it receives, and
+  /// every other peer that does not write the field passes them to it.
+  final Prediction<T, Object?>? _prediction;
 
   // Callers hold properties as SyncProperty<Object?>, where reading [set]
   // directly would fail Dart's covariance check. These members read the
@@ -225,8 +238,9 @@ final class MultiplayerSynchronizer {
   /// the new authority's first sample arrives, the latest value holds.
   ///
   /// Returns `null` on the peer that writes [field], which presents its own
-  /// state, before any value of [field] was received, and once this
-  /// synchronizer is disposed. The value is a copy that the caller may
+  /// state, on the owner of an entity whose [Prediction] of [field] it
+  /// predicts, which presents the prediction, before any value of [field]
+  /// was received, and once this synchronizer is disposed. The value is a copy that the caller may
   /// change. Throws an [ArgumentError] for a foreign [field] handle, or a
   /// field without an interpolator in this synchronizer.
   InterpolatedValue<T>? interpolated<T>(SyncField<T> field) =>
@@ -286,6 +300,7 @@ final class _StateReplicator {
   /// Forgets the values of a despawned entity.
   void forget(EntityId entity) {
     session._authorities.forgetEntity(entity);
+    session._inputs.forget(entity);
     _values.removeWhere((key, _) => key.id == entity);
     _sequences.removeWhere((key, _) => key.id == entity);
     _catchingUp.removeWhere((key) => key.id == entity);
@@ -293,6 +308,7 @@ final class _StateReplicator {
 
   void _prune() {
     session._authorities.prune();
+    session._inputs.prune();
     bool gone(NetworkEntity entity) =>
         entity.state == EntityState.removed ||
         !identical(session.registry[entity.id], entity);
@@ -339,7 +355,8 @@ final class _StateReplicator {
         writer: FieldWriter.authority,
       ));
     } else if (values != null) {
-      // The values were sampled on the previous authority's clock.
+      // The values were sampled on the previous authority's clock, after
+      // it applied inputs that the next one does not report.
       values.updateAll(
         (field, value) => _byAuthority(field)
             ? _FieldValue(value.bytes, value.time, null)
@@ -351,6 +368,7 @@ final class _StateReplicator {
     } else {
       _catchingUp.remove(entity);
     }
+    session._inputs.transferred(entity, previous);
     final synchronizer = _synchronizers[entity.id];
     if (synchronizer == null || !identical(synchronizer.entity, entity)) {
       return;
@@ -381,6 +399,7 @@ final class _StateReplicator {
       values,
       sampledAt: null,
       reliable: true,
+      inputs: _inputsOf(fields),
     )) {
       if (!session._sendChange(remote, message)) return false;
     }
@@ -410,6 +429,7 @@ final class _StateReplicator {
     if (properties.isEmpty) {
       throw ArgumentError.value(properties, 'properties', 'must not be empty');
     }
+    final prediction = session._inputs.forAttachment(attachment);
     final fields = <FieldId>{};
     for (final property in properties) {
       final field = property.field;
@@ -418,6 +438,14 @@ final class _StateReplicator {
           field,
           'properties',
           'must use fields of the session schema',
+        );
+      }
+      if (property._prediction case final predicted?
+          when !identical(predicted, prediction)) {
+        throw ArgumentError.value(
+          field.id.value,
+          'properties',
+          "binds a prediction that is not this attachment's live one",
         );
       }
       if (!fields.add(field.id)) {
@@ -435,6 +463,16 @@ final class _StateReplicator {
           'unreliable fields must use SyncMode.always',
         );
       }
+    }
+    if (prediction != null &&
+        !properties.any(
+          (property) => identical(property._prediction, prediction),
+        )) {
+      throw ArgumentError.value(
+        prediction.field.id.value,
+        'properties',
+        "must include the prediction's property",
+      );
     }
     final entity = attachment.entity;
     if (_synchronizers[entity.id] case final existing?
@@ -556,6 +594,7 @@ final class _StateReplicator {
     final local = session._localPeer;
     final sent = _values[entity];
     final due = <FieldId, Uint8List>{};
+    final inputs = <FieldId, int>{};
     for (final property in synchronizer.properties) {
       final field = property.field.id;
       if (_writer(entity, field) != local) continue;
@@ -568,17 +607,29 @@ final class _StateReplicator {
         continue;
       }
       if (!_isCurrent(synchronizer, lifetime)) return;
+      // The host reports the latest input it applied with the state that
+      // includes it, and reports a newer one even if the state is unchanged.
+      final input = property._prediction == null
+          ? null
+          : session._inputs.applied(entity);
       if (property.mode == SyncMode.always ||
-          !_sameBytes(sent?[field]?.bytes, bytes)) {
+          !_sameBytes(sent?[field]?.bytes, bytes) ||
+          (input != null && sent?[field]?.input != input)) {
         due[field] = bytes;
+        if (input != null) inputs[field] = input;
       }
     }
-    for (final message in _messages(entity, due, sampledAt: now)) {
+    for (final message in _messages(
+      entity,
+      due,
+      sampledAt: now,
+      inputs: inputs,
+    )) {
       if (!_isCurrent(synchronizer, lifetime)) return;
       final fields = {
         for (final field in message.values.keys) field: due[field]!,
       };
-      _retain(entity, fields, now, sampledAt: now);
+      _retain(entity, fields, now, sampledAt: now, inputs: inputs);
       if (session._isHost) {
         session._replicateState(entity, message, fields);
       } else {
@@ -650,11 +701,17 @@ final class _StateReplicator {
     // A sample that is older than the newest one of each of its fields is
     // obsolete, like a control change with an old revision.
     if (!current) return;
+    // Only the host reports applied inputs, so only a client keeps them.
+    final input = message.inputSequence;
+    final inputs = input == null
+        ? null
+        : {for (final field in received.keys) field: input};
     for (final accepted in _messages(
       entity,
       received,
       sampledAt: message.sampledAt,
       reliable: sequence == null,
+      inputs: inputs,
     )) {
       if (_lifetime != lifetime ||
           entity.state == EntityState.removed ||
@@ -665,7 +722,13 @@ final class _StateReplicator {
       final fields = {
         for (final field in accepted.values.keys) field: received[field]!,
       };
-      _retain(entity, fields, now, sampledAt: message.sampledAt);
+      _retain(
+        entity,
+        fields,
+        now,
+        sampledAt: message.sampledAt,
+        inputs: inputs,
+      );
       if (sequence != null) {
         final sequences = _sequences.putIfAbsent(entity, () => {});
         for (final field in fields.keys) {
@@ -721,14 +784,22 @@ final class _StateReplicator {
         final latest = sampledAt[writer];
         if (latest == null || time > latest) sampledAt[writer] = time;
       }
+      final inputs = _inputsOf(fields);
       for (final message in [
-        ..._messages(entity, settled, sampledAt: null, reliable: true),
+        ..._messages(
+          entity,
+          settled,
+          sampledAt: null,
+          reliable: true,
+          inputs: inputs,
+        ),
         for (final MapEntry(key: writer, value: values) in sampled.entries)
           ..._messages(
             entity,
             values,
             sampledAt: sampledAt[writer],
             reliable: true,
+            inputs: inputs,
           ),
       ]) {
         if (!session._send(remote, message, revision: session._revision)) {
@@ -785,11 +856,28 @@ final class _StateReplicator {
         return false;
       }
       final value = values[field];
+      final prediction = property._prediction;
+      if (prediction != null && prediction._predicts) {
+        // The owner reconciles with every new state or applied input.
+        if (value == null) continue;
+        prediction._reconcile(value.bytes, value.input);
+        if (session._peer == null || _lifetime != lifetime) return false;
+        if (!_isLive(synchronizer)) return false;
+        continue;
+      }
       if (value == null ||
           _sameBytes(synchronizer._applied[field], value.bytes)) {
         continue;
       }
       synchronizer._applied[field] = value.bytes;
+      if (prediction != null) {
+        // An owner that becomes the authority continues from its own
+        // prediction, which includes the inputs that the host did not apply.
+        if (!(catchingUp && entity.owner == local)) {
+          prediction._receive(value.bytes);
+        }
+        continue;
+      }
       if (!property._hasSetter) continue;
       try {
         property._set(_decode(field, value.bytes));
@@ -842,7 +930,8 @@ final class _StateReplicator {
       );
     }
     if (synchronizer.isDisposed ||
-        _writer(synchronizer.entity, field.id) == session._localPeer) {
+        _writer(synchronizer.entity, field.id) == session._localPeer ||
+        (property._prediction?._predicts ?? false)) {
       return null;
     }
     if (samples.isEmpty) {
@@ -876,19 +965,29 @@ final class _StateReplicator {
     Map<FieldId, Uint8List> fields,
     Duration at, {
     required Duration? sampledAt,
+    Map<FieldId, int>? inputs,
   }) {
     if (fields.isEmpty) return;
     final values = _values.putIfAbsent(entity, () => {});
     for (final MapEntry(key: field, value: bytes) in fields.entries) {
-      values[field] = _FieldValue(bytes, at, sampledAt);
+      values[field] = _FieldValue(bytes, at, sampledAt, inputs?[field]);
     }
   }
+
+  /// The applied inputs reported with the retained [values] that have one.
+  static Map<FieldId, int> _inputsOf(Map<FieldId, _FieldValue> values) => {
+    for (final MapEntry(key: field, :value) in values.entries)
+      field: ?value.input,
+  };
 
   /// Groups [fields] by writer, delivery mode, and channel, then splits
   /// groups to fit the wire and transport limits, stamped with their
   /// writer's [sampledAt], if any. Baselines and authority resyncs use
   /// [reliable] delivery on the control channel regardless of field
   /// configuration, so their fields are grouped by writer only.
+  ///
+  /// Each message reports the latest of the applied [inputs] of its fields,
+  /// if any: the fields of one sample share it.
   ///
   /// Keeping each message to the fields of one writer lets receivers handle
   /// owner-written values independently of authority transfers.
@@ -897,6 +996,7 @@ final class _StateReplicator {
     Map<FieldId, Uint8List> fields, {
     required Duration? sampledAt,
     bool reliable = false,
+    Map<FieldId, int>? inputs,
   }) {
     if (fields.isEmpty) return const [];
     final lifetime = _lifetime;
@@ -919,12 +1019,24 @@ final class _StateReplicator {
       }
       if (_lifetime != lifetime) return const [];
     }
+    int? inputOf(Iterable<FieldId> fields) {
+      int? latest;
+      for (final field in fields) {
+        final input = inputs?[field];
+        if (input != null && (latest == null || input > latest)) {
+          latest = input;
+        }
+      }
+      return latest;
+    }
+
     final messages = <StateMessage>[];
     for (final values in groups.values) {
       final combined = StateMessage(
         entity: entity.id,
         values: values,
         sampledAt: sampledAt,
+        inputSequence: inputOf(values.keys),
       );
       try {
         _checkFits(combined, reliable: reliable);
@@ -945,6 +1057,7 @@ final class _StateReplicator {
           entity: entity.id,
           values: {field: value},
           sampledAt: sampledAt,
+          inputSequence: inputOf([field]),
         );
         try {
           _checkFits(single, reliable: reliable);
@@ -972,6 +1085,7 @@ final class _StateReplicator {
                 values: message.values,
                 sampledAt: message.sampledAt,
                 sequence: IntCodec.maxSafe,
+                inputSequence: message.inputSequence,
               )
             : message,
         generation: IntCodec.maxSafe,
@@ -1036,7 +1150,7 @@ final class _StateReplicator {
 }
 
 final class _FieldValue {
-  const _FieldValue(this.bytes, this.time, this.sampledAt);
+  const _FieldValue(this.bytes, this.time, this.sampledAt, [this.input]);
 
   /// The canonical encoding of the value.
   final Uint8List bytes;
@@ -1047,4 +1161,8 @@ final class _FieldValue {
   /// When the field's writer sampled the value, on its own clock, or `null`
   /// if its current writer did not sample it.
   final Duration? sampledAt;
+
+  /// The latest input of the entity's owner that the host had applied when
+  /// it sampled the value, if it reported one.
+  final int? input;
 }
