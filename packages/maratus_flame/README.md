@@ -104,6 +104,47 @@ replicated entities. A spawner creates components for existing entities too,
 including those received while joining. Removing a component locally does not
 despawn its entity.
 
+To show a player's own movement without waiting for the host, predict it from
+the player's inputs, as the core
+[prediction guide](https://pub.dev/packages/maratus#client-side-prediction)
+describes. Predict before synchronizing, and advance the prediction in
+`update` on the owner:
+
+```dart
+@override
+void onNetworkAttach(EntityAttachment attachment) {
+  _prediction = attachment.predict(
+    state: positionField, // A Vector2Codec field.
+    input: moveInput, // An input stream of steering directions.
+    initial: position.clone(),
+    step: (position, direction) => position + Vector2(direction * 4.0, 0),
+    interpolator: const Vector2Interpolator(teleportDistance: 200),
+  );
+  attachment.synchronize([_prediction.property()]);
+}
+
+@override
+void update(double dt) {
+  super.update(dt);
+  if (!isNetworkReady) return;
+  position.setFrom(
+    networkEntity.owner == multiplayerSession.localPeer
+        ? _prediction.advance(
+            readDirection(),
+            Duration(microseconds: (dt * 1e6).round()),
+          )
+        : _prediction.presented,
+  );
+}
+```
+
+Code generation does not declare predictions yet, so register the predicted
+field and the input stream by hand. A component that predicts can still
+generate its spawn type and RPCs, but not `@SyncedField` members: their
+synchronizer binds before `onNetworkAttach`, and a prediction must come first.
+The [prediction example](https://github.com/bszarlej/maratus/tree/master/examples/prediction)
+combines both.
+
 ## Component lifecycle
 
 - Use one `MultiplayerScope` per session. It applies incoming network events
@@ -140,6 +181,9 @@ for reliable and unreliable modes and transport requirements.
   It runs two sessions over an in-memory network in one game.
 - [WebSocket chat](https://github.com/bszarlej/maratus/tree/master/examples/chat): a runnable desktop and browser
   app with replicated avatars, network simulation, and diagnostics.
+- [Prediction](https://github.com/bszarlej/maratus/tree/master/examples/prediction):
+  a host and a client side by side, where the client's square moves at once
+  despite the latency and converges with the host's state.
 - [Code generation](https://pub.dev/packages/maratus_generator): generate schema handles,
   component bindings, and typed RPC senders from annotations.
 
