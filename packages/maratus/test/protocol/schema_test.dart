@@ -282,6 +282,117 @@ void main() {
       );
     });
 
+    test('retains the typed input stream handle it returns', () {
+      final builder = ProtocolSchemaBuilder();
+      final InputStream<int> steer = builder.addInput(
+        const InputId('player.steer'),
+        const IntCodec(min: -1, max: 1),
+        tick: const Duration(milliseconds: 20),
+      );
+      final schema = builder.build();
+
+      expect(steer.id, const InputId('player.steer'));
+      expect(steer.codec, isA<IntCodec>());
+      expect(steer.tick, const Duration(milliseconds: 20));
+      expect(steer.deliveryMode, DeliveryMode.reliable);
+      expect(steer.channel, 0);
+      expect(schema.inputDefinition(steer.id), same(steer));
+      expect(schema.input(steer.id)?.codec, same(steer.codec));
+      expect(schema.inputDefinitions, [steer]);
+      expect(schema.inputDefinition(const InputId('player.fire')), isNull);
+      expect(schema.input(const InputId('player.fire')), isNull);
+      expect(
+        () => builder.addInput(
+          const InputId('player.steer'),
+          const BoolCodec(),
+          tick: const Duration(milliseconds: 20),
+        ),
+        throwsArgumentError,
+      );
+      expect(builder.build().inputDefinition(steer.id), same(steer));
+    });
+
+    test('registers an existing input stream handle with its settings', () {
+      const steer = InputStream(
+        id: InputId('player.steer'),
+        codec: IntCodec(min: -1, max: 1),
+        tick: Duration(milliseconds: 20),
+        deliveryMode: DeliveryMode.unreliableOrdered,
+        channel: 2,
+      );
+      final builder = ProtocolSchemaBuilder();
+
+      expect(builder.addInputDefinition(steer), same(steer));
+      final schema = builder.build();
+
+      expect(steer.deliveryMode, DeliveryMode.unreliableOrdered);
+      expect(steer.channel, 2);
+      expect(schema.inputDefinition(steer.id), same(steer));
+      expect(schema.input(steer.id)?.codec, same(steer.codec));
+      expect(
+        schema.fingerprint,
+        (ProtocolSchemaBuilder()..addInput(
+              const InputId('player.steer'),
+              const IntCodec(min: -1, max: 1),
+              tick: const Duration(milliseconds: 20),
+              deliveryMode: DeliveryMode.unreliableOrdered,
+              channel: 2,
+            ))
+            .build()
+            .fingerprint,
+      );
+    });
+
+    test('rejects invalid input streams without retaining them', () {
+      final builder = ProtocolSchemaBuilder();
+      final original = builder.build().fingerprint;
+      const tick = Duration(milliseconds: 20);
+      for (final register in <void Function()>[
+        () => builder.addInput(
+          const InputId('steer'),
+          const IntCodec(),
+          tick: Duration.zero,
+        ),
+        () => builder.addInput(
+          const InputId('steer'),
+          const IntCodec(),
+          tick: const Duration(microseconds: -1),
+        ),
+        () => builder.addInput(
+          const InputId('steer'),
+          const IntCodec(),
+          tick: tick,
+          channel: -1,
+        ),
+        () => builder.addInputDefinition(
+          const InputStream(
+            id: InputId('steer'),
+            codec: IntCodec(),
+            tick: Duration.zero,
+          ),
+        ),
+        () => builder.addInputDefinition(
+          const InputStream(
+            id: InputId('Steer'),
+            codec: IntCodec(),
+            tick: tick,
+          ),
+        ),
+      ]) {
+        expect(register, throwsArgumentError);
+        expect(builder.build().inputDefinitions, isEmpty);
+        expect(builder.build().fingerprint, original);
+      }
+      expect(
+        () => builder.addInput(
+          const InputId('steer'),
+          const IntCodec(),
+          tick: tick,
+        ),
+        returnsNormally,
+      );
+    });
+
     test('rejects negative channels without retaining any registration', () {
       final builder = ProtocolSchemaBuilder();
       final original = builder.build().fingerprint;
@@ -455,12 +566,18 @@ void main() {
     test('keeps a separate namespace for each kind of registration', () {
       final builder = ProtocolSchemaBuilder()
         ..addRpc(const RpcId('ping'), const BoolCodec())
-        ..addField(const FieldId('ping'), const IntCodec());
+        ..addField(const FieldId('ping'), const IntCodec())
+        ..addInput(
+          const InputId('ping'),
+          const StringCodec(maxLength: 4),
+          tick: const Duration(milliseconds: 20),
+        );
       final ping = builder.addStaticEntity(const StaticEntityId('ping'));
       final schema = builder.build();
 
       expect(schema.rpc(const RpcId('ping'))?.codec, isA<BoolCodec>());
       expect(schema.field(const FieldId('ping'))?.codec, isA<IntCodec>());
+      expect(schema.input(const InputId('ping'))?.codec, isA<StringCodec>());
       expect(schema.spawnType(const SpawnTypeId('ping')), isNull);
       expect(schema.staticEntityDefinition(ping.id), same(ping));
     });
@@ -593,6 +710,17 @@ void main() {
           const FieldId('player.name'),
           const StringCodec(maxLength: 16),
         ),
+        (b) => b.addInput(
+          const InputId('player.steer'),
+          const IntCodec(min: -1, max: 1),
+          tick: const Duration(milliseconds: 20),
+        ),
+        (b) => b.addInput(
+          const InputId('player.aim'),
+          const DoubleCodec(),
+          tick: const Duration(milliseconds: 50),
+          deliveryMode: DeliveryMode.unreliable,
+        ),
         (b) => b.addStaticEntity(const StaticEntityId('board')),
         (b) => b.addStaticEntity(const StaticEntityId('level')),
       ];
@@ -625,6 +753,13 @@ void main() {
         ]),
         'spawn type instead of RPC': fingerprintOf([
           (b) => b.addSpawnType(const SpawnTypeId('ping'), const IntCodec()),
+        ]),
+        'input stream instead of RPC': fingerprintOf([
+          (b) => b.addInput(
+            const InputId('ping'),
+            const IntCodec(),
+            tick: const Duration(milliseconds: 20),
+          ),
         ]),
         'added static entity': fingerprintOf([
           (b) => b.addRpc(const RpcId('ping'), const IntCodec()),
@@ -759,6 +894,65 @@ void main() {
         schema.fingerprint,
         sha256.convert(utf8.encode(canonical)).toString(),
       );
+    });
+
+    test('describes an input stream with its tick and delivery', () {
+      final schema =
+          (ProtocolSchemaBuilder()
+                ..addField(
+                  const FieldId('player.health'),
+                  const IntCodec(min: 0, max: 100),
+                )
+                ..addInput(
+                  const InputId('player.steer'),
+                  const IntCodec(min: -1, max: 1),
+                  tick: const Duration(microseconds: 16667),
+                  deliveryMode: DeliveryMode.unreliable,
+                  channel: 1,
+                ))
+              .build();
+      // Schemas without input streams keep their description, so the
+      // stream follows the fields only when there is one.
+      const canonical =
+          '{"format":5,"spawnTypes":[],"rpcs":[],'
+          '"fields":[["player.health","int(min=0,max=100)","reliable",0]],'
+          '"inputs":[["player.steer","int(min=-1,max=1)",16667,'
+          '"unreliable",1]],'
+          '"staticEntities":[],"joinRequest":null}';
+
+      expect(
+        schema.fingerprint,
+        sha256.convert(utf8.encode(canonical)).toString(),
+      );
+    });
+
+    test('changes independently with each input stream setting', () {
+      String forInput({
+        ValueCodec<int> codec = const IntCodec(),
+        Duration tick = const Duration(milliseconds: 20),
+        DeliveryMode mode = DeliveryMode.reliable,
+        int channel = 0,
+      }) => fingerprintOf([
+        (b) => b.addInput(
+          const InputId('steer'),
+          codec,
+          tick: tick,
+          deliveryMode: mode,
+          channel: channel,
+        ),
+      ]);
+
+      final fingerprints = <String>{forInput()};
+      expect(fingerprints.add(fingerprintOf([])), isTrue);
+      expect(fingerprints.add(forInput(codec: const IntCodec(max: 1))), isTrue);
+      expect(
+        fingerprints.add(forInput(tick: const Duration(milliseconds: 21))),
+        isTrue,
+      );
+      for (final mode in DeliveryMode.values.skip(1)) {
+        expect(fingerprints.add(forInput(mode: mode)), isTrue, reason: '$mode');
+      }
+      expect(fingerprints.add(forInput(channel: 1)), isTrue);
     });
 
     test('changes with the writer of a field', () {

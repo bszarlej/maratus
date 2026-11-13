@@ -7,6 +7,10 @@ extension type const RpcId(String value) {}
 /// Identifies a synchronized field in a protocol schema.
 extension type const FieldId(String value) {}
 
+/// Identifies an input stream in a protocol schema: the numbered inputs that
+/// the owner of an entity sends to its authority, one for each tick.
+extension type const InputId(String value) {}
+
 /// Identifies a static entity in a protocol schema: an entity that exists
 /// in every session without being spawned.
 extension type const StaticEntityId(String value) {}
