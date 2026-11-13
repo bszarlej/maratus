@@ -29,7 +29,7 @@ jobs:
             current: false
 
           - name: current
-            flutter: 3.47.x
+            flutter: 3.50.x
             resolve: get
             current: true
     steps:
