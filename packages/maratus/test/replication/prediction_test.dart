@@ -845,6 +845,83 @@ void main() {
     });
   });
 
+  group('the authority', () {
+    test('sets the state, and the owner jumps to it', () {
+      final harness = _Harness(
+        latency: _latency,
+        interpolator: const DoubleInterpolator(teleportDistance: 50),
+      );
+      final owner = harness.join();
+      final observer = harness.join();
+      final entity = harness.spawn(owner.localPeer!);
+      final mine = harness.mover(owner, entity)
+        ..input = 1
+        ..drives = true;
+      final hosted = harness.mover(harness.host, entity);
+      final seen = harness.mover(observer, entity);
+
+      harness.frames(5);
+      final applied = hosted.prediction.state;
+      hosted.prediction.state = 500;
+      expect(hosted.prediction.state, 500);
+      expect(hosted.prediction.presented, 500);
+
+      final presented = <double>[];
+      for (var i = 0; i < 10; i++) {
+        harness.frame();
+        presented.add(mine.prediction.presented);
+      }
+      mine.drives = false;
+      harness.until(
+        () =>
+            mine.prediction.pendingInputs == 0 &&
+            seen.prediction.state == hosted.prediction.state,
+      );
+
+      // The owner predicts on from where it was until the host's state
+      // arrives, two frames later, and then shows it at once, with the
+      // inputs that the host has not applied yet: the change is a teleport.
+      expect(presented.takeWhile((value) => value < 50), hasLength(2));
+      expect(
+        presented.skipWhile((value) => value < 50),
+        everyElement(greaterThanOrEqualTo(500)),
+      );
+      expect(hosted.prediction.state, 500 + 15 - applied);
+      expect(mine.prediction.state, hosted.prediction.state);
+    });
+
+    test('is the only peer that sets the state', () {
+      final harness = _Harness();
+      final owner = harness.join();
+      final observer = harness.join();
+      final entity = harness.spawn(owner.localPeer!);
+      final mine = harness.mover(owner, entity);
+      final hosted = harness.mover(harness.host, entity).prediction;
+
+      expect(() => mine.prediction.state = 1, throwsStateError);
+      expect(
+        () => harness.mover(observer, entity).prediction.state = 1,
+        throwsStateError,
+      );
+      expect(() => hosted.state = 2000, throwsArgumentError);
+      expect(hosted.state, 0);
+
+      // An owner that becomes the authority sets the state, and the host
+      // follows it.
+      harness.host.transferAuthority(entity, owner.localPeer!);
+      harness.until(() => mine.entity.authority == owner.localPeer);
+      mine.prediction.state = 7;
+      expect(mine.prediction.state, 7);
+      expect(() => hosted.state = 1, throwsStateError);
+      harness.until(() => hosted.state == 7);
+
+      mine.prediction
+        ..dispose()
+        ..state = 9;
+      expect(mine.prediction.state, 7);
+    });
+  });
+
   group('every other peer', () {
     test('follows the state, interpolated by the prediction', () {
       final harness = _Harness(
