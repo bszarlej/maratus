@@ -25,8 +25,9 @@ typedef PredictionStep<S, I> = S Function(S state, I input);
 /// - The host applies each input once, in order, during
 ///   [MultiplayerSession.update], at most one tick of inputs per tick of its
 ///   clock after a short burst, and reports the latest input it applied
-///   with the state it samples. The host waits for inputs: it never repeats
-///   one that has not arrived.
+///   with the state it samples. It waits for late inputs, or keeps the
+///   entity moving with an idle input, as [EntityAttachment.predict]
+///   describes.
 /// - When the host's state arrives, the owner resets to it and applies the
 ///   inputs that it does not include again, during
 ///   [MultiplayerSession.update]. If that differs from the prediction, the
@@ -54,12 +55,17 @@ final class Prediction<S, I> {
     this._step,
     this.interpolator,
     this.smoothing,
+    this._idle,
     this._current,
   );
 
   final _InputReplicator _inputs;
   final EntityAttachment _attachment;
   final PredictionStep<S, I> _step;
+
+  /// The canonical encoding of the input that the host applies while the
+  /// owner's inputs are late, or `null` if the host waits for them.
+  final Uint8List? _idle;
 
   /// The authority-written field that holds the predicted state.
   final SyncField<S> field;
@@ -477,6 +483,11 @@ final class _InputLog {
   /// when that was last updated.
   var credit = 0;
   Duration? creditAt;
+
+  /// On the host, while no input waits, since when, and how many ticks it
+  /// covered with idle inputs since then.
+  Duration? waitingSince;
+  var idled = 0;
 }
 
 /// Records, sends, applies, and acknowledges the inputs of predicted
@@ -532,6 +543,7 @@ final class _InputReplicator {
     required PredictionStep<S, I> step,
     required Interpolator<S>? interpolator,
     required Duration smoothing,
+    required I? idleInput,
   }) {
     if (!session._attachments._isLive(attachment)) {
       throw StateError('This entity attachment is no longer live.');
@@ -579,6 +591,7 @@ final class _InputReplicator {
       step,
       interpolator,
       smoothing,
+      idleInput == null ? null : _canonicalInput(input, idleInput),
       session._states._encode(state.id, initial),
     );
     _predictions[entity.id] = prediction;
@@ -632,10 +645,9 @@ final class _InputReplicator {
     Object? input,
   ) {
     final stream = prediction.input;
-    final wire = session._schema.input(stream.id)!.encode(input);
+    final bytes = _canonicalInput(stream, input);
     final Uint8List message;
     try {
-      checkWireValue(wire, session._codec.limits);
       message = session._codec.encode(
         MessageEnvelope(
           InputMessage(
@@ -659,6 +671,20 @@ final class _InputReplicator {
         'The input exceeds the transport limit of $maximum bytes for '
         'unreliable delivery.',
       );
+    }
+    return bytes;
+  }
+
+  /// The canonical encoding of [input] for [stream].
+  ///
+  /// Throws an [ArgumentError] unless the stream's codec accepts the input
+  /// within the wire limits.
+  Uint8List _canonicalInput(InputStream<Object?> stream, Object? input) {
+    final wire = session._schema.input(stream.id)!.encode(input);
+    try {
+      checkWireValue(wire, session._codec.limits);
+    } on ProtocolException catch (error) {
+      throw ArgumentError('The input cannot be encoded: ${error.message}');
     }
     return session._codec.wire.encode(wire);
   }
@@ -873,6 +899,13 @@ final class _InputReplicator {
   /// Applies the queued inputs of the entities whose owners' inputs the
   /// host applies, at most one tick of inputs per tick of its clock, after
   /// a burst of up to a quarter of a second.
+  ///
+  /// A prediction with an idle input keeps its entity moving while no input
+  /// waits: once the host has waited a quarter of a second, it applies the
+  /// idle input for each further tick of its clock. When inputs arrive
+  /// after that, it applies the newest quarter of a second of them at once
+  /// and skips the older ones, which the idle ticks replaced, so that they
+  /// do not delay the inputs that follow.
   void simulate() {
     final local = session._localPeer;
     if (local == null) return;
@@ -884,8 +917,13 @@ final class _InputReplicator {
           prediction._role != _PredictionRole.applying) {
         continue;
       }
-      final log = _logs[prediction.entity];
-      if (log == null || log.stream != prediction.input.id) continue;
+      final idle = prediction._idle;
+      final existing = _logs[prediction.entity];
+      if (idle == null &&
+          (existing == null || existing.stream != prediction.input.id)) {
+        continue;
+      }
+      final log = _log(prediction);
       final tick = prediction.input.tick.inMicroseconds;
       final burst = tick * _ticks(prediction.input.tick);
       final creditAt = log.creditAt;
@@ -893,11 +931,40 @@ final class _InputReplicator {
           ? burst
           : min(burst, log.credit + (now - creditAt).inMicroseconds);
       log.creditAt = now;
+      if (log.queue.isNotEmpty) {
+        // The host waited the whole burst before it idled, so the credit is
+        // a full burst: what it cannot apply at once, the idle ticks
+        // replaced.
+        if (log.idled > 0) {
+          final skipped = log.queue.length - max(1, log.credit ~/ tick);
+          for (var i = 0; i < skipped; i++) {
+            log.applied = log.queue.removeFirst().sequence;
+          }
+        }
+        log
+          ..waitingSince = null
+          ..idled = 0;
+      }
       while (log.queue.isNotEmpty && log.credit >= tick) {
         final input = log.queue.removeFirst();
         log.credit -= tick;
         log.applied = input.sequence;
         prediction._apply(input.value);
+        if (_lifetime != lifetime || session._peer == null) return;
+        if (!_isLive(prediction)) break;
+      }
+      if (idle == null || log.queue.isNotEmpty || !_isLive(prediction)) {
+        continue;
+      }
+      final since = log.waitingSince ??= now;
+      final due = ((now - since).inMicroseconds - burst) ~/ tick;
+      if (due <= log.idled) continue;
+      // After a long frame, the ticks beyond a quarter of a second are
+      // dropped, as for the owner's.
+      final ticks = min(due - log.idled, _ticks(prediction.input.tick));
+      log.idled = due;
+      for (var i = 0; i < ticks; i++) {
+        prediction._apply(_decodeInput(prediction, idle));
         if (_lifetime != lifetime || session._peer == null) return;
         if (!_isLive(prediction)) break;
       }
@@ -914,8 +981,11 @@ final class _InputReplicator {
     if (log != null) {
       if (session._isHost) {
         if (entity.authority != PeerId.host) {
-          log.queue.clear();
-          log.creditAt = null;
+          log
+            ..queue.clear()
+            ..creditAt = null
+            ..waitingSince = null
+            ..idled = 0;
         }
       } else if (entity.owner == session._localPeer) {
         log.history.clear();

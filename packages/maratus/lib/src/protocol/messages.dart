@@ -531,7 +531,7 @@ final class StateMessage extends ProtocolMessage {
 /// the stream. [values] holds the input numbered [sequence] and the inputs
 /// that follow it, in order. A message may repeat inputs that an earlier
 /// one carried, so that unreliable delivery can repair a lost message; the
-/// receiver applies each input once.
+/// receiver applies each input at most once.
 final class InputMessage extends ProtocolMessage {
   /// Creates a message that carries the inputs [values] of [input] for
   /// [entity], numbered from [sequence].

@@ -5,8 +5,8 @@ import 'value_codec.dart';
 /// An immutable description and typed handle for a stream of inputs.
 ///
 /// The owner of an entity samples one input for each [tick] of its time,
-/// numbers it, and sends it to the entity's authority, which applies every
-/// input in order, one tick at a time. Because the owner applies the same
+/// numbers it, and sends it to the entity's authority, which applies the
+/// inputs in order, one tick at a time. Because the owner applies the same
 /// inputs with the same step, it can predict the result before the
 /// authority's state arrives.
 ///
