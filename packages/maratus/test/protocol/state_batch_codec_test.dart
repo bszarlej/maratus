@@ -9,23 +9,33 @@ import 'package:test/test.dart';
 
 void main() {
   final builder = ProtocolSchemaBuilder()
-    ..addField(const FieldId('position'), const DoubleCodec());
+    ..addField(const FieldId('position'), const DoubleCodec())
+    ..addInput(
+      const InputId('steer'),
+      const IntCodec(),
+      tick: const Duration(milliseconds: 20),
+    );
   final protocol = ProtocolCodec(builder.build());
   const batch = StateBatchCodec();
 
-  Uint8List state(int entity, {int generation = 1, int? sequence}) =>
-      protocol.encode(
-        MessageEnvelope(
-          StateMessage(
-            entity: EntityId(entity),
-            values: {const FieldId('position'): entity + 0.25},
-            sampledAt: Duration(microseconds: entity * 1000),
-            sequence: sequence,
-          ),
-          generation: generation,
-          revision: entity,
-        ),
-      );
+  Uint8List state(
+    int entity, {
+    int generation = 1,
+    int? sequence,
+    int? inputSequence,
+  }) => protocol.encode(
+    MessageEnvelope(
+      StateMessage(
+        entity: EntityId(entity),
+        values: {const FieldId('position'): entity + 0.25},
+        sampledAt: Duration(microseconds: entity * 1000),
+        sequence: sequence,
+        inputSequence: inputSequence,
+      ),
+      generation: generation,
+      revision: entity,
+    ),
+  );
 
   Matcher fails(ProtocolErrorCode code) => throwsA(
     isA<ProtocolException>().having((error) => error.code, 'code', code),
@@ -51,6 +61,51 @@ void main() {
       expect(message.sampledAt, Duration(microseconds: (i + 1) * 1000));
       expect(message.sequence, i == 1 ? 9 : null);
     }
+  });
+
+  test('carries the applied input of each state envelope', () {
+    final messages = [
+      state(1, inputSequence: 0),
+      state(2, sequence: 9, inputSequence: 7),
+      state(3),
+    ];
+    final decoded = batch.decode(batch.encode(messages));
+
+    expect(decoded, messages);
+    expect(
+      [
+        for (final message in decoded)
+          (protocol.decode(message).message as StateMessage).inputSequence,
+      ],
+      [0, 7, null],
+    );
+  });
+
+  test('input messages cannot be batched', () {
+    final input = protocol.encode(
+      MessageEnvelope(
+        InputMessage(
+          entity: const EntityId(1),
+          input: const InputId('steer'),
+          sequence: 1,
+          values: const [1],
+        ),
+        generation: 1,
+      ),
+    );
+
+    expect(() => batch.encode([input]), throwsArgumentError);
+    expect(() => batch.encode([state(1), input]), throwsArgumentError);
+    // An entry tail with the input's body keys is not a state tail.
+    final tail = input.sublist(4);
+    expect(
+      () => batch.decode(
+        Uint8List.fromList([
+          78, 2, 1, 1, 2, tail.length, ...tail, 3, 1, 3, 0, //
+        ]),
+      ),
+      fails(ProtocolErrorCode.malformed),
+    );
   });
 
   test('packets decode independently in any arrival order', () {

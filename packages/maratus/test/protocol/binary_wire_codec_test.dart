@@ -15,6 +15,11 @@ void main() {
       builder.addField(FieldId(id), const DoubleCodec());
       builder.addRpc(RpcId(id), const IntCodec());
       builder.addSpawnType(SpawnTypeId(id), const IntCodec());
+      builder.addInput(
+        InputId(id),
+        const IntCodec(),
+        tick: const Duration(milliseconds: 20),
+      );
     }
     return builder.build();
   }
@@ -51,6 +56,25 @@ void main() {
           owner: PeerId(1),
           authority: PeerId(1),
         ),
+      ),
+      MessageEnvelope(
+        InputMessage(
+          entity: const EntityId(1),
+          input: const InputId('player.position.y'),
+          sequence: 300,
+          values: const [-1, 0, 1],
+        ),
+        generation: 1,
+      ),
+      MessageEnvelope(
+        StateMessage(
+          entity: const EntityId(1),
+          values: const {FieldId('player.position.y'): 0.5},
+          sampledAt: const Duration(milliseconds: 20),
+          inputSequence: 302,
+        ),
+        generation: 1,
+        revision: 4,
       ),
     ];
     for (final message in messages.reversed) {
@@ -164,6 +188,11 @@ void main() {
         [77, 2, 1, 0, 0, 0, 2, 99],
         [77, 2, 1, 16, 0, 0, 2, 1, 99, 0],
         [77, 2, 1, 16, 0, 0, 2, 2, 0, 0, 0, 0],
+        // An input stream number that the schema does not assign.
+        [77, 2, 1, 17, 0, 0, 128, 1, 99],
+        // A message kind and a body key beyond the assigned ones.
+        [77, 2, 1, 18, 0, 0, 0],
+        [77, 2, 1, 16, 0, 0, 128, 64],
       ]) {
         expect(
           () => codec.decodeEnvelope(Uint8List.fromList(bytes)),

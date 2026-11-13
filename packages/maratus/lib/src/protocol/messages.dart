@@ -51,7 +51,10 @@ enum MessageKind {
   rpcDelivery('rpc_delivery'),
 
   /// A [StateMessage].
-  state('state');
+  state('state'),
+
+  /// An [InputMessage].
+  input('input');
 
   const MessageKind(this.code);
 
@@ -470,12 +473,14 @@ final class RpcDeliveryMessage extends ProtocolMessage {
 /// in separate messages, as different peers may write them.
 final class StateMessage extends ProtocolMessage {
   /// Creates a message that sets the [values] of fields of [entity], as
-  /// their writer sampled them at [sampledAt], if given.
+  /// their writer sampled them at [sampledAt], if given, after applying the
+  /// inputs up to [inputSequence], if given.
   StateMessage({
     required this.entity,
     required Map<FieldId, Object?> values,
     this.sampledAt,
     this.sequence,
+    this.inputSequence,
   }) : values = Map<FieldId, Object?>.unmodifiable(values);
 
   /// The entity whose fields changed.
@@ -506,6 +511,51 @@ final class StateMessage extends ProtocolMessage {
   /// new replication revision. Receivers compare sequences per entity/field.
   final int? sequence;
 
+  /// The sequence number of the latest input from the entity's owner that
+  /// its authority had applied when it sampled [values], zero if it had
+  /// applied none, or `null` if the message does not report inputs.
+  ///
+  /// Only the host reports inputs, in the state of an entity whose inputs it
+  /// applies, so its owner can tell which of the inputs it predicted the
+  /// values include. The protocol layer validates a non-negative integer.
+  final int? inputSequence;
+
   @override
   MessageKind get kind => MessageKind.state;
+}
+
+/// Carries consecutive inputs of an entity's input stream from its owner to
+/// the host.
+///
+/// The owner numbers the inputs of each entity from 1, one for each tick of
+/// the stream. [values] holds the input numbered [sequence] and the inputs
+/// that follow it, in order. A message may repeat inputs that an earlier
+/// one carried, so that unreliable delivery can repair a lost message; the
+/// receiver applies each input once.
+final class InputMessage extends ProtocolMessage {
+  /// Creates a message that carries the inputs [values] of [input] for
+  /// [entity], numbered from [sequence].
+  InputMessage({
+    required this.entity,
+    required this.input,
+    required this.sequence,
+    required List<Object?> values,
+  }) : values = List<Object?>.unmodifiable(values);
+
+  /// The entity whose inputs these are.
+  final EntityId entity;
+
+  /// The input stream of the inputs.
+  final InputId input;
+
+  /// The sequence number of the first of [values], from 1. The protocol
+  /// layer validates that every input's number is a safe integer.
+  final int sequence;
+
+  /// The inputs, at least one, each encoded with the codec registered for
+  /// [input].
+  final List<Object?> values;
+
+  @override
+  MessageKind get kind => MessageKind.input;
 }

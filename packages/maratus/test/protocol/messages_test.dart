@@ -24,6 +24,7 @@ void main() {
         'rpc': 'rpc',
         'rpcDelivery': 'rpc_delivery',
         'state': 'state',
+        'input': 'input',
       },
     );
   });
@@ -72,5 +73,20 @@ void main() {
       () => message.values[const FieldId('player.name')] = 'Ada',
       throwsUnsupportedError,
     );
+  });
+
+  test('input messages keep an unmodifiable copy of their inputs', () {
+    final values = <Object?>[1, 2];
+    final message = InputMessage(
+      entity: const EntityId(7),
+      input: const InputId('player.steer'),
+      sequence: 4,
+      values: values,
+    );
+    values[0] = 3;
+
+    expect(message.kind, MessageKind.input);
+    expect(message.values, [1, 2]);
+    expect(() => message.values.add(3), throwsUnsupportedError);
   });
 }
