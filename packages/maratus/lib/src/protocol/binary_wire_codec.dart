@@ -17,13 +17,15 @@ final class BinaryWireCodec implements WireCodec {
   BinaryWireCodec(ProtocolSchema schema, {this.limits = const WireLimits()})
     : _fields = _Table(schema.fieldDefinitions.map((e) => e.id.value)),
       _rpcs = _Table(schema.rpcDefinitions.map((e) => e.id.value)),
-      _types = _Table(schema.spawnTypeDefinitions.map((e) => e.id.value));
+      _types = _Table(schema.spawnTypeDefinitions.map((e) => e.id.value)),
+      _inputs = _Table(schema.inputDefinitions.map((e) => e.id.value));
 
   /// Limits checked before allocating collections or descending into values.
   final WireLimits limits;
   final _Table _fields;
   final _Table _rpcs;
   final _Table _types;
+  final _Table _inputs;
 
   // Wire assignments are append-only. Changing existing entries requires a
   // binary format version bump. Body keys are encoded as a presence bit mask.
@@ -45,6 +47,7 @@ final class BinaryWireCodec implements WireCodec {
     'rpc',
     'rpc_delivery',
     'state',
+    'input',
   ];
   static const _keys = [
     'e',
@@ -59,6 +62,7 @@ final class BinaryWireCodec implements WireCodec {
     'n',
     'c',
     'j',
+    'i',
   ];
 
   @override
@@ -119,6 +123,8 @@ final class BinaryWireCodec implements WireCodec {
         writer.uint(_types.number(item! as String));
       } else if ((kind == 'rpc' || kind == 'rpc_delivery') && key == 'm') {
         writer.uint(_rpcs.number(item! as String));
+      } else if (kind == 'input' && key == 'm') {
+        writer.uint(_inputs.number(item! as String));
       } else {
         writer.value(item);
       }
@@ -169,6 +175,8 @@ final class BinaryWireCodec implements WireCodec {
         body[key] = _types.identifier(reader.uint());
       } else if ((kind == 'rpc' || kind == 'rpc_delivery') && key == 'm') {
         body[key] = _rpcs.identifier(reader.uint());
+      } else if (kind == 'input' && key == 'm') {
+        body[key] = _inputs.identifier(reader.uint());
       } else {
         body[key] = reader.value(2);
       }

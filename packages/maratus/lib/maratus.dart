@@ -22,7 +22,8 @@ export 'src/protocol/messages.dart'
         SpawnMessage,
         DespawnMessage,
         RpcMessage,
-        StateMessage;
+        StateMessage,
+        InputMessage;
 export 'src/protocol/protocol_exception.dart';
 export 'src/protocol/rpc.dart';
 export 'src/protocol/schema.dart';

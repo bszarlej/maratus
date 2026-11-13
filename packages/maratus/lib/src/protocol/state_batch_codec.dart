@@ -113,12 +113,22 @@ void _versions(_BatchReader reader) {
   }
 }
 
+/// The body keys of a state envelope, as bits of its binary key mask: the
+/// entity `e` and fields `f`, which every state has, and the optional sample
+/// time `t`, sequence `n`, and applied input `i`.
+const _stateKeys = 1 | 2;
+const _optionalStateKeys = 4 | 512 | 4096;
+
 void _checkTail(Uint8List tail) {
   final reader = _BatchReader(tail)..uint();
   final mask = reader.uint();
-  // State requires the entity and fields, and permits a sample time and
-  // sequence. Framed envelopes or nested batches cannot serve as entries.
-  if (mask != 3 && mask != 7 && mask != 515 && mask != 519) _malformed();
+  // State requires the entity and fields, and permits a sample time, a
+  // sequence, and an applied input. Framed envelopes or nested batches
+  // cannot serve as entries.
+  if (mask & _stateKeys != _stateKeys ||
+      mask & ~(_stateKeys | _optionalStateKeys) != 0) {
+    _malformed();
+  }
   if (reader.offset == tail.length) _malformed();
 }
 

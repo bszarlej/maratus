@@ -60,6 +60,16 @@ const _fixtures = {
   'sequenced state':
       '{"v":1,"k":"state","g":3,"r":42,'
       '"b":{"e":7,"n":9,"t":1500000,"f":{"player.health":75}}}',
+  'state with an applied input':
+      '{"v":1,"k":"state","g":3,"r":42,'
+      '"b":{"e":7,"n":9,"t":1500000,"i":40,"f":{"player.health":75}}}',
+  'untimed state without applied inputs':
+      '{"v":1,"k":"state","g":3,"r":44,'
+      '"b":{"e":7,"i":0,"f":{"player.health":75}}}',
+  'input':
+      '{"v":1,"k":"input","g":5,"r":3,'
+      '"b":{"e":7,"m":"player.steer","n":41,'
+      '"d":[{"x":0.5,"y":-0.25},{"x":0.25,"y":0.5}]}}',
 };
 
 /// The envelopes that [_fixtures] encode.
@@ -196,6 +206,36 @@ final _envelopes = {
     generation: 3,
     revision: 43,
   ),
+  'state with an applied input': MessageEnvelope(
+    StateMessage(
+      entity: const EntityId(7),
+      values: const {FieldId('player.health'): 75},
+      sampledAt: const Duration(milliseconds: 1500),
+      sequence: 9,
+      inputSequence: 40,
+    ),
+    generation: 3,
+    revision: 42,
+  ),
+  'untimed state without applied inputs': MessageEnvelope(
+    StateMessage(
+      entity: const EntityId(7),
+      values: const {FieldId('player.health'): 75},
+      inputSequence: 0,
+    ),
+    generation: 3,
+    revision: 44,
+  ),
+  'input': MessageEnvelope(
+    InputMessage(
+      entity: const EntityId(7),
+      input: const InputId('player.steer'),
+      sequence: 41,
+      values: const [MoveInput(0.5, -0.25), MoveInput(0.25, 0.5)],
+    ),
+    generation: 5,
+    revision: 3,
+  ),
 };
 
 typedef _InvalidInput = ({
@@ -223,6 +263,79 @@ final _invalidInputs = <_InvalidInput>[
       ProtocolErrorCode.invalidValue,
       path: ['b', 'n'],
     ),
+  for (final sequence in ['-1', '9007199254740992', '1.5', 'null', '"1"'])
+    _invalid(
+      'invalid applied input sequence $sequence',
+      '{"v":1,"k":"state","g":3,"r":42,'
+          '"b":{"e":7,"t":0,"i":$sequence,"f":{"player.health":75}}}',
+      ProtocolErrorCode.invalidValue,
+      path: ['b', 'i'],
+    ),
+  _invalid(
+    'an unknown input stream',
+    '{"v":1,"k":"input","g":5,"r":0,'
+        '"b":{"e":7,"m":"player.fly","n":1,"d":[{"x":0,"y":0}]}}',
+    ProtocolErrorCode.unknownIdentifier,
+    path: ['b', 'm'],
+  ),
+  for (final (description, sequence) in [
+    ('zero', '0'),
+    ('negative', '-1'),
+    ('fractional', '1.5'),
+    ('string', '"1"'),
+    ('null', 'null'),
+    ('web-unsafe', '9007199254740992'),
+  ])
+    _invalid(
+      'a $description input sequence',
+      '{"v":1,"k":"input","g":5,"r":0,'
+          '"b":{"e":7,"m":"player.steer","n":$sequence,"d":[{"x":0,"y":0}]}}',
+      ProtocolErrorCode.invalidValue,
+      path: ['b', 'n'],
+    ),
+  _invalid(
+    'inputs numbered beyond the largest safe integer',
+    '{"v":1,"k":"input","g":5,"r":0,'
+        '"b":{"e":7,"m":"player.steer","n":9007199254740991,'
+        '"d":[{"x":0,"y":0},{"x":0,"y":0}]}}',
+    ProtocolErrorCode.invalidValue,
+    path: ['b', 'n'],
+  ),
+  _invalid(
+    'an empty list of inputs',
+    '{"v":1,"k":"input","g":5,"r":0,'
+        '"b":{"e":7,"m":"player.steer","n":1,"d":[]}}',
+    ProtocolErrorCode.invalidValue,
+    path: ['b', 'd'],
+  ),
+  _invalid(
+    'inputs that are not a list',
+    '{"v":1,"k":"input","g":5,"r":0,'
+        '"b":{"e":7,"m":"player.steer","n":1,"d":{"x":0,"y":0}}}',
+    ProtocolErrorCode.invalidValue,
+    path: ['b', 'd'],
+  ),
+  _invalid(
+    'an input out of range',
+    '{"v":1,"k":"input","g":5,"r":0,'
+        '"b":{"e":7,"m":"player.steer","n":1,'
+        '"d":[{"x":0,"y":0},{"x":2,"y":0}]}}',
+    ProtocolErrorCode.invalidValue,
+    path: ['b', 'd', '1', 'x'],
+  ),
+  _invalid(
+    'an input message without inputs',
+    '{"v":1,"k":"input","g":5,"r":0,"b":{"e":7,"m":"player.steer","n":1}}',
+    ProtocolErrorCode.invalidValue,
+    path: ['b'],
+  ),
+  _invalid(
+    'an input message that claims a sender',
+    '{"v":1,"k":"input","g":5,"r":0,'
+        '"b":{"e":7,"m":"player.steer","n":1,"d":[{"x":0,"y":0}],"s":2}}',
+    ProtocolErrorCode.invalidValue,
+    path: ['b'],
+  ),
   _invalid('empty input', '', ProtocolErrorCode.malformed),
   (
     reason: 'invalid UTF-8',
@@ -1035,6 +1148,97 @@ void main() {
       );
     });
 
+    test('decodes the input that state reports as applied', () {
+      final applied = codec
+          .decode(_bytes(_fixtures['state with an applied input']!))
+          .message;
+      final none = codec
+          .decode(_bytes(_fixtures['untimed state without applied inputs']!))
+          .message;
+      final unreported = codec.decode(_bytes(_fixtures['state']!)).message;
+
+      expect(
+        applied,
+        isA<StateMessage>()
+            .having((m) => m.inputSequence, 'inputSequence', 40)
+            .having((m) => m.sequence, 'sequence', 9),
+      );
+      expect(
+        none,
+        isA<StateMessage>()
+            .having((m) => m.inputSequence, 'inputSequence', 0)
+            .having((m) => m.sampledAt, 'sampledAt', isNull),
+      );
+      expect(
+        unreported,
+        isA<StateMessage>().having(
+          (m) => m.inputSequence,
+          'inputSequence',
+          isNull,
+        ),
+      );
+    });
+
+    test('decodes numbered inputs with their registered codec', () {
+      final envelope = codec.decode(_bytes(_fixtures['input']!));
+
+      expect(envelope.generation, 5);
+      expect(envelope.revision, 3);
+      expect(
+        envelope.message,
+        isA<InputMessage>()
+            .having((m) => m.entity, 'entity', const EntityId(7))
+            .having((m) => m.input, 'input', const InputId('player.steer'))
+            .having((m) => m.sequence, 'sequence', 41)
+            .having((m) => m.values, 'values', [
+              isA<MoveInput>()
+                  .having((p) => p.x, 'x', 0.5)
+                  .having((p) => p.y, 'y', -0.25),
+              isA<MoveInput>()
+                  .having((p) => p.x, 'x', 0.25)
+                  .having((p) => p.y, 'y', 0.5),
+            ]),
+      );
+    });
+
+    test('decodes the largest safe input sequences', () {
+      final last =
+          codec
+                  .decode(
+                    codec.encode(
+                      MessageEnvelope(
+                        InputMessage(
+                          entity: const EntityId(7),
+                          input: const InputId('player.steer'),
+                          sequence: IntCodec.maxSafe - 1,
+                          values: const [MoveInput(0, 0), MoveInput(1, 1)],
+                        ),
+                      ),
+                    ),
+                  )
+                  .message
+              as InputMessage;
+      final state =
+          codec
+                  .decode(
+                    codec.encode(
+                      MessageEnvelope(
+                        StateMessage(
+                          entity: const EntityId(7),
+                          values: const {FieldId('player.health'): 1},
+                          inputSequence: IntCodec.maxSafe,
+                        ),
+                      ),
+                    ),
+                  )
+                  .message
+              as StateMessage;
+
+      expect(last.sequence, IntCodec.maxSafe - 1);
+      expect(last.values, hasLength(2));
+      expect(state.inputSequence, IntCodec.maxSafe);
+    });
+
     test('decodes authority transfers and their acknowledgements', () {
       final transfer = codec.decode(_bytes(_fixtures['authority']!));
       final ack = codec.decode(_bytes(_fixtures['authority ack']!));
@@ -1266,6 +1470,14 @@ void main() {
           sampledAt: Duration.zero,
         ),
       );
+      expectRejected(
+        InputMessage(
+          entity: const EntityId(7),
+          input: const InputId('player.fly'),
+          sequence: 1,
+          values: const [MoveInput(0, 0)],
+        ),
+      );
     });
 
     test('values that their codecs reject', () {
@@ -1299,6 +1511,54 @@ void main() {
           sampledAt: Duration.zero,
         ),
       );
+      for (final input in <Object?>['up', const MoveInput(2, 0)]) {
+        expectRejected(
+          InputMessage(
+            entity: const EntityId(7),
+            input: const InputId('player.steer'),
+            sequence: 1,
+            values: [const MoveInput(0, 0), input],
+          ),
+        );
+      }
+    });
+
+    test('input messages without inputs', () {
+      expectRejected(
+        InputMessage(
+          entity: const EntityId(7),
+          input: const InputId('player.steer'),
+          sequence: 1,
+          values: const [],
+        ),
+      );
+    });
+
+    test('inputs numbered outside the safe integers', () {
+      for (final (sequence, count) in [
+        (0, 1),
+        (-1, 1),
+        (IntCodec.maxSafe + 1, 1),
+        (IntCodec.maxSafe, 2),
+      ]) {
+        expectRejected(
+          InputMessage(
+            entity: const EntityId(7),
+            input: const InputId('player.steer'),
+            sequence: sequence,
+            values: List.filled(count, const MoveInput(0, 0)),
+          ),
+        );
+      }
+      for (final inputSequence in [-1, IntCodec.maxSafe + 1]) {
+        expectRejected(
+          StateMessage(
+            entity: const EntityId(7),
+            values: const {FieldId('player.health'): 1},
+            inputSequence: inputSequence,
+          ),
+        );
+      }
     });
 
     test('state messages without field values', () {

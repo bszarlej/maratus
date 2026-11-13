@@ -16,11 +16,12 @@ const _canonicalTestSchema =
     '"reliable",0]],'
     '"fields":[["player.health","int(min=0,max=100)","reliable",0],'
     '["player.name","string(maxLength=16)","reliable",0]],'
+    '"inputs":[["player.steer","test.move_input@1",50000,"reliable",0]],'
     '"staticEntities":[],"joinRequest":null}';
 
 /// The SHA-256 digest of [_canonicalTestSchema], computed independently.
 const _testSchemaFingerprint =
-    'b1c06ff7101f63487ad8ff3a1d8733e5e021cf4deae0ada45d00da9cedd8dbe0';
+    'fcf0a22c6a6f040225893b46dae53dd3e05a23a3582a5ac0666766a27f9a2dd8';
 
 void main() {
   group('ProtocolSchemaBuilder', () {
@@ -192,12 +193,18 @@ void main() {
         id: FieldId('player.name'),
         codec: StringCodec(maxLength: 16),
       );
+      const steer = InputStream(
+        id: InputId('player.steer'),
+        codec: MoveInputCodec(),
+        tick: Duration(milliseconds: 50),
+      );
       final builder = ProtocolSchemaBuilder();
 
       expect(builder.addSpawnTypeDefinition(player), same(player));
       expect(builder.addRpcDefinition(move), same(move));
       expect(builder.addFieldDefinition(health), same(health));
       expect(builder.addFieldDefinition(name), same(name));
+      expect(builder.addInputDefinition(steer), same(steer));
       final schema = builder.build();
 
       expect(schema.spawnTypeDefinition(player.id), same(player));
@@ -206,6 +213,7 @@ void main() {
       expect(schema.rpc(move.id)?.codec, same(move.codec));
       expect(schema.fieldDefinition(health.id), same(health));
       expect(schema.field(health.id)?.codec, same(health.codec));
+      expect(schema.inputDefinition(steer.id), same(steer));
       expect(schema.fingerprint, buildTestSchema().fingerprint);
     });
 

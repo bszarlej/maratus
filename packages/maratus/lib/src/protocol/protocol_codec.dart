@@ -37,10 +37,13 @@ import 'wire_codec.dart';
 ///   the RPC `m`, its payload `p`, and optionally a target peer `t`. RPC
 ///   deliveries require both sender `s` and target `t`; state bodies add an
 ///   object `f` of field values and, optionally, the authority's sample time
-///   `t`, in microseconds. The session validates the origin of RPC
-///   deliveries, the consistency of membership, spawn, and authority
-///   metadata, and the presence of sample times, and decodes join requests
-///   once the schema fingerprints match.
+///   `t`, in microseconds, a live-state sequence `n`, and the sequence `i` of
+///   the latest input that the authority applied. Input bodies add the input
+///   stream `m`, the sequence `n` of their first input, and a list `d` of at
+///   least one input. The session validates the origin of RPC deliveries, the
+///   consistency of membership, spawn, and authority metadata, and the
+///   presence of sample times, and decodes join requests once the schema
+///   fingerprints match.
 final class ProtocolCodec {
   /// Creates a codec for the messages of [schema].
   ProtocolCodec(
@@ -52,9 +55,9 @@ final class ProtocolCodec {
   /// The protocol version that this codec writes and accepts.
   ///
   /// RPC routing, spawn metadata, pings, state sample times, authority
-  /// transfers, and membership extend version 1; the schema fingerprint
-  /// includes RPC routing metadata so earlier schemas fail the session
-  /// handshake.
+  /// transfers, membership, and inputs extend version 1; the schema
+  /// fingerprint includes RPC routing metadata so earlier schemas fail the
+  /// session handshake.
   static const int version = 1;
 
   /// The registrations that message bodies are validated against.
@@ -68,6 +71,7 @@ final class ProtocolCodec {
 
   static const _versionCodec = IntCodec();
   static const _counterCodec = IntCodec(min: 0);
+  static const _sequenceCodec = IntCodec(min: 1);
   static const _entityCodec = IntCodec(min: 1);
   static const _peerCodec = IntCodec(min: 1);
   static const _clientCodec = IntCodec(min: 2);
@@ -268,15 +272,33 @@ final class ProtocolCodec {
           :final values,
           :final sampledAt,
           :final sequence,
+          :final inputSequence,
         ) =>
           {
             'e': _checkEntity(entity),
-            if (sequence != null) 'n': const IntCodec(min: 1).encode(sequence),
+            if (sequence != null) 'n': _sequenceCodec.encode(sequence),
             if (sampledAt != null)
               't': _checkCounter(sampledAt.inMicroseconds, 'sampledAt'),
+            if (inputSequence != null)
+              'i': _checkCounter(inputSequence, 'inputSequence'),
             'f': _encodeFields(values),
           },
+        InputMessage message => _encodeInput(message),
       };
+
+  Map<String, Object?> _encodeInput(InputMessage message) {
+    final InputMessage(:entity, :input, :sequence, :values) = message;
+    if (values.isEmpty) {
+      throw ArgumentError.value(values, 'values', 'must not be empty');
+    }
+    final entry = _registered(schema.input(input), 'input stream', input.value);
+    return {
+      'e': _checkEntity(entity),
+      'm': input.value,
+      'n': _checkInputSequence(sequence, values.length),
+      'd': [for (final value in values) entry.encode(value)],
+    };
+  }
 
   Map<String, Object?> _encodeFields(Map<FieldId, Object?> values) {
     if (values.isEmpty) {
@@ -428,21 +450,71 @@ final class ProtocolCodec {
         final hasTime = value is Map<String, Object?> && value.containsKey('t');
         final hasSequence =
             value is Map<String, Object?> && value.containsKey('n');
+        final hasInput =
+            value is Map<String, Object?> && value.containsKey('i');
         final body = WireObject(value, {
           'e',
           'f',
           if (hasTime) 't',
           if (hasSequence) 'n',
+          if (hasInput) 'i',
         });
         return StateMessage(
           entity: _readEntity(body),
-          sequence: hasSequence ? body.read('n', const IntCodec(min: 1)) : null,
+          sequence: hasSequence ? body.read('n', _sequenceCodec) : null,
           sampledAt: hasTime
               ? Duration(microseconds: body.read('t', _counterCodec))
               : null,
+          inputSequence: hasInput ? body.read('i', _counterCodec) : null,
           values: _within('f', () => _decodeFields(body['f'])),
         );
+      case MessageKind.input:
+        final body = WireObject(value, const {'e', 'm', 'n', 'd'});
+        final input = InputId(body.read('m', _identifierCodec));
+        final entry = _known(
+          schema.input(input),
+          'input stream',
+          'm',
+          input.value,
+        );
+        final sequence = body.read('n', _sequenceCodec);
+        final values = _within('d', () => _decodeInputs(entry, body['d']));
+        if (values.length - 1 > IntCodec.maxSafe - sequence) {
+          throw const ProtocolException(
+            ProtocolErrorCode.invalidValue,
+            'the inputs are numbered beyond the largest safe integer',
+            path: ['n'],
+          );
+        }
+        return InputMessage(
+          entity: _readEntity(body),
+          input: input,
+          sequence: sequence,
+          values: values,
+        );
     }
+  }
+
+  static List<Object?> _decodeInputs(
+    SchemaEntry<Object?> entry,
+    Object? value,
+  ) {
+    if (value is! List<Object?>) {
+      throw const ProtocolException(
+        ProtocolErrorCode.invalidValue,
+        'expected a list of inputs',
+      );
+    }
+    if (value.isEmpty) {
+      throw const ProtocolException(
+        ProtocolErrorCode.invalidValue,
+        'expected at least one input',
+      );
+    }
+    return [
+      for (var i = 0; i < value.length; i++)
+        _within('$i', () => entry.decode(value[i])),
+    ];
   }
 
   Map<FieldId, Object?> _decodeFields(Object? value) {
@@ -498,6 +570,19 @@ final class ProtocolCodec {
       );
     }
     return value;
+  }
+
+  /// Checks the [sequence] of the first of [count] inputs, so that every
+  /// input's number is from 1 to [IntCodec.maxSafe].
+  static int _checkInputSequence(int sequence, int count) {
+    if (sequence < 1 || count - 1 > IntCodec.maxSafe - sequence) {
+      throw ArgumentError.value(
+        sequence,
+        'sequence',
+        'must number $count inputs from 1 to ${IntCodec.maxSafe}',
+      );
+    }
+    return sequence;
   }
 
   static SchemaEntry<Object?> _registered(

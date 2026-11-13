@@ -16,6 +16,11 @@ ProtocolSchema buildTestSchema() =>
           ..addField(
             const FieldId('player.name'),
             const StringCodec(maxLength: 16),
+          )
+          ..addInput(
+            const InputId('player.steer'),
+            const MoveInputCodec(),
+            tick: const Duration(milliseconds: 50),
           ))
         .build();
 
