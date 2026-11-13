@@ -13,6 +13,7 @@ workspace:
   - packages/maratus_generator
   - packages/maratus_webrtc
   - examples/chat
+  - examples/prediction
 
 dev_dependencies:
   melos: ^8.10.0
