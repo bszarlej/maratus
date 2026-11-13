@@ -182,6 +182,10 @@ received values to it. See the core guide on
   when available. Annotate a getter to synchronize an inherited property;
   provide a matching setter to apply incoming values. Read interpolated values
   through `networkSynchronizer`.
+- Predictions are not generated yet. Bind a prediction and its property by
+  hand, in a class without `@SyncedField` members, whose synchronizer would
+  bind first. Its spawn type and RPCs can still be generated, as in the
+  [prediction example](https://github.com/bszarlej/maratus/tree/master/examples/prediction).
 
 ## Data codecs
 
