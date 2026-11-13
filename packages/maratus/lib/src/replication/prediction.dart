@@ -32,6 +32,9 @@ typedef PredictionStep<S, I> = S Function(S state, I input);
 ///   [MultiplayerSession.update]. If that differs from the prediction, the
 ///   [interpolator] blends the correction out over [smoothing].
 ///
+/// To change the state outside the step, such as to respawn a player, the
+/// authority sets [state].
+///
 /// The values that the step receives and returns pass through the codecs of
 /// [field] and [input], so the owner predicts with exactly the values that
 /// the host applies. On the entity's authority, when it is the owner, [advance]
@@ -106,11 +109,33 @@ final class Prediction<S, I> {
   /// attachment.
   bool get isDisposed => _disposed || _attachment.isDisposed;
 
-  /// The latest state of the entity on this peer, which the caller may
-  /// change: on the owner while it predicts, the state after the latest tick;
-  /// on the authority, the authoritative state; elsewhere, the latest state
-  /// received.
+  /// The latest state of the entity on this peer, as a copy that the caller
+  /// may change: on the owner while it predicts, the state after the latest
+  /// tick; on the authority, the authoritative state; elsewhere, the latest
+  /// state received.
+  ///
+  /// The entity's authority can set it outside the step, such as to respawn
+  /// or knock back a player. The new state shows at once on the authority
+  /// and replicates as usual. The owner, while it predicts, resets to it
+  /// when it arrives and applies its later inputs again, blending the
+  /// difference out as for any correction.
+  ///
+  /// Setting it has no effect once the prediction is disposed. Throws a
+  /// [StateError] if this peer is not the entity's authority, and an
+  /// [ArgumentError] if [field] cannot encode the state.
   S get state => _decode(_current);
+
+  set state(S state) {
+    if (!_inputs._isLive(this)) return;
+    if (_role case _PredictionRole.predicting || _PredictionRole.following) {
+      throw StateError(
+        "Only the entity's authority sets the state of its prediction.",
+      );
+    }
+    _current = _encode(state);
+    _previous = null;
+    _stale = null;
+  }
 
   /// The state to present on this peer, which the caller may change.
   ///
