@@ -4,6 +4,7 @@ import 'package:crypto/crypto.dart';
 
 import '../transport/multiplayer_peer.dart';
 import 'identifiers.dart';
+import 'input_stream.dart';
 import 'protocol_exception.dart';
 import 'rpc.dart';
 import 'spawn_type.dart';
@@ -64,18 +65,21 @@ final class SchemaEntry<T> {
 
 /// The registrations that host and clients must agree on.
 ///
-/// A schema maps stable identifiers for spawn types, RPCs, and synchronized
-/// fields to the codecs of their values, declares the static entities that
-/// every session contains, and sets the codec of the data clients send when
-/// they join. Peers compare [fingerprint]s when connecting.
+/// A schema maps stable identifiers for spawn types, RPCs, synchronized
+/// fields, and input streams to the codecs of their values, declares the
+/// static entities that every session contains, and sets the codec of the
+/// data clients send when they join. Peers compare [fingerprint]s when
+/// connecting.
 final class ProtocolSchema {
   ProtocolSchema._(
     this._spawnTypes,
     this._rpcs,
     this._fields,
+    this._inputs,
     this._spawnTypeDefinitions,
     this._rpcDefinitions,
     this._fieldDefinitions,
+    this._inputDefinitions,
     this._staticEntityDefinitions,
     this.joinRequest,
   ) : staticEntities = List.unmodifiable([
@@ -86,6 +90,7 @@ final class ProtocolSchema {
         _spawnTypes,
         _rpcDefinitions,
         _fieldDefinitions,
+        _inputDefinitions,
         _staticEntityDefinitions.keys,
         joinRequest,
       );
@@ -93,9 +98,11 @@ final class ProtocolSchema {
   final Map<String, SchemaEntry<Object?>> _spawnTypes;
   final Map<String, SchemaEntry<Object?>> _rpcs;
   final Map<String, SchemaEntry<Object?>> _fields;
+  final Map<String, SchemaEntry<Object?>> _inputs;
   final Map<String, SpawnType<Object?>> _spawnTypeDefinitions;
   final Map<String, Rpc<Object?>> _rpcDefinitions;
   final Map<String, SyncField<Object?>> _fieldDefinitions;
+  final Map<String, InputStream<Object?>> _inputDefinitions;
   final Map<String, StaticEntity> _staticEntityDefinitions;
 
   /// The declared static entities, in the order of their entity IDs: sorted
@@ -114,9 +121,9 @@ final class ProtocolSchema {
 
   /// A SHA-256 digest, in lowercase hexadecimal, of every identifier and
   /// codec descriptor in this schema, including each RPC's caller, target,
-  /// and local-invocation policies, every RPC's and field's delivery mode and
-  /// channel, each field's writer, the static entities, and the join request
-  /// codec.
+  /// and local-invocation policies, every RPC's, field's, and input stream's
+  /// delivery mode and channel, each field's writer, each input stream's
+  /// tick, the static entities, and the join request codec.
   ///
   /// Equal registrations produce equal fingerprints on every platform,
   /// regardless of the order in which they were registered.
@@ -162,6 +169,21 @@ final class ProtocolSchema {
   /// All registered synchronized field handles and their delivery settings.
   Iterable<SyncField<Object?>> get fieldDefinitions => _fieldDefinitions.values;
 
+  /// The registration for input stream [id], or `null` if there is none.
+  SchemaEntry<Object?>? input(InputId id) => _inputs[id.value];
+
+  /// The registered input stream handle for [id], or `null` if there is
+  /// none.
+  ///
+  /// This is the same handle returned when the stream was registered,
+  /// retaining its input type, codec, tick, and delivery settings.
+  InputStream<Object?>? inputDefinition(InputId id) =>
+      _inputDefinitions[id.value];
+
+  /// All registered input stream handles.
+  Iterable<InputStream<Object?>> get inputDefinitions =>
+      _inputDefinitions.values;
+
   /// The declared static entity handle for [id], or `null` if there is
   /// none.
   ///
@@ -176,6 +198,7 @@ final class ProtocolSchema {
     Map<String, SchemaEntry<Object?>> spawnTypes,
     Map<String, Rpc<Object?>> rpcs,
     Map<String, SyncField<Object?>> fields,
+    Map<String, InputStream<Object?>> inputs,
     Iterable<String> staticEntities,
     SchemaEntry<Object?>? joinRequest,
   ) {
@@ -212,6 +235,19 @@ final class ProtocolSchema {
               fields[id]!.writer.code,
           ],
       ],
+      // Schemas without input streams keep the description they had before
+      // input streams existed.
+      if (inputs.isNotEmpty)
+        'inputs': [
+          for (final id in inputs.keys.toList()..sort())
+            [
+              id,
+              inputs[id]!.codec.descriptor,
+              inputs[id]!.tick.inMicroseconds,
+              inputs[id]!.deliveryMode.name,
+              inputs[id]!.channel,
+            ],
+        ],
       'staticEntities': staticEntities.toList()..sort(),
       'joinRequest': joinRequest?.codec.descriptor,
     });
@@ -224,9 +260,11 @@ final class ProtocolSchemaBuilder {
   final _spawnTypes = <String, SchemaEntry<Object?>>{};
   final _rpcs = <String, SchemaEntry<Object?>>{};
   final _fields = <String, SchemaEntry<Object?>>{};
+  final _inputs = <String, SchemaEntry<Object?>>{};
   final _spawnTypeDefinitions = <String, SpawnType<Object?>>{};
   final _rpcDefinitions = <String, Rpc<Object?>>{};
   final _fieldDefinitions = <String, SyncField<Object?>>{};
+  final _inputDefinitions = <String, InputStream<Object?>>{};
   final _staticEntities = <String, StaticEntity>{};
   SchemaEntry<Object?>? _joinRequest;
 
@@ -339,6 +377,52 @@ final class ProtocolSchemaBuilder {
     return field;
   }
 
+  /// Registers input stream [id] with the [codec] for its inputs and returns
+  /// its handle.
+  ///
+  /// Each input covers one [tick]. Inputs use [deliveryMode] on [channel].
+  /// The tick, [deliveryMode], and [channel] are included in the schema
+  /// fingerprint.
+  ///
+  /// Throws an [ArgumentError] if [id] is not a valid identifier or is
+  /// already registered as an input stream, [tick] is not positive, or
+  /// [channel] is negative.
+  InputStream<T> addInput<T>(
+    InputId id,
+    ValueCodec<T> codec, {
+    required Duration tick,
+    DeliveryMode deliveryMode = DeliveryMode.reliable,
+    int channel = 0,
+  }) => addInputDefinition(
+    InputStream<T>(
+      id: id,
+      codec: codec,
+      tick: tick,
+      deliveryMode: deliveryMode,
+      channel: channel,
+    ),
+  );
+
+  /// Registers an existing input stream handle, such as a `const` one, and
+  /// returns it.
+  ///
+  /// The schema retains [input] itself, so sessions accept exactly this
+  /// handle. Registering a handle has the same effect on the fingerprint as
+  /// passing its identifier, codec, and settings to [addInput].
+  ///
+  /// Throws an [ArgumentError] if the identifier of [input] is not valid or
+  /// is already registered as an input stream, its tick is not positive, or
+  /// its channel is negative.
+  InputStream<T> addInputDefinition<T>(InputStream<T> input) {
+    if (input.tick <= Duration.zero) {
+      throw ArgumentError.value(input.tick, 'tick', 'must be positive');
+    }
+    _checkChannel(input.channel);
+    _add(_inputs, 'input stream', input.id.value, input.codec);
+    _inputDefinitions[input.id.value] = input;
+    return input;
+  }
+
   /// Declares static entity [id], an entity that exists in every session
   /// without being spawned, and returns its handle.
   ///
@@ -391,9 +475,11 @@ final class ProtocolSchemaBuilder {
     Map.of(_spawnTypes),
     Map.of(_rpcs),
     Map.of(_fields),
+    Map.of(_inputs),
     Map.of(_spawnTypeDefinitions),
     Map.of(_rpcDefinitions),
     Map.of(_fieldDefinitions),
+    Map.of(_inputDefinitions),
     Map.of(_staticEntities),
     _joinRequest,
   );

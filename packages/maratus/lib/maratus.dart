@@ -12,7 +12,8 @@ export 'src/core/entity_registry.dart' hide changeAuthority;
 export 'src/core/multiplayer_session.dart';
 export 'src/core/session_events.dart';
 export 'src/protocol/identifiers.dart'
-    show SpawnTypeId, RpcId, FieldId, StaticEntityId, EntityId, PeerId;
+    show SpawnTypeId, RpcId, FieldId, InputId, StaticEntityId, EntityId, PeerId;
+export 'src/protocol/input_stream.dart';
 export 'src/protocol/messages.dart'
     show
         MessageKind,
