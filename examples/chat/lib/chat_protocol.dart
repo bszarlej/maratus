@@ -110,6 +110,8 @@ String describeEvent(SessionEvent event) => switch (event) {
   RpcRejected(:final sender, :final reason) =>
     'Message from peer ${sender.value} rejected: ${reason.name}',
   RpcHandlerFailed(:final error) => 'Message handler failed: $error',
+  InputRejected(:final sender, :final reason) =>
+    'Input from peer ${sender.value} rejected: $reason',
   AdmissionFailed(:final peer, :final error) =>
     'Admission for peer ${peer.value} failed: $error',
   SpawnHandlerFailed(:final entity, :final error) =>
