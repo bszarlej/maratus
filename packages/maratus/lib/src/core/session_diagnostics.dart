@@ -99,6 +99,7 @@ final class SessionDiagnostics {
     required this.replicatedEntities,
     required this.attachments,
     required this.synchronizers,
+    required this.predictions,
     required this.rpcBindings,
     required this.spawnBindings,
     required this.pendingRpcs,
@@ -127,6 +128,9 @@ final class SessionDiagnostics {
 
   /// The live synchronizers.
   final int synchronizers;
+
+  /// The live predictions.
+  final int predictions;
 
   /// The live RPC bindings, with and without attachments.
   final int rpcBindings;

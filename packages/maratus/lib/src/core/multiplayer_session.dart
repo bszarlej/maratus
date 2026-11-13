@@ -4,6 +4,7 @@ import 'dart:math';
 import 'dart:typed_data';
 
 import '../protocol/identifiers.dart';
+import '../protocol/input_stream.dart';
 import '../protocol/messages.dart';
 import '../protocol/protocol_codec.dart';
 import '../protocol/protocol_exception.dart';
@@ -29,6 +30,7 @@ part 'session_delivery.dart';
 part 'state_batches.dart';
 part '../replication/authority_replicator.dart';
 part '../replication/interpolation.dart';
+part '../replication/prediction.dart';
 part '../replication/spawn_replicator.dart';
 part '../replication/state_replicator.dart';
 
@@ -131,7 +133,10 @@ typedef SessionMessageHandler =
 /// writer sends the field when [captureState] runs, and the host accepts it
 /// only from that writer and relays it. The host can move an entity's
 /// authority to another peer with [transferAuthority]; its owner never
-/// changes. A joining client receives the live entities, their
+/// changes. With [EntityAttachment.predict], an entity's owner sends its
+/// inputs to the host, which applies them to compute the entity's state,
+/// and predicts that state until the host's arrives. A joining client
+/// receives the live entities, their
 /// authorities, and their latest values in its baseline, and every later
 /// change after it.
 final class MultiplayerSession {
@@ -216,6 +221,7 @@ final class MultiplayerSession {
   late final _spawns = _SpawnReplicator(this);
   late final _authorities = _AuthorityReplicator(this);
   late final _states = _StateReplicator(this);
+  late final _inputs = _InputReplicator(this);
   late final _delivery = _SessionDelivery(this);
   late final _batches = _StateBatches(this);
 
@@ -399,6 +405,7 @@ final class MultiplayerSession {
     synchronizers: _states._synchronizers.values
         .where((synchronizer) => !synchronizer.isDisposed)
         .length,
+    predictions: _inputs.count,
     rpcBindings: _rpcDispatcher._bindings.values
         .where((binding) => !binding.isDisposed)
         .length,
@@ -527,7 +534,9 @@ final class MultiplayerSession {
   /// Received spawn, despawn, and state records are applied as their events
   /// are handled. A host then applies the admission decisions completed
   /// since the previous update. Ready synchronizers then receive the latest
-  /// values of the fields this peer does not write, before queued RPCs for
+  /// values of the fields this peer does not write, and owners reconcile
+  /// their [Prediction]s with them. The host then applies the inputs it
+  /// received to the predictions it computes, before queued RPCs for
   /// attached entities run. A joining client then reports ready if every
   /// entity of its baseline is ready, and pings that are due are sent.
   /// Deadlines are checked last, at this update boundary, so a queued reply,
@@ -556,6 +565,8 @@ final class MultiplayerSession {
       if (_peer != peer) return;
       _states.apply();
       if (_peer != peer) return;
+      _inputs.simulate();
+      if (_peer != peer) return;
       _attachments.flush();
       if (_peer != peer) return;
       _install();
@@ -577,7 +588,8 @@ final class MultiplayerSession {
   /// Samples the synchronized properties that this peer writes, and sends
   /// the fields that are due: the authority-written fields of the entities
   /// it is the authority of, and the owner-written fields of the entities
-  /// it owns.
+  /// it owns. A client first sends the inputs that its [Prediction]s
+  /// recorded since it last sent.
   ///
   /// Call this after gameplay has updated those properties, as
   /// `MultiplayerScope` does after `captureNetworkState`. Each
@@ -596,6 +608,8 @@ final class MultiplayerSession {
     if (_state != SessionState.hosting && _state != SessionState.ready) return;
     _batches.begin();
     try {
+      _inputs.send();
+      if (_peer == null) return;
       _states.capture();
       _drainHeld();
     } finally {
@@ -926,12 +940,22 @@ final class MultiplayerSession {
       remote.coalescedStates++;
       _coalescedStates++;
     }
+    // Each value keeps the applied input that accompanied it.
+    final inputs = {...?previous?.inputs}
+      ..removeWhere((field, _) => fields.containsKey(field));
+    if (message.inputSequence case final input?) {
+      for (final field in fields.keys) {
+        inputs[field] = input;
+      }
+    }
     // Only a writer's samples and their relays are held, and they all
     // carry a sample time.
-    remote.held[key] = _HeldState(entity, {
-      ...?previous?.fields,
-      ...fields,
-    }, message.sampledAt!);
+    remote.held[key] = _HeldState(
+      entity,
+      {...?previous?.fields, ...fields},
+      message.sampledAt!,
+      inputs,
+    );
   }
 
   /// Sends [remote]'s held state, oldest entry first: all of it, or as long
@@ -953,6 +977,7 @@ final class MultiplayerSession {
         entity,
         held.fields,
         sampledAt: held.sampledAt,
+        inputs: held.inputs,
       )) {
         if (!_delivery.transmitState(remote, message)) return false;
       }
@@ -1017,6 +1042,7 @@ final class MultiplayerSession {
     _spawns.clear();
     _authorities.clear();
     _states.clear();
+    _inputs.clear();
     _delivery.clear();
     _batches.clear();
     registry.clear();
@@ -1178,9 +1204,15 @@ final class MultiplayerSession {
         _membership.ready(remote);
       case (_RemoteState.ready, RpcMessage message):
         _rpcDispatcher.route(remote.peer!, message);
-      // A client sends only state that it sampled, with its sample time.
-      case (_RemoteState.ready, StateMessage(sampledAt: _?)):
+      // A client sends only state that it sampled, with its sample time,
+      // and never reports applied inputs.
+      case (
+        _RemoteState.ready,
+        StateMessage(sampledAt: _?, inputSequence: null),
+      ):
         _states.receive(remote.peer!, envelope, origin: remote);
+      case (_RemoteState.ready, InputMessage message):
+        _inputs.receive(remote.peer!, message);
       // A client that is still synchronizing may lose the authority of an
       // entity it owns.
       case (
@@ -1582,6 +1614,7 @@ final class MultiplayerSession {
     _membership.clear();
     _authorities.clear();
     _states.clear();
+    _inputs.clear();
     final ended = _spawns.end();
     registry.clear();
     _staticEntities.clear();
@@ -1618,7 +1651,9 @@ final class MultiplayerSession {
   /// accepted. A caller must remove a refusing [remote] with [_refused].
   bool _transmit(_Remote remote, ProtocolMessage message, {int revision = 0}) {
     final delivery = _delivery.outgoing(message);
-    if (message is RpcMessage || message is RpcDeliveryMessage) {
+    if (message is RpcMessage ||
+        message is RpcDeliveryMessage ||
+        message is InputMessage) {
       if (delivery != _defaultDelivery) {
         revision = _isHost ? remote.sentRevision : _revision;
       }
@@ -1773,11 +1808,14 @@ final class _Remote {
 /// some fields of [entity] that one writer, its authority or its owner,
 /// sampled at [sampledAt].
 final class _HeldState {
-  const _HeldState(this.entity, this.fields, this.sampledAt);
+  const _HeldState(this.entity, this.fields, this.sampledAt, this.inputs);
 
   final NetworkEntity entity;
 
   /// The canonical encodings of the field values.
   final Map<FieldId, Uint8List> fields;
   final Duration sampledAt;
+
+  /// The applied input reported with each field value that has one.
+  final Map<FieldId, int> inputs;
 }

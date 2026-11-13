@@ -256,9 +256,54 @@ final class StateRejected extends SessionEvent {
   final StateRejection reason;
 }
 
-/// A synchronized property could not be sampled, encoded, or applied.
+/// Why a well-formed input message was ignored.
+enum InputRejection {
+  /// The entity is not registered on the host.
+  unknownEntity,
+
+  /// The sender is not the entity's owner.
+  notOwner,
+
+  /// The host has no live prediction of the entity with the message's input
+  /// stream, so it does not apply the stream's inputs.
+  notPredicted,
+}
+
+/// An input message was ignored, so the host applies none of its inputs.
 ///
-/// The other properties of the entity are still synchronized.
+/// This event is local diagnostics; the sender is not told. Inputs for an
+/// entity that was already removed, or whose authority the host transferred
+/// to another peer, are ignored without an event.
+final class InputRejected extends SessionEvent {
+  /// Reports that [sender]'s inputs of [input] for [entity] were ignored for
+  /// [reason].
+  const InputRejected({
+    required this.entity,
+    required this.input,
+    required this.sender,
+    required this.reason,
+  });
+
+  /// The entity whose inputs were sent.
+  final EntityId entity;
+
+  /// The input stream of the inputs.
+  final InputId input;
+
+  /// The client that sent the inputs, authenticated by its connection.
+  final PeerId sender;
+
+  /// Why the message was ignored.
+  final InputRejection reason;
+}
+
+/// A synchronized property could not be sampled, encoded, or applied, or the
+/// step of a `Prediction` failed, reported for its state field.
+///
+/// The other properties of the entity are still synchronized. A step that
+/// fails while the host applies an input leaves the state unchanged; one
+/// that fails while the owner applies its inputs again leaves its
+/// prediction at the host's state.
 final class PropertySyncFailed extends SessionEvent {
   /// Reports an [error] for [field] of [entity], with its [stackTrace].
   const PropertySyncFailed({

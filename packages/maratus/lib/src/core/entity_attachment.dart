@@ -33,6 +33,7 @@ final class EntityAttachment {
   final bool Function() _isValid;
   final _bindings = <RpcBinding>{};
   MultiplayerSynchronizer? _synchronizer;
+  Prediction<Object?, Object?>? _prediction;
   var _disposed = false;
 
   /// The exact registry entity whose lifecycle this handle owns.
@@ -95,8 +96,46 @@ final class EntityAttachment {
     interpolationDelay,
   );
 
-  /// Discards this attachment's pending calls and disposes all its handlers
-  /// and its synchronizer.
+  /// Predicts the [state] of this attachment's entity on its owner from the
+  /// owner's [input] stream, advancing it with [step] one tick at a time.
+  ///
+  /// Call this on every peer, before [synchronize], and include the
+  /// returned prediction's [Prediction.property] in the synchronizer's
+  /// properties. The prediction starts from [initial]; peers that do not
+  /// compute the state continue from the authority's state as it arrives.
+  /// The [interpolator], if any, blends the owner's presented state between
+  /// ticks and out of a correction over [smoothing], and interpolates the
+  /// state for every other peer. See [Prediction] for how the owner and the
+  /// host exchange inputs and state.
+  ///
+  /// Disposing this attachment disposes the prediction. The inputs stay
+  /// with the entity, so a replacement attachment's prediction continues
+  /// with them.
+  ///
+  /// Throws an [ArgumentError] if [state] or [input] is a handle of another
+  /// schema, [state] is not written by the authority, [initial] cannot be
+  /// encoded, or [smoothing] is negative. Throws a [StateError] if this
+  /// attachment is no longer live, its entity already has a live
+  /// prediction, or it already has a live synchronizer.
+  Prediction<S, I> predict<S, I>({
+    required SyncField<S> state,
+    required InputStream<I> input,
+    required S initial,
+    required PredictionStep<S, I> step,
+    Interpolator<S>? interpolator,
+    Duration smoothing = const Duration(milliseconds: 100),
+  }) => _manager.session._inputs.predict(
+    this,
+    state: state,
+    input: input,
+    initial: initial,
+    step: step,
+    interpolator: interpolator,
+    smoothing: smoothing,
+  );
+
+  /// Discards this attachment's pending calls and disposes all its handlers,
+  /// its synchronizer, and its prediction.
   ///
   /// This does not remove the entity from the session registry. Repeated
   /// disposal has no effect.
@@ -109,6 +148,7 @@ final class EntityAttachment {
     }
     _bindings.clear();
     _synchronizer?.dispose();
+    _prediction?.dispose();
   }
 }
 
