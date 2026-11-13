@@ -93,6 +93,7 @@ final class _Mover {
       step: session.isHost ? harness.hostStep : harness.step,
       interpolator: harness.interpolator,
       smoothing: harness.smoothing,
+      idleInput: harness.idleInput,
     );
     synchronizer = attachment.synchronize([
       prediction.property(),
@@ -116,6 +117,7 @@ final class _Harness {
     this.step = _walk,
     PredictionStep<double, int>? hostStep,
     this.interpolator,
+    this.idleInput,
     this.unreliable = false,
     int? maxUnreliableMessageBytes,
     this.backpressure = const QueueLimits(
@@ -137,6 +139,10 @@ final class _Harness {
   final PredictionStep<double, int> step;
   final PredictionStep<double, int> hostStep;
   final Interpolator<double>? interpolator;
+
+  /// The input that the host applies while the owner's inputs are late, or
+  /// `null` to wait for them.
+  final int? idleInput;
 
   /// How long a correction takes to blend out: two ticks.
   final smoothing = const Duration(milliseconds: 100);
@@ -367,26 +373,29 @@ void main() {
     });
 
     test('keeps a prediction that the host confirms', () {
-      final harness = _Harness(latency: _latency);
-      final owner = harness.join();
-      final entity = harness.spawn(owner.localPeer!);
-      final mine = harness.mover(owner, entity)
-        ..input = 1
-        ..drives = true;
+      // Inputs that arrive on time never make the host apply an idle input.
+      for (final idleInput in [null, -1]) {
+        final harness = _Harness(latency: _latency, idleInput: idleInput);
+        final owner = harness.join();
+        final entity = harness.spawn(owner.localPeer!);
+        final mine = harness.mover(owner, entity)
+          ..input = 1
+          ..drives = true;
 
-      final states = <double>[];
-      for (var i = 0; i < 20; i++) {
-        harness.frame();
-        states.add(mine.prediction.state);
+        final states = <double>[];
+        for (var i = 0; i < 20; i++) {
+          harness.frame();
+          states.add(mine.prediction.state);
+        }
+
+        // Reconciling with each state from the host, which trails by the
+        // round trip, applies the inputs it does not include again.
+        expect(states, [for (var i = 1; i <= 20; i++) i.toDouble()]);
+        final reported = harness.reported[owner]!.whereType<int>().toList();
+        expect(reported, isNotEmpty);
+        expect(reported, orderedEquals([...reported]..sort()));
+        expect(reported.last, lessThan(20));
       }
-
-      // Reconciling with each state from the host, which trails by the
-      // round trip, applies the inputs it does not include again.
-      expect(states, [for (var i = 1; i <= 20; i++) i.toDouble()]);
-      final reported = harness.reported[owner]!.whereType<int>().toList();
-      expect(reported, isNotEmpty);
-      expect(reported, orderedEquals([...reported]..sort()));
-      expect(reported.last, lessThan(20));
     });
 
     test('corrects a misprediction to the host state', () {
@@ -641,6 +650,73 @@ void main() {
 
       expect(hosted.prediction.state, 3);
       expect(mine.prediction.state, 3);
+    });
+
+    test('keeps the entity moving with an idle input', () {
+      final harness = _Harness(idleInput: -1);
+      final owner = harness.join();
+      final entity = harness.spawn(owner.localPeer!);
+      final mine = harness.mover(owner, entity)
+        ..input = 1
+        ..drives = true;
+      final hosted = harness.mover(harness.host, entity);
+
+      harness.frames(3);
+      mine.drives = false;
+      final host = <double>[];
+      final owned = <double>[];
+      for (var i = 0; i < 9; i++) {
+        harness.frame();
+        host.add(hosted.prediction.state);
+        owned.add(mine.prediction.state);
+      }
+
+      // The host applies the last input, waits a quarter of a second, five
+      // ticks, for the next one, and then applies the idle input for each
+      // further tick. The owner follows the host's state a frame later.
+      expect(host, [3, 3, 3, 3, 3, 3, 2, 1, 0]);
+      expect(owned.skip(1), host.take(8));
+
+      // The owner's next inputs replace no idle tick, so all of them apply.
+      mine.drives = true;
+      harness.frames(4);
+      mine.drives = false;
+      harness.until(() => mine.prediction.pendingInputs == 0);
+
+      expect(hosted.prediction.state, 3);
+      expect(mine.prediction.state, 3);
+    });
+
+    test('skips the late inputs that idle ticks replaced', () {
+      final harness = _Harness(unreliable: true, idleInput: 0);
+      final owner = harness.join();
+      final entity = harness.spawn(owner.localPeer!);
+      final mine = harness.mover(owner, entity)
+        ..input = 1
+        ..drives = true;
+      final hosted = harness.mover(harness.host, entity);
+
+      harness.frames(5);
+      // The owner's next eight messages are lost, so its inputs stop
+      // reaching the host for 0.45 seconds; the host covers the last three
+      // ticks of that with idle inputs.
+      harness.network.dropNextUnreliable(count: 8, fromHost: false);
+      harness.frames(8);
+      final pending = <int>[];
+      for (var i = 0; i < 10; i++) {
+        harness.frame();
+        pending.add(hosted.prediction.pendingInputs);
+      }
+
+      // The next message repairs the loss with all nine late inputs. The
+      // host applies the newest five, a quarter of a second, at once and
+      // skips the four before them, so later inputs wait no longer than
+      // before.
+      expect(pending, everyElement(0));
+      mine.drives = false;
+      harness.until(() => mine.prediction.pendingInputs == 0);
+      expect(hosted.prediction.state, 23 - 4);
+      expect(mine.prediction.state, 23 - 4);
     });
 
     test('applies at most one tick of inputs per tick of its clock', () {
@@ -1127,12 +1203,14 @@ void main() {
         InputStream<int>? input,
         double initial = 0,
         Duration smoothing = Duration.zero,
+        int? idleInput,
       }) => attachment.predict(
         state: state ?? schema.position,
         input: input ?? schema.move,
         initial: initial,
         step: _walk,
         smoothing: smoothing,
+        idleInput: idleInput,
       );
 
       expect(
@@ -1164,6 +1242,7 @@ void main() {
         throwsArgumentError,
       );
       expect(() => predict(initial: 2000), throwsArgumentError);
+      expect(() => predict(idleInput: 2), throwsArgumentError);
       expect(
         () => predict(smoothing: const Duration(microseconds: -1)),
         throwsArgumentError,

@@ -108,15 +108,27 @@ final class EntityAttachment {
   /// state for every other peer. See [Prediction] for how the owner and the
   /// host exchange inputs and state.
   ///
+  /// By default, the host waits for the owner's inputs however late they
+  /// are, and the entity stands still on the host meanwhile. With an
+  /// [idleInput], the host keeps it moving instead, such as to let gravity
+  /// act: once the owner's inputs are more than a quarter of a second late,
+  /// the host applies [idleInput] for each further tick of its clock, as if
+  /// the player let go of the controls. When the late inputs then arrive
+  /// together, as they do over an unreliable channel, it applies the newest
+  /// quarter of a second of them at once and skips the older ones, which
+  /// the idle ticks replaced. Either way, the owner's prediction corrects to
+  /// the host's state. A stream whose inputs may be `null` cannot use `null`
+  /// as its idle input.
+  ///
   /// Disposing this attachment disposes the prediction. The inputs stay
   /// with the entity, so a replacement attachment's prediction continues
   /// with them.
   ///
   /// Throws an [ArgumentError] if [state] or [input] is a handle of another
-  /// schema, [state] is not written by the authority, [initial] cannot be
-  /// encoded, or [smoothing] is negative. Throws a [StateError] if this
-  /// attachment is no longer live, its entity already has a live
-  /// prediction, or it already has a live synchronizer.
+  /// schema, [state] is not written by the authority, [initial] or
+  /// [idleInput] cannot be encoded, or [smoothing] is negative. Throws a
+  /// [StateError] if this attachment is no longer live, its entity already
+  /// has a live prediction, or it already has a live synchronizer.
   Prediction<S, I> predict<S, I>({
     required SyncField<S> state,
     required InputStream<I> input,
@@ -124,6 +136,7 @@ final class EntityAttachment {
     required PredictionStep<S, I> step,
     Interpolator<S>? interpolator,
     Duration smoothing = const Duration(milliseconds: 100),
+    I? idleInput,
   }) => _manager.session._inputs.predict(
     this,
     state: state,
@@ -132,6 +145,7 @@ final class EntityAttachment {
     step: step,
     interpolator: interpolator,
     smoothing: smoothing,
+    idleInput: idleInput,
   );
 
   /// Discards this attachment's pending calls and disposes all its handlers,
