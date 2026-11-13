@@ -6,6 +6,12 @@ part of '../core/multiplayer_session.dart';
 /// the same inputs to compute the authoritative state, so both must use the
 /// same step, which must return equal states for equal arguments. Each call
 /// receives its own copies of the state and the input, which it may change.
+///
+/// The step sees only the entity's state and one input. Anything else that
+/// it reads, such as a level captured in its closure, must be the same on
+/// the host and the owner. The owner does not predict how other entities
+/// affect the state, such as collisions with moving objects: the host's
+/// state corrects the prediction when it arrives.
 typedef PredictionStep<S, I> = S Function(S state, I input);
 
 /// Predicts the state of an entity on its owner from the owner's inputs,
@@ -33,8 +39,9 @@ typedef PredictionStep<S, I> = S Function(S state, I input);
 ///   [MultiplayerSession.update]. If that differs from the prediction, the
 ///   [interpolator] blends the correction out over [smoothing].
 ///
-/// To change the state outside the step, such as to respawn a player, the
-/// authority sets [state].
+/// The step sees only the state and one input, so the owner predicts only
+/// what follows from them; see [PredictionStep]. To change the state in
+/// other ways, such as to respawn a player, the authority sets [state].
 ///
 /// The values that the step receives and returns pass through the codecs of
 /// [field] and [input], so the owner predicts with exactly the values that
