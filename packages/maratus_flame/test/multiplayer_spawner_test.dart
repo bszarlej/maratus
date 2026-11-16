@@ -327,6 +327,36 @@ void main() {
     }
   });
 
+  test('an entity that leaves a client\'s view and returns gets a new '
+      'component', () async {
+    final world = _World();
+    final host = await world.host();
+    final client = await world.join();
+    await world.pump();
+    final avatar = host.session.spawn(world.protocol.avatar, 'Ada');
+    host.session.spawn(world.protocol.item, 4, parent: avatar);
+    await world.pump();
+    final shown = [client[1]!, client[2]!];
+
+    host.session.setVisibilityFor(avatar, _client1, false);
+    await world.pump();
+    expect(client.spawner.spawnedComponents, isEmpty);
+    expect(client.spawner.children, isEmpty);
+    for (final component in shown) {
+      expect(component.isMounted, isFalse);
+    }
+    expect(host[1]!.isMounted, isTrue);
+
+    host.session.setVisibilityFor(avatar, _client1, null);
+    await world.pump();
+    final returned = client[1]! as _Avatar;
+    expect(returned, isNot(same(shown.first)));
+    expect(returned.name, 'Ada');
+    expect(returned.isNetworkReady, isTrue);
+    expect(client[2]!.parent, same(returned));
+    expect((client[2]! as _Item).value, 4);
+  });
+
   test('despawning a loading component leaves no ghost behind', () async {
     final world = _World();
     final host = await world.host();
