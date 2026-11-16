@@ -77,6 +77,25 @@ mixin NetworkedComponent on Component {
     return false;
   }
 
+  /// Whether this peer owns [networkEntity], which lets it call owner-only
+  /// RPCs and write owner-written fields, such as its input.
+  ///
+  /// `false` while this component has no live attachment, such as before it
+  /// loads or after it was removed.
+  bool get isNetworkOwner =>
+      _hasValidAttachment &&
+      networkEntity.owner == _networkScope!.session.localPeer;
+
+  /// Whether this peer is the authority of [networkEntity], which writes its
+  /// authority-written fields and runs its authoritative gameplay.
+  ///
+  /// The host can transfer the authority, so this can change while the
+  /// component is attached. `false` while this component has no live
+  /// attachment, such as before it loads or after it was removed.
+  bool get isNetworkAuthority =>
+      _hasValidAttachment &&
+      networkEntity.authority == _networkScope!.session.localPeer;
+
   /// Binds this instance's typed handlers and synchronized properties, once per
   /// attachment lifetime.
   ///

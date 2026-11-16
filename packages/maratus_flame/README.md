@@ -93,11 +93,11 @@ class Player extends PositionComponent with NetworkedComponent {
 ```
 
 By default, the host is the entity's authority and publishes its health changes.
-Only run authoritative gameplay where
-`networkEntity.authority == multiplayerSession.localPeer`. Ownership is
-separate: assigning a client as `owner` allows owner-restricted RPCs and lets it
-write fields registered with `writer: FieldWriter.owner`, such as its input, but
-does not transfer authority over the other synchronized state.
+Only run authoritative gameplay where `isNetworkAuthority` is true; the host can
+transfer the authority to another peer. Ownership, which `isNetworkOwner`
+reports, is separate: assigning a client as `owner` allows owner-restricted RPCs
+and lets it write fields registered with `writer: FieldWriter.owner`, such as its
+input, but does not transfer authority over the other synchronized state.
 
 Call `session.spawn` and `session.despawn` on the host to create and remove
 replicated entities. A spawner creates components for existing entities too,
@@ -128,7 +128,7 @@ void update(double dt) {
   super.update(dt);
   if (!isNetworkReady) return;
   position.setFrom(
-    networkEntity.owner == multiplayerSession.localPeer
+    isNetworkOwner
         ? _prediction.advance(
             readDirection(),
             Duration(microseconds: (dt * 1e6).round()),

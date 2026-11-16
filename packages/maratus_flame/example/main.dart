@@ -192,7 +192,7 @@ class PeerView extends PositionComponent with TapCallbacks {
   void onTapDown(TapDownEvent event) {
     final direction = event.localPosition.x < size.x / 2 ? -1 : 1;
     for (final avatar in descendants().whereType<Avatar>()) {
-      if (avatar.isOwn) avatar.steer(direction);
+      if (avatar.isNetworkOwner) avatar.steer(direction);
     }
   }
 }
@@ -249,13 +249,6 @@ class Avatar extends PositionComponent with NetworkedComponent {
   MultiplayerSynchronizer? _synchronizer;
   var _direction = 1;
 
-  /// Whether this peer owns the avatar and may steer it.
-  bool get isOwn =>
-      isNetworkReady && networkEntity.owner == multiplayerSession.localPeer;
-
-  bool get _isAuthority =>
-      networkEntity.authority == multiplayerSession.localPeer;
-
   @override
   void onNetworkAttach(EntityAttachment attachment) {
     _synchronizer = attachment.synchronize([
@@ -277,7 +270,7 @@ class Avatar extends PositionComponent with NetworkedComponent {
   @override
   void update(double dt) {
     if (!isNetworkReady) return;
-    if (_isAuthority) {
+    if (isNetworkAuthority) {
       // Bounce between the arena's sides.
       position.x += _direction * _speed * dt;
       if (position.x < size.x || position.x > ArenaProtocol.width - size.x) {
