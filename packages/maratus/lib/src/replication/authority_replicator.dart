@@ -45,6 +45,7 @@ final class _AuthorityReplicator {
   }
 
   bool transfer(NetworkEntity entity, PeerId authority) {
+    session._visibility.checkNotFiltering();
     if (session._state != SessionState.hosting) {
       throw StateError('Only a hosting session transfers authority.');
     }
@@ -68,14 +69,26 @@ final class _AuthorityReplicator {
   }
 
   /// Makes [authority] the authority of [entity] on the host, replicates
-  /// the transfer to every joined client, and sends a previous client
-  /// authority the values that the host accepted from it.
+  /// the transfer to every joined client that sees the entity, and sends a
+  /// previous client authority the values that the host accepted from it.
+  ///
+  /// A client [authority] receives the entity first if it does not see it,
+  /// and a previous client authority keeps seeing it only as its visibility
+  /// decides.
   void _transfer(NetworkEntity entity, PeerId authority) {
     session._checkRevisionsLeft();
     final previous = entity.authority;
+    session._visibility.reveal(entity, authority);
+    // A client whose transport refused the entity has left, and its
+    // departure may have despawned the entity.
+    if (!_isTransferable(entity) ||
+        (authority != PeerId.host && !session._peers.containsKey(authority))) {
+      return;
+    }
     _change(entity, authority);
     final revision = session._replicate(
       AuthorityMessage(entity: entity.id, authority: authority),
+      to: session._visibility.audience(entity),
     );
     // Clients whose transports refused the transfer have left, and their
     // departure may have despawned the entity or transferred it again.
@@ -87,6 +100,8 @@ final class _AuthorityReplicator {
     }
     final remote = session._peers[previous];
     if (remote != null) session._states.resync(remote, entity);
+    if (entity.state == EntityState.removed) return;
+    session._visibility.transferred(entity, previous);
   }
 
   /// Whether the host awaits [peer]'s acknowledgement of a transfer of

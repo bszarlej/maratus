@@ -114,6 +114,9 @@ String describeEvent(SessionEvent event) => switch (event) {
     'Input from peer ${sender.value} rejected: $reason',
   AdmissionFailed(:final peer, :final error) =>
     'Admission for peer ${peer.value} failed: $error',
+  VisibilityFilterFailed(:final entity, :final peer, :final error) =>
+    'Visibility of entity ${entity.value} for peer ${peer.value} failed: '
+        '$error',
   SpawnHandlerFailed(:final entity, :final error) =>
     'Entity ${entity.value} could not be shown: $error',
   StateRejected(:final entity, :final sender, :final reason) =>

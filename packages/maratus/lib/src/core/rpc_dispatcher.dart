@@ -169,6 +169,16 @@ final class _RpcDispatcher {
   }
 
   bool route(PeerId sender, RpcMessage request) {
+    // A client cannot address an entity that the host does not show it.
+    if (session.registry[request.entity] case final hidden?
+        when !session._visibility.sees(sender, hidden)) {
+      return _reject(
+        hidden.id,
+        request.rpc,
+        sender,
+        RpcRejection.unknownEntity,
+      );
+    }
     final entity = _entity(request.entity, request.rpc, sender);
     if (entity == null) return false;
     final rpc = session._schema.rpcDefinition(request.rpc);
@@ -191,10 +201,18 @@ final class _RpcDispatcher {
       RpcTarget.owner => [entity.owner],
       RpcTarget.authority => [entity.authority],
       RpcTarget.peer => [request.target!],
-      RpcTarget.all => [PeerId.host, ...session.peers.where(session.isReady)],
+      RpcTarget.all => [
+        PeerId.host,
+        ...session.peers.where(
+          (peer) =>
+              session.isReady(peer) && session._visibility.sees(peer, entity),
+        ),
+      ],
     };
     for (final target in targets) {
-      if (target != PeerId.host && !session.isReady(target)) {
+      if (target != PeerId.host &&
+          (!session.isReady(target) ||
+              !session._visibility.sees(target, entity))) {
         return _reject(
           entity.id,
           rpc.id,

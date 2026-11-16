@@ -33,6 +33,7 @@ part '../replication/interpolation.dart';
 part '../replication/prediction.dart';
 part '../replication/spawn_replicator.dart';
 part '../replication/state_replicator.dart';
+part '../replication/visibility.dart';
 
 /// How long a session waits for each stage of joining, and optionally for
 /// an accepted peer that has gone quiet.
@@ -139,6 +140,14 @@ typedef SessionMessageHandler =
 /// receives the live entities, their
 /// authorities, and their latest values in its baseline, and every later
 /// change after it.
+///
+/// The host decides which replicated entities each client sees. Every
+/// client sees every entity unless [setPublicVisibility],
+/// [setVisibilityFor], or a filter added with [addVisibilityFilter] hides
+/// it. An entity that comes into a client's view reaches it as in a
+/// baseline: its spawn record, then its latest values. One that leaves the
+/// client's view is despawned for that client, which receives none of its
+/// state and RPCs meanwhile. [isVisibleTo] describes the rules.
 final class MultiplayerSession {
   /// Creates a session for the messages of [schema], timed by [clock].
   ///
@@ -222,6 +231,7 @@ final class MultiplayerSession {
   late final _authorities = _AuthorityReplicator(this);
   late final _states = _StateReplicator(this);
   late final _inputs = _InputReplicator(this);
+  late final _visibility = _VisibilityReplicator(this);
   late final _delivery = _SessionDelivery(this);
   late final _batches = _StateBatches(this);
 
@@ -595,8 +605,9 @@ final class MultiplayerSession {
   /// `MultiplayerScope` does after `captureNetworkState`. Each
   /// [MultiplayerSynchronizer] samples at most once per interval of the
   /// session's clock, however often this runs, and only while its attachment
-  /// is ready. A host sends each change to every joined client; a client
-  /// sends it to the host, which relays it to the other clients. State for a congested peer waits,
+  /// is ready. A host sends each change to every joined client that sees the
+  /// entity; a client sends it to the host, which relays it to the other
+  /// clients that see the entity. State for a congested peer waits,
   /// replaced by newer values, as [stateBackpressure] describes. Failures
   /// are reported as [PropertySyncFailed] events. Has no effect unless
   /// hosting or ready. State from multiple entities may share a packet when
@@ -621,7 +632,8 @@ final class MultiplayerSession {
     if (_updating ||
         _states.isCapturing ||
         _rpcDispatcher.isInvoking ||
-        _spawns.isInvoking) {
+        _spawns.isInvoking ||
+        _visibility.isFiltering) {
       throw StateError('A session update or handler is already running.');
     }
   }
@@ -667,6 +679,10 @@ final class MultiplayerSession {
   /// Clients enqueue a request to the host. The host validates permission,
   /// chooses ready destinations, and dispatches locally or enqueues deliveries.
   /// A caller executes only if selected and [Rpc.local] is [RpcLocal.include].
+  /// The host rejects a request for an entity that it does not show the
+  /// caller, and never delivers a call to a client that does not see the
+  /// entity: [RpcTarget.all] leaves such clients out, and the other routes
+  /// reject them.
   ///
   /// Returns local queue/dispatch acceptance, not a remote acknowledgement or
   /// gameplay result. On a host, all selected deliveries must be accepted;
@@ -712,25 +728,31 @@ final class MultiplayerSession {
         (throw StateError('The session is disconnected.'));
   }
 
-  /// Spawns a replicated entity of [type], built from [data], on every peer.
+  /// Spawns a replicated entity of [type], built from [data], on the host and
+  /// the clients that see it.
   ///
-  /// Only a hosting session spawns entities. It allocates the entity ID and
-  /// a replication revision, sends the spawn record to every joined client,
-  /// including clients that are still synchronizing, and then calls the
-  /// handler bound to [type] with [bindSpawn], if any. Clients that join
-  /// later receive the entity in their baseline. The returned entity starts
-  /// pending; an attachment or [EntityRegistry.markReady] makes it ready.
+  /// Only a hosting session spawns entities. It allocates the entity ID,
+  /// decides which joined clients see the entity, including clients that
+  /// are still synchronizing, sends them the spawn record with a new
+  /// replication revision, and then calls the handler bound to [type] with
+  /// [bindSpawn], if any. The visibility filters run before that handler.
+  /// Clients that join later receive the entity in their baseline if they
+  /// see it, and clients that see it later as it comes into their view. The
+  /// returned entity starts pending; an attachment or
+  /// [EntityRegistry.markReady] makes it ready.
   ///
   /// [owner] controls the entity's input and must be the host or a joined
   /// client. [authority] must be the host or [owner]; [transferAuthority]
   /// can move it to another peer later. A [parent] must be a replicated
   /// entity of this session; despawning it also despawns this entity.
   /// [onOwnerLeft] decides what happens to the entity when a client [owner]
-  /// leaves.
+  /// leaves. [publicVisibility] is the entity's initial public visibility;
+  /// see [setPublicVisibility].
   ///
-  /// Throws a [StateError] unless hosting, and an [ArgumentError] for a
-  /// foreign [type] handle, invalid metadata, or [data] that cannot make a
-  /// codec and wire round trip. Nothing is spawned when it throws.
+  /// Throws a [StateError] unless hosting, or if called from a visibility
+  /// filter, and an [ArgumentError] for a foreign [type] handle, invalid
+  /// metadata, or [data] that cannot make a codec and wire round trip.
+  /// Nothing is spawned when it throws.
   NetworkEntity spawn<T>(
     SpawnType<T> type,
     T data, {
@@ -738,6 +760,7 @@ final class MultiplayerSession {
     PeerId authority = PeerId.host,
     NetworkEntity? parent,
     OwnerLeftPolicy onOwnerLeft = OwnerLeftPolicy.keep,
+    bool publicVisibility = true,
   }) => _spawns.spawn(
     type,
     data,
@@ -745,18 +768,21 @@ final class MultiplayerSession {
     authority: authority,
     parent: parent,
     onOwnerLeft: onOwnerLeft,
+    publicVisibility: publicVisibility,
   );
 
   /// Despawns the replicated [entity] and its descendants on every peer.
   ///
   /// Only a hosting session despawns entities. It sends a single despawn
-  /// record, with a new replication revision, to every joined client, then
-  /// calls the bound despawn handlers, children before their parents.
-  /// Returns `false`, sending nothing, if this session's [entity] was already
-  /// removed, so reacting to a despawn cannot echo another one.
+  /// record, with a new replication revision, to every joined client that
+  /// sees the entity, then calls the bound despawn handlers, children
+  /// before their parents. Returns `false`, sending nothing, if this
+  /// session's [entity] was already removed, so reacting to a despawn
+  /// cannot echo another one.
   ///
-  /// Throws a [StateError] unless hosting, and an [ArgumentError] for an
-  /// entity of another registry, or a live one that was not spawned.
+  /// Throws a [StateError] unless hosting, or if called from a visibility
+  /// filter, and an [ArgumentError] for an entity of another registry, or a
+  /// live one that was not spawned.
   bool despawn(NetworkEntity entity) => _spawns.despawn(entity);
 
   /// Transfers the authority of the replicated or static [entity] to
@@ -787,14 +813,131 @@ final class MultiplayerSession {
   /// before acknowledging its transfer. A previous authority that leaves
   /// during a transfer does not affect it.
   ///
+  /// The authority of a replicated entity always sees it. The host first
+  /// shows the entity, and its ancestors, to a client [authority] that does
+  /// not see it, and replicates the transfer to the clients that see the
+  /// entity. A previous client authority then keeps seeing the entity only
+  /// as its visibility decides; see [isVisibleTo].
+  ///
   /// [authority] must be the host or a ready client. Returns `false`,
   /// changing nothing, if it is already the entity's authority.
   ///
-  /// Throws a [StateError] unless hosting, and an [ArgumentError] for an
-  /// entity that is not a live replicated or static entity of this session,
-  /// or for an [authority] that is neither the host nor a ready client.
+  /// Throws a [StateError] unless hosting, or if called from a visibility
+  /// filter, and an [ArgumentError] for an entity that is not a live
+  /// replicated or static entity of this session, or for an [authority]
+  /// that is neither the host nor a ready client.
   bool transferAuthority(NetworkEntity entity, PeerId authority) =>
       _authorities.transfer(entity, authority);
+
+  /// Whether the replicated or static [entity] is visible to [peer]: whether
+  /// [peer] has the entity.
+  ///
+  /// The host sees every entity, and every client sees the static entities.
+  /// A client sees a replicated entity while the host shows it to the
+  /// client, and the host decides what each client sees:
+  ///
+  /// 1. A client always sees the entities that it owns or is the authority
+  ///    of, and their ancestors.
+  /// 2. Otherwise, it never sees an entity whose parent it does not see.
+  /// 3. Otherwise, the client's own visibility of the entity, set with
+  ///    [setVisibilityFor], decides.
+  /// 4. Without one, the client sees the entity if its public visibility,
+  ///    set with [setPublicVisibility] or when it was spawned, is `true`,
+  ///    and every filter added with [addVisibilityFilter] accepted it.
+  ///
+  /// The host shows an entity that comes into a client's view as in a
+  /// baseline: it sends the client the entity's spawn record, then its
+  /// latest values, so the client's spawn handler runs and its synchronizer
+  /// starts from the current state. An entity that leaves a client's view
+  /// is despawned for that client, with its descendants, and the client's
+  /// despawn handler runs. Meanwhile, the client receives none of the
+  /// entity's state and RPCs. When the entity comes into view again, the
+  /// client registers it under the same ID, as a new [NetworkEntity].
+  /// RPCs are moments, so a client never receives those it missed.
+  ///
+  /// Returns `false` for a [peer] that is not a client of this host.
+  ///
+  /// Throws a [StateError] unless hosting, and an [ArgumentError] for an
+  /// entity that is not a live replicated or static entity of this session.
+  bool isVisibleTo(NetworkEntity entity, PeerId peer) =>
+      _visibility.isVisibleTo(entity, peer);
+
+  /// Sets whether the replicated [entity] is visible to the clients that
+  /// have no visibility of their own for it, with the filters' agreement.
+  ///
+  /// An entity's public visibility starts as the `publicVisibility` that
+  /// [spawn] was given, `true` by default. The host shows and hides the
+  /// entity for the affected clients at once, using the filters' latest
+  /// decisions; see [isVisibleTo].
+  ///
+  /// Throws a [StateError] unless hosting, or if called from a visibility
+  /// filter, and an [ArgumentError] for an entity that is not a live
+  /// replicated entity of this session.
+  void setPublicVisibility(NetworkEntity entity, bool visible) =>
+      _visibility.setPublic(entity, visible);
+
+  /// Sets whether the replicated [entity] is visible to the client [peer],
+  /// regardless of the entity's public visibility and the filters, or with
+  /// `null`, removes the client's own visibility of the entity.
+  ///
+  /// The host shows or hides the entity for [peer] at once. A client keeps
+  /// its own visibility of the entity until it leaves or the entity
+  /// despawns. It always sees the entities that it owns or is the authority
+  /// of, and never an entity whose parent it does not see; see
+  /// [isVisibleTo].
+  ///
+  /// Throws a [StateError] unless hosting, or if called from a visibility
+  /// filter, and an [ArgumentError] for an entity that is not a live
+  /// replicated entity of this session, or for a [peer] that is not a
+  /// client of this host.
+  void setVisibilityFor(NetworkEntity entity, PeerId peer, bool? visible) =>
+      _visibility.setFor(entity, peer, visible);
+
+  /// Adds [filter], which together with the other filters decides which
+  /// clients see the replicated entities whose visibility is public.
+  ///
+  /// A client sees such an entity only if every filter returns `true` for
+  /// the entity and the client. The host runs the filters for an entity and
+  /// each client when it spawns the entity, for each entity and a client
+  /// when the client joins, and for the entities and clients that
+  /// [updateVisibility] names. It keeps their decisions until then, so a
+  /// filter added or removed changes nothing before the next of those.
+  ///
+  /// The filters run synchronously on the host and must not change the
+  /// session: spawning, despawning, transferring authority, or changing
+  /// visibility from a filter throws a [StateError]. For a new entity, they
+  /// run before the host's spawn handler, so a filter that keeps entity data
+  /// in components may not know the entity yet. A filter that throws
+  /// rejects the entity for that client, and the session reports a
+  /// [VisibilityFilterFailed] event.
+  ///
+  /// Filters stay added across session restarts until they are removed.
+  /// Adding a filter again has no effect. Throws a [StateError] if called
+  /// from a filter.
+  void addVisibilityFilter(VisibilityFilter filter) =>
+      _visibility.addFilter(filter);
+
+  /// Removes [filter], and returns whether it was added.
+  ///
+  /// The filters' decisions remain until [updateVisibility] or another
+  /// evaluation runs them again; see [addVisibilityFilter]. Throws a
+  /// [StateError] if called from a filter.
+  bool removeVisibilityFilter(VisibilityFilter filter) =>
+      _visibility.removeFilter(filter);
+
+  /// Runs the visibility filters for every replicated entity and every
+  /// client, or only [peer], then shows and hides entities as their
+  /// visibility now decides.
+  ///
+  /// Call it whenever the filters may decide differently, for example a few
+  /// times per second for filters that depend on distances. Entities and
+  /// their descendants that leave a client's view are despawned for it
+  /// first; then the entities that come into view are shown, parents first.
+  ///
+  /// Throws a [StateError] unless hosting, or if called from a visibility
+  /// filter, and an [ArgumentError] for a [peer] that is not a client of
+  /// this host.
+  void updateVisibility({PeerId? peer}) => _visibility.update(peer);
 
   /// Binds handlers that create and release the local representation of
   /// replicated entities of [type], such as their components.
@@ -843,18 +986,19 @@ final class MultiplayerSession {
   }
 
   /// Sends a membership, spawn, despawn, or authority [message] with a new
-  /// revision to every joined client except [except], then removes the
-  /// clients whose transports refused it. Returns the message's revision.
+  /// revision to every joined client except [except], or only to those
+  /// among [to], then removes the clients whose transports refused it.
+  /// Returns the message's revision.
   ///
   /// Each client's held state is sent first, so the message follows it. The
   /// revision is taken afterward, so it exceeds the revisions of that state.
   /// Removal waits until every client has been offered the message, so the
   /// cleanup of a departure never interleaves with it.
-  int _replicate(ProtocolMessage message, {_Remote? except}) {
+  int _replicate(ProtocolMessage message, {_Remote? except, Set<PeerId>? to}) {
     final refused = <_Remote>[];
     final remotes = [
-      for (final remote in _peers.values)
-        if (!identical(remote, except)) remote,
+      for (final MapEntry(key: peer, value: remote) in _peers.entries)
+        if (!identical(remote, except) && (to?.contains(peer) ?? true)) remote,
     ];
     for (final remote in remotes) {
       if (!_flush(remote, all: true)) refused.add(remote);
@@ -869,7 +1013,8 @@ final class MultiplayerSession {
   }
 
   /// Sends a state [message] about [entity], whose fields encode as [fields],
-  /// to every joined client except [except], with a new revision.
+  /// to every joined client that sees [entity] except [except], with a new
+  /// revision.
   ///
   /// Independent state takes a revision only if a client that is not ready
   /// yet receives it on the control channel, and those clients share it.
@@ -883,8 +1028,11 @@ final class MultiplayerSession {
   }) {
     var revision = _delivery.independent(message) ? null : _nextRevision();
     final refused = <_Remote>[];
-    for (final remote in _peers.values.toList()) {
-      if (identical(remote, except)) continue;
+    final audience = _visibility.audience(entity);
+    for (final MapEntry(key: peer, value: remote) in _peers.entries.toList()) {
+      if (identical(remote, except) || !(audience?.contains(peer) ?? true)) {
+        continue;
+      }
       if (remote.held.isNotEmpty || _congested(remote)) {
         _hold(remote, entity, message, fields);
         continue;
@@ -962,15 +1110,16 @@ final class MultiplayerSession {
   /// as its connection is not congested. A host gives each message a new
   /// revision, which keeps its revisions increasing for that client.
   ///
-  /// State for entities removed in the meantime is dropped. Returns `false`
-  /// if the transport refused a message; the caller then removes [remote]
-  /// with [_refused].
+  /// State for entities removed in the meantime, or hidden from [remote], is
+  /// dropped. Returns `false` if the transport refused a message; the caller
+  /// then removes [remote] with [_refused].
   bool _flush(_Remote remote, {required bool all}) {
     while (remote.held.isNotEmpty && (all || !_congested(remote))) {
       final held = remote.held.remove(remote.held.keys.first)!;
       final entity = held.entity;
       if (!identical(registry[entity.id], entity) ||
-          entity.state == EntityState.removed) {
+          entity.state == EntityState.removed ||
+          !_visibility.sees(remote.peer!, entity)) {
         continue;
       }
       for (final message in _states._messages(
@@ -1344,8 +1493,11 @@ final class MultiplayerSession {
     _accepted(remote);
     _peers[peer] = remote;
     _emit(PeerJoined(peer));
-    // The baseline holds the other clients, the live entities, and then
-    // their latest values.
+    _visibility.joined(remote);
+    // A filter may have removed the client or closed the session.
+    if (!identical(_peers[peer], remote)) return;
+    // The baseline holds the other clients, the live entities that the
+    // client sees, and then their latest values.
     if (!_send(
           remote,
           WelcomeMessage(peer: peer, epoch: _epoch!),
@@ -1394,7 +1546,11 @@ final class MultiplayerSession {
           when envelope.revision == _revision:
         // A baseline record: an entity that existed when the host welcomed
         // this client.
-        if (!_spawns.applySpawn(message, baseline: true)) {
+        if (!_spawns.applySpawn(
+          message,
+          revision: envelope.revision,
+          baseline: true,
+        )) {
           _drop(remote, DisconnectReason.protocolViolation, notify: true);
         }
       case (_RemoteState.synchronizing, AuthorityMessage message)
@@ -1431,7 +1587,10 @@ final class MultiplayerSession {
           PeerJoinedMessage() ||
           PeerReadyMessage() ||
           PeerLeftMessage() => _membership.apply(envelope.message),
-          SpawnMessage message => _spawns.applySpawn(message),
+          SpawnMessage message => _spawns.applySpawn(
+            message,
+            revision: envelope.revision,
+          ),
           DespawnMessage message => _spawns.applyDespawn(message),
           AuthorityMessage message => _authorities.apply(
             message,
@@ -1589,6 +1748,7 @@ final class MultiplayerSession {
       _peers.remove(peer);
       _emit(PeerLeft(peer, reason));
       _authorities.forget(peer);
+      _visibility.left(peer);
       if (release) {
         _membership.left(peer, reason);
         _spawns.peerLeft(peer);
@@ -1629,12 +1789,17 @@ final class MultiplayerSession {
   /// State held for [remote] is sent first, and the revision is taken
   /// afterward, so it exceeds the revisions of that state.
   bool _sendChange(_Remote remote, ProtocolMessage message) {
-    final accepted =
-        _flush(remote, all: true) &&
-        _transmit(remote, message, revision: _nextRevision());
+    final accepted = _offerChange(remote, message);
     if (!accepted) _refused(remote);
     return accepted;
   }
+
+  /// Offers a replicated [message] to [remote] alone, as [_sendChange]
+  /// does, and returns whether its transport accepted. A caller must remove
+  /// a refusing [remote] with [_refused].
+  bool _offerChange(_Remote remote, ProtocolMessage message) =>
+      _flush(remote, all: true) &&
+      _transmit(remote, message, revision: _nextRevision());
 
   /// Sends [message] to [remote], removing it if the transport refuses.
   ///

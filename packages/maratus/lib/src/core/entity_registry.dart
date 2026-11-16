@@ -10,7 +10,12 @@ enum EntityState {
   /// Taking part in gameplay.
   ready,
 
-  /// Removed from the session. Its ID is never used again in the session.
+  /// Removed from this peer. Its ID never names another entity in the
+  /// session.
+  ///
+  /// A client also removes a replicated entity that leaves its view. If the
+  /// entity comes into view again, the client registers it under the same
+  /// ID, as a new [NetworkEntity].
   removed,
 }
 
@@ -48,10 +53,12 @@ final class NetworkEntity {
 
 /// The networked entities of a session, by ID.
 ///
-/// IDs are scoped to the session and never reused within it: a removed
-/// entity keeps its ID, so a late message about it cannot affect a newer
-/// entity. The registry does not depend on a transport, and is used the
-/// same way by hosts and clients.
+/// IDs are scoped to the session and never name two entities in it: a
+/// removed entity keeps its ID, so a late message about it cannot affect a
+/// newer entity. A replicated entity that a client removed when it left the
+/// client's view keeps its ID too, and returns as a new [NetworkEntity]
+/// under that ID if it comes into view again. The registry does not depend
+/// on a transport, and is used the same way by hosts and clients.
 final class EntityRegistry {
   final _entities = <EntityId, NetworkEntity>{};
   var _nextId = 1;
@@ -164,3 +171,29 @@ final class EntityRegistry {
 /// not exported.
 void changeAuthority(NetworkEntity entity, PeerId authority) =>
     entity._authority = authority;
+
+/// Registers a pending entity in [registry] under the [id] of a removed
+/// one, which comes into this client's view again, and returns it.
+///
+/// The new entity follows the other entities in registration order. The
+/// session calls this while it applies a record that shows the entity; it
+/// is not exported.
+///
+/// Throws an [ArgumentError] if no entity with [id] was registered, or if
+/// [owner] or [authority] is outside the valid peer ID range, and a
+/// [StateError] if the entity with [id] was not removed.
+NetworkEntity registerAgain(
+  EntityRegistry registry,
+  EntityId id, {
+  required PeerId owner,
+  required PeerId authority,
+}) {
+  final previous = registry._lookUp(id);
+  if (previous._state != EntityState.removed) {
+    throw StateError('$previous was not removed.');
+  }
+  EntityRegistry._checkPeer(owner, 'owner');
+  EntityRegistry._checkPeer(authority, 'authority');
+  registry._entities.remove(id);
+  return registry._entities[id] = NetworkEntity._(id, owner, authority);
+}
