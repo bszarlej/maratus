@@ -43,8 +43,22 @@ class MultiplayerSpawner extends Component {
 
   /// The components this spawner created, by entity, until their entities
   /// despawn. A component that was removed locally stays listed.
+  ///
+  /// Look up the component of an entity with `spawnedComponents[entity]`.
   Map<NetworkEntity, NetworkedComponent> get spawnedComponents =>
       UnmodifiableMapView(_spawned);
+
+  /// The components this spawner created for the entities that [peer] owns,
+  /// in the order they were spawned, such as a client's player.
+  ///
+  /// Narrow them by type with `whereType`, as in
+  /// `spawner.componentsOwnedBy(peer).whereType<Player>().single`. Like
+  /// [spawnedComponents], this lists components until their entities
+  /// despawn.
+  Iterable<NetworkedComponent> componentsOwnedBy(PeerId peer) => [
+    for (final MapEntry(key: entity, value: component) in _spawned.entries)
+      if (entity.owner == peer) component,
+  ];
 
   /// Registers [factory] to create the components of [type]'s entities.
   ///
