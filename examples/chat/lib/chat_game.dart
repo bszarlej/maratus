@@ -74,11 +74,8 @@ final class ChatGame extends FlameGame {
     final spawner = _spawner = MultiplayerSpawner()
       ..register(
         protocol.avatar,
-        (context) => AvatarComponent(
-          context,
-          offsetField: protocol.avatarOffset,
-          isLocal: context.entity.owner == session.localPeer,
-        ),
+        (context) =>
+            AvatarComponent(context, offsetField: protocol.avatarOffset),
       );
     final scope = _scope = MultiplayerScope(
       session: session,
@@ -271,12 +268,10 @@ final class ChatNetworkComponent extends Component with NetworkedComponent {
 /// clients receive the offset through property synchronization, and show it
 /// interpolated between samples while smoothing is on.
 final class AvatarComponent extends PositionComponent with NetworkedComponent {
-  /// Creates the avatar of a spawned entity; [isLocal] marks this
-  /// participant's own avatar.
+  /// Creates the avatar of a spawned entity
   AvatarComponent(
     SpawnContext<int> context, {
     required SyncField<double> offsetField,
-    required this.isLocal,
   }) : networkEntity = context.entity,
        colorIndex = context.data,
        _offsetField = offsetField,
@@ -296,9 +291,6 @@ final class AvatarComponent extends PositionComponent with NetworkedComponent {
 
   /// The index of the color that the host chose for this avatar.
   final int colorIndex;
-
-  /// Whether this avatar belongs to this participant.
-  final bool isLocal;
 
   final SyncField<double> _offsetField;
   MultiplayerSynchronizer? _synchronizer;
@@ -327,7 +319,7 @@ final class AvatarComponent extends PositionComponent with NetworkedComponent {
   PeerId get owner => networkEntity.owner;
 
   /// The text drawn beside the avatar.
-  String get label => isLocal ? 'You' : 'P${owner.value}';
+  String get label => isNetworkOwner ? 'You' : 'P${owner.value}';
 
   @override
   void onNetworkAttach(EntityAttachment attachment) {
@@ -353,7 +345,7 @@ final class AvatarComponent extends PositionComponent with NetworkedComponent {
     super.render(canvas);
     const center = Offset(12, 12);
     canvas.drawCircle(center, 10, Paint()..color = _palette[colorIndex]);
-    if (isLocal) {
+    if (isNetworkOwner) {
       canvas.drawCircle(
         center,
         11.5,

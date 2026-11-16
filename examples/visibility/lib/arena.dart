@@ -63,10 +63,6 @@ class Player extends PositionComponent
 
   final _direction = Vector2.zero();
 
-  /// Whether this peer is the client that steers the player.
-  bool get isOwn =>
-      isNetworkReady && networkEntity.owner == multiplayerSession.localPeer;
-
   /// The inherited position, which the client that owns the player writes,
   /// and the host applies.
   @SyncedField('visibility.player.position', writer: FieldWriter.owner)
@@ -76,7 +72,7 @@ class Player extends PositionComponent
 
   @override
   bool onKeyEvent(KeyEvent event, Set<LogicalKeyboardKey> keysPressed) {
-    if (!isOwn) return true;
+    if (!isNetworkOwner) return true;
     double axis(LogicalKeyboardKey back, LogicalKeyboardKey forward) =>
         (keysPressed.contains(forward) ? 1.0 : 0.0) -
         (keysPressed.contains(back) ? 1.0 : 0.0);
@@ -90,7 +86,7 @@ class Player extends PositionComponent
   @override
   void update(double dt) {
     super.update(dt);
-    if (!isOwn) return;
+    if (!isNetworkOwner) return;
     position
       ..add(_direction * (speed * dt))
       ..clamp(Vector2.all(side / 2), Vector2.all(arenaSize - side / 2));
