@@ -46,7 +46,7 @@ class PredictionGame extends FlameGame with HasKeyboardHandlerComponents {
         'Host',
         host,
         position: Vector2(20, 40),
-        extra: [SpawnPlayers(host)],
+        onEvent: (event) => spawnPlayer(host, event),
       ),
       PeerView(
         'Client, ${latency.inMilliseconds} ms from the host',
@@ -66,47 +66,38 @@ class PredictionGame extends FlameGame with HasKeyboardHandlerComponents {
   }
 }
 
-/// Spawns a player for each client that joins the host.
-class SpawnPlayers extends Component {
-  /// Creates the rules of the hosting [session].
-  SpawnPlayers(this.session);
-
-  /// The hosting session.
-  final MultiplayerSession session;
-
-  @override
-  void update(double dt) {
-    // The scope has updated the session before this runs.
-    for (var event = session.poll(); event != null; event = session.poll()) {
-      if (event case PeerJoined(:final peer)) {
-        session.spawn(
-          PlayerNet.spawnType,
-          Vector2.all(arenaSize / 2),
-          owner: peer,
-          onOwnerLeft: OwnerLeftPolicy.despawn,
-        );
-      }
-    }
+/// Spawns a player for the client that [event] reports joined the hosting
+/// [session].
+///
+/// The host's scope passes each event of its session here.
+void spawnPlayer(MultiplayerSession session, SessionEvent event) {
+  if (event case PeerJoined(:final peer)) {
+    session.spawn(
+      PlayerNet.spawnType,
+      Vector2.all(arenaSize / 2),
+      owner: peer,
+      onOwnerLeft: OwnerLeftPolicy.despawn,
+    );
   }
 }
 
 /// One peer's view: a framed arena whose scope drives that peer's session.
 class PeerView extends PositionComponent {
-  /// Creates the view of [session], titled [title], with [extra] components
-  /// in its scope.
+  /// Creates the view of [session], titled [title], whose scope passes the
+  /// session's events to [onEvent].
   PeerView(
     String title,
     MultiplayerSession session, {
     super.position,
-    List<Component> extra = const [],
+    void Function(SessionEvent event)? onEvent,
   }) : super(
          size: Vector2.all(arenaSize),
          children: [
            MultiplayerScope(
              session: session,
+             onEvent: onEvent,
              children: [
                MultiplayerSpawner()..register(PlayerNet.spawnType, Player.new),
-               ...extra,
              ],
            ),
            label(title, Vector2(0, -24)),
