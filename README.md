@@ -69,6 +69,8 @@ for configuration and platform requirements.
   clients, replicated avatars, and simulated connection problems.
 - [Prediction](examples/prediction): client-side prediction under simulated
   latency, with a host and a client side by side.
+- [Visibility](examples/visibility): a host that shows a client only the
+  entities near its player, with both side by side.
 - [Flame](packages/maratus_flame/example/main.dart): host and client in one game,
   with input RPCs and interpolated movement.
 - [Dart](packages/maratus/example/main.dart): spawning, input, and state
