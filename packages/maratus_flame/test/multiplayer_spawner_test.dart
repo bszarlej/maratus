@@ -192,6 +192,44 @@ void main() {
     }
   });
 
+  test('components tell whether this peer owns their entity or is its '
+      'authority', () async {
+    final world = _World();
+    final host = await world.host();
+    final client = await world.join();
+    await world.pump();
+    final avatar = host.session.spawn(
+      world.protocol.avatar,
+      'Ada',
+      owner: _client1,
+    );
+    await world.pump();
+    final onHost = host[1]!;
+    final onClient = client[1]!;
+    expect([onHost.isNetworkOwner, onHost.isNetworkAuthority], [false, true]);
+    expect(
+      [onClient.isNetworkOwner, onClient.isNetworkAuthority],
+      [true, false],
+    );
+    final detached = _Item.of(avatar);
+    expect(
+      [detached.isNetworkOwner, detached.isNetworkAuthority],
+      [false, false],
+    );
+
+    host.session.transferAuthority(avatar, _client1);
+    await world.pump();
+    expect(onHost.isNetworkAuthority, isFalse);
+    expect(onClient.isNetworkAuthority, isTrue);
+
+    onClient.removeFromParent();
+    await world.pump();
+    expect(
+      [onClient.isNetworkOwner, onClient.isNetworkAuthority],
+      [false, false],
+    );
+  });
+
   test('a joining client creates components for existing entities', () async {
     final world = _World();
     final host = await world.host();
