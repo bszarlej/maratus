@@ -122,7 +122,7 @@ Drain `session.poll()` during updates to handle lifecycle events and errors:
 | `PeerJoined`, `PeerReady`, `PeerLeft` | A client was admitted, finished synchronizing, or left. |
 | `RpcRejected`, `RpcHandlerFailed` | An RPC was rejected or its handler failed. |
 | `InputRejected` | The host ignored inputs from a client that does not own the entity, or that it does not predict. |
-| `SpawnHandlerFailed`, `PropertySyncFailed`, `AdmissionFailed` | A local spawn, property, prediction step, or admission callback failed. |
+| `SpawnHandlerFailed`, `PropertySyncFailed`, `AdmissionFailed`, `VisibilityFilterFailed` | A local spawn, property, prediction step, admission, or visibility callback failed. |
 
 `session.peers` excludes the local peer. On clients it includes the host and
 other clients, but membership events describe only other clients. Use
@@ -189,6 +189,58 @@ transfer. Owner-written fields keep their writer. When an authority
 disconnects, the host takes over surviving entities.
 Set `onOwnerLeft: OwnerLeftPolicy.despawn` when spawning entities that should be
 removed with their owner.
+
+## Visibility
+
+By default, every client sees every replicated entity. The host can limit what
+each client receives, for example to leave out distant entities or another
+team's units:
+
+```dart
+// Only the owner sees an entity spawned without public visibility.
+final loot = session.spawn(
+  lootType,
+  data,
+  owner: player,
+  publicVisibility: false,
+);
+session.setVisibilityFor(loot, teammate, true); // Show it to one more client.
+
+// Filters decide for the entities with public visibility.
+session.addVisibilityFilter((entity, peer) => arena.isNear(peer, entity));
+
+// Run the filters again whenever their answers may change.
+session.updateVisibility();
+```
+
+The host decides what each client sees:
+
+- A client always sees the entities that it owns or is the authority of, and
+  their ancestors. It never sees an entity whose parent it does not see.
+- Otherwise, the client's own visibility of the entity decides. Pass `null` to
+  `setVisibilityFor` to remove it.
+- Without one, a client sees an entity whose public visibility is `true` if
+  every filter accepts it.
+
+An entity that comes into a client's view arrives as it does for a late joiner:
+its spawn record, then its latest state, so the client's spawn handler runs. One
+that leaves the view is despawned for that client, with its descendants, and the
+client receives none of its state and RPCs meanwhile. If it returns, the client
+registers it again under the same ID, as a new `NetworkEntity`. RPCs are
+moments, so a client never receives those it missed. Static entities are visible
+to every client.
+
+The host runs the filters when it spawns an entity, before its own spawn
+handler, when a client joins, and in `updateVisibility`, for every client or one
+`peer`. Filters must not change the session, and one that throws rejects the
+entity and reports `VisibilityFilterFailed`. Changes to an entity's public or
+per-client visibility take effect at once. `session.isVisibleTo(entity, peer)`
+reports what a client sees.
+
+RPCs follow visibility: the host rejects a client's calls on entities that it
+does not show the client, and never delivers a call to a client that does not
+see the entity. Transferring an entity's authority to a client shows the entity
+to it first.
 
 ## Client-side prediction
 
