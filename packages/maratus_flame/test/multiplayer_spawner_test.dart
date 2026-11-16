@@ -230,6 +230,33 @@ void main() {
     );
   });
 
+  test('looks up the components that a peer owns', () async {
+    final world = _World();
+    final host = await world.host();
+    final client = await world.join();
+    await world.pump();
+    final session = host.session;
+    final ada = session.spawn(world.protocol.avatar, 'Ada', owner: _client1);
+    session
+      ..spawn(world.protocol.item, 1, owner: _client1, parent: ada)
+      ..spawn(world.protocol.avatar, 'Host');
+    await world.pump();
+
+    for (final peer in [host, client]) {
+      expect(peer.spawner.componentsOwnedBy(_client1), [peer[1], peer[2]]);
+      expect(
+        peer.spawner.componentsOwnedBy(_client1).whereType<_Avatar>().single,
+        same(peer.spawner.spawnedComponents[peer[1]!.networkEntity]),
+      );
+      expect(peer.spawner.componentsOwnedBy(PeerId.host), [peer[3]]);
+      expect(peer.spawner.componentsOwnedBy(const PeerId(9)), isEmpty);
+    }
+
+    session.despawn(ada);
+    await world.pump();
+    expect(client.spawner.componentsOwnedBy(_client1), isEmpty);
+  });
+
   test('a joining client creates components for existing entities', () async {
     final world = _World();
     final host = await world.host();
