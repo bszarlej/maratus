@@ -48,6 +48,8 @@ class SplitScreenGame extends FlameGame {
     client = MultiplayerSession(schema: protocol.schema, clock: clock)
       ..join(network.connect());
 
+    final rules = HostRules(host, protocol);
+
     // Each scope drives its session and closes it when the game is removed.
     await addAll([
       PeerView(
@@ -55,7 +57,8 @@ class SplitScreenGame extends FlameGame {
         session: host,
         protocol: protocol,
         position: Vector2(20, 20),
-        extra: [HostRules(host, protocol)],
+        extra: [rules],
+        onEvent: rules.onEvent,
       ),
       PeerView(
         title: 'Client',
@@ -135,12 +138,11 @@ class HostRules extends Component {
     _spawnAvatar(PeerId.host);
   }
 
-  @override
-  void update(double dt) {
-    // The scope has updated the session before this runs.
-    for (var event = session.poll(); event != null; event = session.poll()) {
-      if (event case PeerJoined(:final peer)) _spawnAvatar(peer);
-    }
+  /// Spawns an avatar for each client that [event] reports joined.
+  ///
+  /// The host's scope passes each event here after updating the session.
+  void onEvent(SessionEvent event) {
+    if (event case PeerJoined(:final peer)) _spawnAvatar(peer);
   }
 
   void _spawnAvatar(PeerId owner) {
@@ -157,18 +159,20 @@ class HostRules extends Component {
 /// One peer's view: a framed arena whose scope drives that peer's session.
 class PeerView extends PositionComponent with TapCallbacks {
   /// Creates the view of [session], titled [title], with [extra] components
-  /// in its scope.
+  /// in its scope, which passes the session's events to [onEvent].
   PeerView({
     required String title,
     required MultiplayerSession session,
     required ArenaProtocol protocol,
     super.position,
     List<Component> extra = const [],
+    void Function(SessionEvent event)? onEvent,
   }) : super(
          size: Vector2(ArenaProtocol.width, ArenaProtocol.height),
          children: [
            MultiplayerScope(
              session: session,
+             onEvent: onEvent,
              children: [
                MultiplayerSpawner()..register(
                  protocol.avatar,
