@@ -343,10 +343,7 @@ final class AvatarComponent extends PositionComponent with NetworkedComponent {
   @override
   void update(double dt) {
     super.update(dt);
-    if (!isNetworkReady ||
-        networkEntity.authority != multiplayerSession.localPeer) {
-      return;
-    }
+    if (!isNetworkReady || !isNetworkAuthority) return;
     _elapsed += dt;
     _verticalOffset = math.sin(_elapsed * 2 + owner.value) * 12;
   }

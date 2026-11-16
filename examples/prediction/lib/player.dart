@@ -87,10 +87,6 @@ class Player extends PositionComponent
   late Prediction<Vector2, Vector2> _prediction;
   late MultiplayerSynchronizer _synchronizer;
 
-  /// Whether this peer is the client that steers the player.
-  bool get isOwn =>
-      isNetworkReady && networkEntity.owner == multiplayerSession.localPeer;
-
   /// Moves [position] one tick in [direction], within the arena.
   ///
   /// The client runs it to predict, and the host runs it with the same
@@ -122,7 +118,7 @@ class Player extends PositionComponent
 
   @override
   bool onKeyEvent(KeyEvent event, Set<LogicalKeyboardKey> keysPressed) {
-    if (!isOwn) return true;
+    if (!isNetworkOwner) return true;
     double axis(LogicalKeyboardKey back, LogicalKeyboardKey forward) =>
         (keysPressed.contains(forward) ? 1.0 : 0.0) -
         (keysPressed.contains(back) ? 1.0 : 0.0);
@@ -143,7 +139,7 @@ class Player extends PositionComponent
     // The client advances its prediction with its input every frame; the
     // host shows the state that it computes.
     position.setFrom(
-      isOwn
+      isNetworkOwner
           ? _prediction.advance(
               _direction,
               Duration(
@@ -157,7 +153,7 @@ class Player extends PositionComponent
   @override
   void render(Canvas canvas) {
     canvas.drawRect(size.toRect(), _fill);
-    if (!isOwn) return;
+    if (!isNetworkOwner) return;
     // On the client, outline where the host last had the player.
     if (_synchronizer.snapshot(playerPosition) case final host?) {
       final offset = host.value - position;
