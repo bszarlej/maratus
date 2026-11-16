@@ -40,6 +40,9 @@ const _fixtures = {
   'parented spawn':
       '{"v":1,"k":"spawn","g":5,"r":9,'
       '"b":{"e":8,"t":"player","d":"Bob","o":3,"a":3,"p":7}}',
+  'shown spawn':
+      '{"v":1,"k":"spawn","g":5,"r":14,'
+      '"b":{"e":8,"t":"player","d":"Bob","o":3,"a":4,"p":7,"s":true}}',
   'despawn': '{"v":1,"k":"despawn","g":0,"r":0,"b":{"e":7}}',
   'authority': '{"v":1,"k":"authority","g":5,"r":10,"b":{"e":7,"a":3}}',
   'authority ack': '{"v":1,"k":"authority_ack","g":5,"r":10,"b":{"e":7}}',
@@ -148,6 +151,19 @@ final _envelopes = {
     ),
     generation: 5,
     revision: 9,
+  ),
+  'shown spawn': const MessageEnvelope(
+    SpawnMessage(
+      entity: EntityId(8),
+      type: SpawnTypeId('player'),
+      data: 'Bob',
+      owner: PeerId(3),
+      authority: PeerId(4),
+      parent: EntityId(7),
+      shown: true,
+    ),
+    generation: 5,
+    revision: 14,
   ),
   'despawn': const MessageEnvelope(DespawnMessage(entity: EntityId(7))),
   'authority': const MessageEnvelope(
@@ -452,6 +468,19 @@ final _invalidInputs = <_InvalidInput>[
     ProtocolErrorCode.invalidValue,
     path: ['b'],
   ),
+  for (final (description, value) in [
+    ('false', 'false'),
+    ('null', 'null'),
+    ('numeric', '1'),
+    ('string', '"true"'),
+  ])
+    _invalid(
+      'a $description shown flag',
+      '{"v":1,"k":"spawn","g":0,"r":0,'
+          '"b":{"e":7,"t":"player","d":"Ada","o":2,"a":1,"s":$value}}',
+      ProtocolErrorCode.invalidValue,
+      path: ['b', 's'],
+    ),
   for (final (field, other) in [
     ('o', ',"a":1'),
     ('a', ',"o":2'),
@@ -1111,7 +1140,23 @@ void main() {
         isA<SpawnMessage>()
             .having((m) => m.owner, 'owner', const PeerId(3))
             .having((m) => m.authority, 'authority', const PeerId(3))
-            .having((m) => m.parent, 'parent', const EntityId(7)),
+            .having((m) => m.parent, 'parent', const EntityId(7))
+            .having((m) => m.shown, 'shown', isFalse),
+      );
+    });
+
+    test('decodes records that show existing entities', () {
+      final envelope = codec.decode(_bytes(_fixtures['shown spawn']!));
+
+      expect(envelope.revision, 14);
+      expect(
+        envelope.message,
+        isA<SpawnMessage>()
+            .having((m) => m.entity, 'entity', const EntityId(8))
+            .having((m) => m.owner, 'owner', const PeerId(3))
+            .having((m) => m.authority, 'authority', const PeerId(4))
+            .having((m) => m.parent, 'parent', const EntityId(7))
+            .having((m) => m.shown, 'shown', isTrue),
       );
     });
 

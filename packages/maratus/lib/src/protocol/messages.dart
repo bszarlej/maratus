@@ -313,10 +313,13 @@ enum DepartureReason {
 /// Creates a replicated entity of a registered spawn type.
 ///
 /// Only the host sends spawn records. It allocates the entity ID and chooses
-/// the metadata, which receivers validate before creating the entity.
+/// the metadata, which receivers validate before creating the entity. The
+/// host also sends a spawn record, marked as [shown], when an existing
+/// entity comes into a client's view.
 final class SpawnMessage extends ProtocolMessage {
   /// Creates a message that spawns [entity] as a [type] built from [data],
-  /// owned by [owner] and simulated by [authority], under [parent] if given.
+  /// owned by [owner] and simulated by [authority], under [parent] if given,
+  /// or that shows the existing [entity] if [shown].
   const SpawnMessage({
     required this.entity,
     required this.type,
@@ -324,6 +327,7 @@ final class SpawnMessage extends ProtocolMessage {
     required this.owner,
     required this.authority,
     this.parent,
+    this.shown = false,
   });
 
   /// The entity to create.
@@ -341,14 +345,25 @@ final class SpawnMessage extends ProtocolMessage {
   /// The peer whose copy of the entity is the source of truth.
   ///
   /// When the entity is spawned, this is the host or [owner]. In a joining
-  /// client's baseline, it is the entity's current authority, which an
-  /// [AuthorityMessage] may have transferred to another peer.
+  /// client's baseline, and in a [shown] record, it is the entity's current
+  /// authority, which an [AuthorityMessage] may have transferred to another
+  /// peer.
   final PeerId authority;
 
   /// The replicated entity that this entity belongs to, if any.
   ///
   /// Despawning the parent also despawns this entity.
   final EntityId? parent;
+
+  /// Whether this record shows an existing entity that came into a client's
+  /// view, rather than spawning a new one.
+  ///
+  /// The host shows entities this way after a client's baseline, which
+  /// holds the entities that the client sees when it joins. The client may
+  /// have seen the entity before: an entity that leaves a client's view is
+  /// despawned for that client, and a later record shows it again under the
+  /// same ID.
+  final bool shown;
 
   @override
   MessageKind get kind => MessageKind.spawn;
