@@ -140,7 +140,7 @@ final class _SessionDelivery {
       session._drop(remote, DisconnectReason.protocolViolation, notify: true);
       return;
     }
-    if (_staleAuthority(envelope)) return;
+    if (_stale(envelope)) return;
     final waiting =
         _waitsForControl(remote, envelope) ||
         (mode == DeliveryMode.reliable &&
@@ -175,18 +175,32 @@ final class _SessionDelivery {
     (field) => session._states.writerOf(field) == FieldWriter.authority,
   );
 
-  /// Whether [envelope] holds authority-written state that its sender
-  /// sampled before the latest transfer of the entity's authority.
-  bool _staleAuthority(MessageEnvelope envelope) {
-    if (envelope.message case StateMessage(:final entity) && final message) {
-      final live = session.registry[entity];
-      if (live != null &&
-          envelope.revision < session._authorities.lastTransfer(live) &&
-          _byAuthority(message)) {
-        return true;
-      }
+  /// Whether [envelope], which arrived on an independent lane, is stale:
+  /// authority-written state that its sender sampled before the latest
+  /// transfer of the entity's authority, or, on a client, state or an RPC
+  /// that the host sent before it showed the entity to this client again.
+  bool _stale(MessageEnvelope envelope) {
+    final EntityId entity;
+    switch (envelope.message) {
+      case StateMessage(entity: final id) ||
+          RpcDeliveryMessage(entity: final id):
+        entity = id;
+      default:
+        return false;
     }
-    return false;
+    final live = session.registry[entity];
+    if (live == null) return false;
+    // Such a message belongs to the entity's earlier stay in this client's
+    // view, and its dependency revision predates the record that showed the
+    // entity again.
+    if (!session._isHost &&
+        envelope.revision < (session._spawns._recordOf(live)?.revision ?? 0)) {
+      return true;
+    }
+    final message = envelope.message;
+    return message is StateMessage &&
+        envelope.revision < session._authorities.lastTransfer(live) &&
+        _byAuthority(message);
   }
 
   bool _waitsForControl(_Remote remote, MessageEnvelope envelope) {
@@ -230,7 +244,7 @@ final class _SessionDelivery {
       for (var left = pendingDelivery.length; left > 0; left--) {
         if (session._remotes[remote.connection] != remote) break;
         final pending = pendingDelivery.removeFirst();
-        final stale = _staleAuthority(pending.envelope);
+        final stale = _stale(pending.envelope);
         if (!stale &&
             (blockedChannels.contains(pending.channel) ||
                 _waitsForControl(remote, pending.envelope))) {

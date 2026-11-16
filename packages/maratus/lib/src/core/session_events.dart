@@ -75,7 +75,8 @@ sealed class SessionEvent {
 
 /// Why an otherwise well-formed RPC could not be dispatched.
 enum RpcRejection {
-  /// The addressed entity does not belong to this session's registry.
+  /// The addressed entity does not belong to this session's registry, or
+  /// the host does not show it to the caller.
   unknownEntity,
 
   /// The addressed entity is pending or removed.
@@ -87,7 +88,8 @@ enum RpcRejection {
   /// The authenticated caller does not satisfy the RPC's caller policy.
   notAllowed,
 
-  /// The selected destination is unknown, unready, or outside the RPC's route.
+  /// The selected destination is unknown, unready, outside the RPC's route,
+  /// or does not see the addressed entity.
   invalidTarget,
 
   /// No live handler is bound to this entity and method at the destination.
@@ -213,6 +215,35 @@ final class AdmissionFailed extends SessionEvent {
   final PeerId peer;
 
   /// The error that the handler threw or completed with.
+  final Object error;
+
+  /// The stack trace captured at the failure.
+  final StackTrace stackTrace;
+}
+
+/// A host's visibility filter threw while deciding whether a client sees a
+/// replicated entity.
+///
+/// The host treats the failure as a rejection of [entity] for [peer],
+/// without running the filters added after the one that threw, until the
+/// filters run again.
+final class VisibilityFilterFailed extends SessionEvent {
+  /// Reports a filter [error] for [entity] and [peer], with its original
+  /// [stackTrace].
+  const VisibilityFilterFailed({
+    required this.entity,
+    required this.peer,
+    required this.error,
+    required this.stackTrace,
+  });
+
+  /// The entity whose visibility the filter decided.
+  final EntityId entity;
+
+  /// The client whose visibility of [entity] the filter decided.
+  final PeerId peer;
+
+  /// The error that the filter threw.
   final Object error;
 
   /// The stack trace captured at the failure.

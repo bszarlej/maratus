@@ -758,57 +758,66 @@ final class _StateReplicator {
     session._onMessage?.call(sender, envelope);
   }
 
-  /// Sends the retained values as part of [remote]'s baseline. Returns
-  /// `false` if its transport refused one, which removes [remote].
-  ///
-  /// Values that their current writer sampled keep its latest sample time;
-  /// values that a previous authority sampled are sent without one.
+  /// Sends the retained values of the entities that [remote] sees as part
+  /// of its baseline. Returns `false` if its transport refused one, which
+  /// removes [remote].
   bool sendBaseline(_Remote remote) {
     _prune();
-    for (final MapEntry(key: entity, value: fields)
-        in _values.entries.toList()) {
-      final settled = <FieldId, Uint8List>{};
-      final sampled = <FieldWriter, Map<FieldId, Uint8List>>{};
-      final sampledAt = <FieldWriter, Duration>{};
-      for (final MapEntry(key: field, :value) in fields.entries) {
-        final time = value.sampledAt;
-        if (time == null) {
-          settled[field] = value.bytes;
-          continue;
-        }
-        final writer = writerOf(field);
-        (sampled[writer] ??= {})[field] = value.bytes;
-        // Each capture samples every property that its peer writes, and a
-        // field it did not send was unchanged, so all values that a writer
-        // sampled were current at its latest sample. The authority and the
-        // owner sample on their own clocks.
-        final latest = sampledAt[writer];
-        if (latest == null || time > latest) sampledAt[writer] = time;
-      }
-      final inputs = _inputsOf(fields);
-      for (final message in [
-        ..._messages(
-          entity,
-          settled,
-          sampledAt: null,
-          reliable: true,
-          inputs: inputs,
-        ),
-        for (final MapEntry(key: writer, value: values) in sampled.entries)
-          ..._messages(
-            entity,
-            values,
-            sampledAt: sampledAt[writer],
-            reliable: true,
-            inputs: inputs,
-          ),
-      ]) {
+    for (final entity in _values.keys.toList()) {
+      if (!session._visibility.sees(remote.peer!, entity)) continue;
+      for (final message in current(entity)) {
         if (!session._send(remote, message, revision: session._revision)) {
           return false;
         }
       }
     }
     return true;
+  }
+
+  /// The reliable messages that carry the retained values of [entity] to a
+  /// peer that has none of them, as in a baseline.
+  ///
+  /// Values that their current writer sampled keep its latest sample time;
+  /// values that a previous authority sampled are sent without one.
+  List<StateMessage> current(NetworkEntity entity) {
+    final fields = _values[entity];
+    if (fields == null) return const [];
+    final settled = <FieldId, Uint8List>{};
+    final sampled = <FieldWriter, Map<FieldId, Uint8List>>{};
+    final sampledAt = <FieldWriter, Duration>{};
+    for (final MapEntry(key: field, :value) in fields.entries) {
+      final time = value.sampledAt;
+      if (time == null) {
+        settled[field] = value.bytes;
+        continue;
+      }
+      final writer = writerOf(field);
+      (sampled[writer] ??= {})[field] = value.bytes;
+      // Each capture samples every property that its peer writes, and a
+      // field it did not send was unchanged, so all values that a writer
+      // sampled were current at its latest sample. The authority and the
+      // owner sample on their own clocks.
+      final latest = sampledAt[writer];
+      if (latest == null || time > latest) sampledAt[writer] = time;
+    }
+    final inputs = _inputsOf(fields);
+    return [
+      ..._messages(
+        entity,
+        settled,
+        sampledAt: null,
+        reliable: true,
+        inputs: inputs,
+      ),
+      for (final MapEntry(key: writer, value: values) in sampled.entries)
+        ..._messages(
+          entity,
+          values,
+          sampledAt: sampledAt[writer],
+          reliable: true,
+          inputs: inputs,
+        ),
+    ];
   }
 
   /// Passes the latest values of the fields that this peer does not write

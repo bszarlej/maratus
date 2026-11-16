@@ -152,7 +152,9 @@ final class _SpawnReplicator {
     required PeerId authority,
     required NetworkEntity? parent,
     required OwnerLeftPolicy onOwnerLeft,
+    required bool publicVisibility,
   }) {
+    session._visibility.checkNotFiltering();
     if (session._state != SessionState.hosting) {
       throw StateError('Only a hosting session spawns entities.');
     }
@@ -180,17 +182,29 @@ final class _SpawnReplicator {
       );
     }
     session._checkRevisionsLeft();
-    SpawnMessage record(EntityId entity) => SpawnMessage(
+    SpawnMessage record(
+      EntityId entity, {
+      PeerId? current,
+      bool shown = false,
+    }) => SpawnMessage(
       entity: entity,
       type: type.id,
       data: data,
       owner: owner,
-      authority: authority,
+      authority: current ?? authority,
       parent: parent?.id,
+      shown: shown,
     );
-    // The largest ID encodes the largest record, so a valid placeholder
-    // proves that the allocated ID fits as well.
-    _canonical(record(const EntityId(IntCodec.maxSafe)));
+    // The largest IDs encode the largest record, so a valid placeholder
+    // proves that the allocated ID fits as well, and so does the record
+    // that shows the entity with any later authority.
+    _canonical(
+      record(
+        const EntityId(IntCodec.maxSafe),
+        current: const PeerId(IntCodec.maxSafe),
+        shown: true,
+      ),
+    );
     final entity = session.registry.create(owner: owner, authority: authority);
     final Uint8List bytes;
     try {
@@ -199,13 +213,17 @@ final class _SpawnReplicator {
       session.registry.remove(entity.id);
       rethrow;
     }
-    final spawned = _add(entity, type.id, parentRecord, bytes, onOwnerLeft);
-    session._replicate(_decode(bytes));
+    final spawned = _add(entity, type.id, parentRecord, bytes, onOwnerLeft)
+      ..public = publicVisibility;
+    final refused = session._visibility.spawned(spawned);
+    session._replicate(_decode(bytes), to: spawned.visibleTo);
+    refused.forEach(session._refused);
     _announce(spawned);
     return entity;
   }
 
   bool despawn(NetworkEntity entity) {
+    session._visibility.checkNotFiltering();
     if (session._state != SessionState.hosting) {
       throw StateError('Only a hosting session despawns entities.');
     }
@@ -236,42 +254,64 @@ final class _SpawnReplicator {
     }
   }
 
-  /// Sends the live entities, parents first, as part of [remote]'s
-  /// baseline, each with its current authority. Returns `false` if its
+  /// Sends the live entities that [remote] sees, parents first, as part of
+  /// its baseline, each with its current authority. Returns `false` if its
   /// transport refused one, which removes [remote].
   bool sendBaseline(_Remote remote) {
     for (final record in _records.values.toList()) {
-      var message = _decode(record.bytes);
-      final authority = record.entity.authority;
-      if (message.authority != authority) {
-        message = SpawnMessage(
-          entity: message.entity,
-          type: message.type,
-          data: message.data,
-          owner: message.owner,
-          authority: authority,
-          parent: message.parent,
-        );
-      }
-      if (!session._send(remote, message, revision: session._revision)) {
+      if (!record.visibleTo.contains(remote.peer)) continue;
+      if (!session._send(
+        remote,
+        _current(record),
+        revision: session._revision,
+      )) {
         return false;
       }
     }
     return true;
   }
 
-  /// Applies a spawn record from the host, part of this client's [baseline]
-  /// or a later change. Returns `false` if it conflicts with the replicated
-  /// entities, which is a protocol violation.
+  /// The record that shows [record]'s entity to a client that does not see
+  /// it, with its current authority.
+  SpawnMessage shown(_SpawnRecord record) => _current(record, shown: true);
+
+  /// The spawn record of [record]'s entity with its current authority.
+  SpawnMessage _current(_SpawnRecord record, {bool shown = false}) {
+    final message = _decode(record.bytes);
+    return SpawnMessage(
+      entity: message.entity,
+      type: message.type,
+      data: message.data,
+      owner: message.owner,
+      authority: record.entity.authority,
+      parent: message.parent,
+      shown: shown,
+    );
+  }
+
+  /// Applies a spawn record from the host with [revision], part of this
+  /// client's [baseline] or a later change. Returns `false` if it conflicts
+  /// with the replicated entities, which is a protocol violation.
   ///
-  /// A new entity's authority is the host or its owner. A baseline entity's
-  /// authority may have been transferred to any peer since.
-  bool applySpawn(SpawnMessage message, {bool baseline = false}) {
+  /// A new entity's authority is the host or its owner, and its ID is new
+  /// to this client. The authority of an entity in the baseline, or of a
+  /// shown one, may have been transferred to any peer since it spawned. A
+  /// shown entity may also have been removed from this client before, when
+  /// it left the client's view, and is registered again under its ID.
+  bool applySpawn(
+    SpawnMessage message, {
+    required int revision,
+    bool baseline = false,
+  }) {
     final parentId = message.parent;
     final parent = parentId == null ? null : _records[parentId];
-    if (session.registry[message.entity] != null ||
+    final previous = session.registry[message.entity];
+    if ((previous != null &&
+            (!message.shown || previous.state != EntityState.removed)) ||
         (parentId != null && parent == null) ||
+        (baseline && message.shown) ||
         (!baseline &&
+            !message.shown &&
             message.authority != PeerId.host &&
             message.authority != message.owner)) {
       return false;
@@ -282,18 +322,25 @@ final class _SpawnReplicator {
     } on ArgumentError {
       return false;
     }
-    final entity = session.registry.register(
-      message.entity,
-      owner: message.owner,
-      authority: message.authority,
-    );
+    final entity = previous == null
+        ? session.registry.register(
+            message.entity,
+            owner: message.owner,
+            authority: message.authority,
+          )
+        : registerAgain(
+            session.registry,
+            message.entity,
+            owner: message.owner,
+            authority: message.authority,
+          );
     final record = _add(
       entity,
       message.type,
       parent,
       bytes,
       OwnerLeftPolicy.keep,
-    );
+    )..revision = revision;
     if (baseline) _baseline.add(record);
     _announce(record);
     return true;
@@ -372,9 +419,13 @@ final class _SpawnReplicator {
   void _despawn(_SpawnRecord record) {
     session._checkRevisionsLeft();
     // Removing the entities first drops their held state instead of
-    // sending it ahead of the despawn record.
+    // sending it ahead of the despawn record. The clients that see a
+    // descendant see the entity too.
     final removed = _remove(record);
-    session._replicate(DespawnMessage(entity: record.entity.id));
+    session._replicate(
+      DespawnMessage(entity: record.entity.id),
+      to: record.visibleTo,
+    );
     _release(removed);
   }
 
@@ -475,4 +526,24 @@ final class _SpawnRecord {
 
   /// The binding told about this entity, which is told when it despawns.
   SpawnBinding? announced;
+
+  /// On a client, the revision of the record that spawned or showed this
+  /// entity here. Messages that the host sent before it belong to an
+  /// earlier stay of the entity in the client's view.
+  var revision = 0;
+
+  /// On a host, the clients that see this entity.
+  final visibleTo = <PeerId>{};
+
+  /// On a host, whether the clients without a visibility of their own see
+  /// this entity, if the filters accept it.
+  var public = true;
+
+  /// On a host, the visibility of this entity for each client that has its
+  /// own.
+  final visibility = <PeerId, bool>{};
+
+  /// On a host, the clients that the filters rejected this entity for when
+  /// they last ran.
+  final rejected = <PeerId>{};
 }

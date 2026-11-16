@@ -147,6 +147,63 @@ void main() {
       expect(registry[removed.id], same(removed));
       expect(removed.state, EntityState.removed);
     });
+
+    test('registers a removed entity again as a new, last entity', () {
+      final returning = registry.create(owner: _client, authority: PeerId.host);
+      final other = registry.create(owner: _client, authority: PeerId.host);
+      registry.remove(returning.id);
+
+      final again = registerAgain(
+        registry,
+        returning.id,
+        owner: _client,
+        authority: const PeerId(3),
+      );
+
+      expect(again, isNot(same(returning)));
+      expect(again.id, returning.id);
+      expect(again.owner, _client);
+      expect(again.authority, const PeerId(3));
+      expect(again.state, EntityState.pending);
+      expect(returning.state, EntityState.removed);
+      expect(registry[returning.id], same(again));
+      expect(registry.entities, [other, again]);
+    });
+
+    test('registers only removed entities again', () {
+      final live = registry.create(owner: _client, authority: PeerId.host);
+      final removed = registry.create(owner: _client, authority: PeerId.host);
+      registry.remove(removed.id);
+
+      expect(
+        () => registerAgain(
+          registry,
+          live.id,
+          owner: _client,
+          authority: PeerId.host,
+        ),
+        throwsStateError,
+      );
+      expect(
+        () => registerAgain(
+          registry,
+          const EntityId(9),
+          owner: _client,
+          authority: PeerId.host,
+        ),
+        throwsArgumentError,
+      );
+      expect(
+        () => registerAgain(
+          registry,
+          removed.id,
+          owner: const PeerId(0),
+          authority: PeerId.host,
+        ),
+        throwsArgumentError,
+      );
+      expect(registry[removed.id], same(removed));
+    });
   });
 
   group('lifecycle', () {

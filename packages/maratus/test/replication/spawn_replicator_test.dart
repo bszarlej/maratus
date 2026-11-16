@@ -296,6 +296,7 @@ SpawnMessage _avatar(
   int owner = 1,
   int authority = 1,
   int? parent,
+  bool shown = false,
 }) => SpawnMessage(
   entity: EntityId(entity),
   type: const SpawnTypeId('test.avatar'),
@@ -303,6 +304,7 @@ SpawnMessage _avatar(
   owner: PeerId(owner),
   authority: PeerId(authority),
   parent: parent == null ? null : EntityId(parent),
+  shown: shown,
 );
 
 void main() {
@@ -1010,6 +1012,26 @@ void main() {
       expect(harness.client.session.revision, 4);
     });
 
+    test('a client accepts shown entities with their current authority, '
+        'again after they left its view', () {
+      final harness = _RawHostHarness()..welcome();
+      harness
+        ..send(_avatar(1), revision: 1)
+        ..send(const DespawnMessage(entity: EntityId(1)), revision: 2)
+        ..send(_avatar(1, authority: 3, shown: true), revision: 3)
+        ..send(_avatar(2, owner: 2, authority: 3, shown: true), revision: 4)
+        ..run();
+
+      expect(harness.client.session.state, SessionState.ready);
+      expect(harness.client.log, [
+        '+1 avatar Ada o1 a1',
+        '-1',
+        '+1 avatar Ada o1 a3',
+        '+2 avatar Ada o2 a3',
+      ]);
+      expect(harness.client.world, ['1 o1 a3', '2 o2 a3']);
+    });
+
     const spawned = '+1 avatar Ada o1 a1';
     final violations = <(String, List<ProtocolMessage>, List<String>)>[
       ('a duplicate entity', [_avatar(1), _avatar(1, data: 'Bob')], [spawned]),
@@ -1038,6 +1060,13 @@ void main() {
         [spawned],
       ),
       ('a static entity ID', [_avatar(7)], []),
+      ('a shown live entity', [_avatar(1), _avatar(1, shown: true)], [spawned]),
+      ('a shown static entity', [_avatar(7, shown: true)], []),
+      (
+        'a despawned entity without the shown flag',
+        [_avatar(1), const DespawnMessage(entity: EntityId(1)), _avatar(1)],
+        [spawned],
+      ),
     ];
     for (final (name, records, applied) in violations) {
       test('a client leaves a host that sends $name', () {
@@ -1066,6 +1095,7 @@ void main() {
 
     for (final (name, record, revision) in [
       ('a baseline record at another revision', _avatar(1), 3),
+      ('a shown entity in a baseline', _avatar(2, shown: true), 0),
       (
         'a despawn while synchronizing',
         const DespawnMessage(entity: EntityId(1)),
