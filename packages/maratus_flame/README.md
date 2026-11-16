@@ -104,6 +104,26 @@ replicated entities. A spawner creates components for existing entities too,
 including those received while joining. Removing a component locally does not
 despawn its entity.
 
+To react to session events without polling the session yourself, pass `onEvent`
+to the scope. It receives each event after the session updates and before
+gameplay, for example to spawn a player for each client that joins:
+
+```dart
+MultiplayerScope(
+  session: session,
+  onEvent: (event) {
+    if (event case PeerJoined(:final peer)) {
+      session.spawn(playerType, 100, owner: peer);
+    }
+  },
+  children: [spawner],
+);
+```
+
+`spawner.spawnedComponents[entity]` finds the component of an entity, and
+`spawner.componentsOwnedBy(peer)` lists the components of the entities that a
+peer owns, such as its player.
+
 To show a player's own movement without waiting for the host, predict it from
 the player's inputs, as the core
 [prediction guide](https://pub.dev/packages/maratus#client-side-prediction)
