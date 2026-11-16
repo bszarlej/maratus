@@ -925,4 +925,104 @@ void main() {
     expect(joining.disconnectReason, DisconnectReason.timeout);
     expect(harness.host.state, SessionState.hosting);
   });
+
+  group('onEvent', () {
+    late ManualClock clock;
+    late InMemoryNetwork network;
+    late ProtocolSchema schema;
+    late MultiplayerSession host;
+
+    setUp(() {
+      clock = ManualClock();
+      network = InMemoryNetwork(clock: clock);
+      schema = ProtocolSchemaBuilder().build();
+      host = MultiplayerSession(schema: schema, clock: clock)
+        ..host(network.host());
+      addTearDown(host.close);
+      // Starting to host reports a state change of its own.
+      expect(host.poll(), const SessionStateChanged(SessionState.hosting));
+    });
+
+    /// Joins a client, updating it and [game] until it is ready.
+    Future<void> join(FlameGame game) async {
+      final client = MultiplayerSession(schema: schema, clock: clock)
+        ..join(network.connect());
+      addTearDown(client.close);
+      for (var i = 0; i < 8; i++) {
+        clock.advance(Duration.zero);
+        client.update();
+        game.update(0);
+        await Future<void>.value();
+      }
+    }
+
+    test(
+      'passes the events after the session update, before gameplay',
+      () async {
+        final game = await _game();
+        final trace = <String>[];
+        final scope = MultiplayerScope(
+          session: host,
+          onEvent: (event) => trace.add('$event'),
+          children: [_GameplayComponent(() => trace.add('gameplay'))],
+        );
+        await _mount(game, game, scope);
+        trace.clear();
+
+        await join(game);
+
+        final joined = trace.indexOf('PeerJoined(2)');
+        expect(joined, isNonNegative);
+        expect(trace[joined + 1], 'gameplay');
+        expect(trace, contains('PeerReady(2)'));
+        expect(host.poll(), isNull);
+      },
+    );
+
+    test('leaves the events for polling without a callback', () async {
+      final game = await _game();
+      await _mount(game, game, MultiplayerScope(session: host));
+
+      await join(game);
+
+      expect(host.poll(), const PeerJoined(PeerId(2)));
+    });
+
+    test('stops passing events once the scope is disposed', () async {
+      final game = await _game();
+      // Two clients join before the scope drives the host.
+      final clients = [
+        for (var i = 0; i < 2; i++)
+          MultiplayerSession(schema: schema, clock: clock)
+            ..join(network.connect()),
+      ];
+      for (var i = 0; i < 8; i++) {
+        clock.advance(Duration.zero);
+        host.update();
+        for (final client in clients) {
+          client.update();
+        }
+      }
+      for (final client in clients) {
+        addTearDown(client.close);
+      }
+      final events = <SessionEvent>[];
+      late final MultiplayerScope scope;
+      scope = MultiplayerScope(
+        session: host,
+        ownsSession: false,
+        onEvent: (event) {
+          events.add(event);
+          scope.dispose();
+        },
+      );
+      await _mount(game, game, scope);
+
+      expect(events, [const PeerJoined(PeerId(2))]);
+      final remaining = [
+        for (var event = host.poll(); event != null; event = host.poll()) event,
+      ];
+      expect(remaining.first, const PeerJoined(PeerId(3)));
+    });
+  });
 }

@@ -14,7 +14,8 @@ part 'networked_component.dart';
 /// gameplay, calls [NetworkedComponent.captureNetworkState], then samples
 /// synchronized properties through [MultiplayerSession.captureState]. Socket
 /// callbacks only enqueue transport events. Do not also update or capture
-/// [session] elsewhere.
+/// [session] elsewhere. With [onEvent], the scope also takes the session's
+/// events after updating it, so gameplay code needs no polling loop.
 ///
 /// Networked children register their attachment at the start of `onLoad`;
 /// readiness is checked at update boundaries, without awaiting child mounting.
@@ -25,12 +26,14 @@ part 'networked_component.dart';
 /// Removing its game (including GameWidget disposal) also disposes the scope
 /// when the game's removal future completes, without waiting for another tick.
 class MultiplayerScope extends Component {
-  /// Binds [session] to this subtree, optionally taking ownership of its close.
+  /// Binds [session] to this subtree, optionally taking ownership of its close,
+  /// and passing its events to [onEvent].
   ///
   /// Throws [StateError] if another live scope already drives the session.
   MultiplayerScope({
     required this.session,
     this.ownsSession = true,
+    this.onEvent,
     super.children,
     super.priority,
   }) {
@@ -51,6 +54,17 @@ class MultiplayerScope extends Component {
 
   /// Whether disposing or removing this scope also closes [session].
   final bool ownsSession;
+
+  /// Receives each event of [session], or `null` to leave the events for
+  /// other code to take with [MultiplayerSession.poll].
+  ///
+  /// Each update, the scope takes the events that the session reported since
+  /// the previous update, in order, after updating the session and before its
+  /// children's gameplay. A host can react to [PeerJoined] here, for example
+  /// by spawning the client's player. Events that gameplay or capturing
+  /// causes, such as a failed spawn handler, arrive at the next update. The
+  /// scope stops passing events once it is disposed or removed.
+  final void Function(SessionEvent event)? onEvent;
 
   /// Whether this scope has permanently released its session and attachments.
   bool get isDisposed => _disposed;
@@ -163,6 +177,15 @@ class MultiplayerScope extends Component {
       if (!spawner._hasLiveScope) spawner._detachSpawner();
     }
     session.update();
+    if (onEvent case final onEvent?) {
+      // Check before taking each event, so none is lost once the callback
+      // disposes this scope.
+      while (!_disposed && !isRemoving) {
+        final event = session.poll();
+        if (event == null) break;
+        onEvent(event);
+      }
+    }
     if (_disposed || isRemoving) return;
     super.updateTree(dt);
     if (_disposed || isRemoving) return;
