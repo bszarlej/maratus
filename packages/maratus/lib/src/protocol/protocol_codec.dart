@@ -31,8 +31,9 @@ import 'wire_codec.dart';
 ///   pong bodies hold the ping's sequence `n`. Membership bodies hold the
 ///   client's peer ID `p`, and departures add the reason code `c`. The
 ///   other bodies hold the entity ID `e`: spawn bodies add the spawn type
-///   `t`, construction data `d`, owner `o`, authority `a`, and optionally a
-///   parent entity `p`; authority bodies add the new authority `a`, and
+///   `t`, construction data `d`, owner `o`, authority `a`, optionally a
+///   parent entity `p`, and `s`, which is `true` in a record that shows an
+///   existing entity; authority bodies add the new authority `a`, and
 ///   authority acknowledgements hold only the entity. RPC request bodies add
 ///   the RPC `m`, its payload `p`, and optionally a target peer `t`. RPC
 ///   deliveries require both sender `s` and target `t`; state bodies add an
@@ -55,9 +56,9 @@ final class ProtocolCodec {
   /// The protocol version that this codec writes and accepts.
   ///
   /// RPC routing, spawn metadata, pings, state sample times, authority
-  /// transfers, membership, and inputs extend version 1; the schema
-  /// fingerprint includes RPC routing metadata so earlier schemas fail the
-  /// session handshake.
+  /// transfers, membership, inputs, and shown spawn records extend version
+  /// 1; the schema fingerprint includes RPC routing metadata so earlier
+  /// schemas fail the session handshake.
   static const int version = 1;
 
   /// The registrations that message bodies are validated against.
@@ -81,6 +82,7 @@ final class ProtocolCodec {
     maxLength: GoodbyeMessage.maxDetailLength,
   );
   static const _identifierCodec = StringCodec(maxLength: maxIdentifierLength);
+  static const _flagCodec = BoolCodec();
   static final _kinds = {
     for (final kind in MessageKind.values) kind.code: kind,
   };
@@ -227,6 +229,7 @@ final class ProtocolCodec {
           :final owner,
           :final authority,
           :final parent,
+          :final shown,
         ) =>
           {
             'e': _checkEntity(entity),
@@ -239,6 +242,7 @@ final class ProtocolCodec {
             'o': _peerCodec.encode(owner.value),
             'a': _peerCodec.encode(authority.value),
             if (parent != null) 'p': _checkEntity(parent),
+            if (shown) 's': true,
           },
         DespawnMessage(:final entity) ||
         AuthorityAckMessage(:final entity) => {'e': _checkEntity(entity)},
@@ -387,12 +391,25 @@ final class ProtocolCodec {
       case MessageKind.spawn:
         final hasParent =
             value is Map<String, Object?> && value.containsKey('p');
-        final body = WireObject(
-          value,
-          hasParent
-              ? const {'e', 't', 'd', 'o', 'a', 'p'}
-              : const {'e', 't', 'd', 'o', 'a'},
-        );
+        final shown = value is Map<String, Object?> && value.containsKey('s');
+        final body = WireObject(value, {
+          'e',
+          't',
+          'd',
+          'o',
+          'a',
+          if (hasParent) 'p',
+          if (shown) 's',
+        });
+        // A record that spawns a new entity leaves the flag out, so each
+        // record has one encoding.
+        if (shown && !body.read('s', _flagCodec)) {
+          throw const ProtocolException(
+            ProtocolErrorCode.invalidValue,
+            'expected true',
+            path: ['s'],
+          );
+        }
         final type = SpawnTypeId(body.read('t', _identifierCodec));
         final entry = _known(
           schema.spawnType(type),
@@ -407,6 +424,7 @@ final class ProtocolCodec {
           owner: PeerId(body.read('o', _peerCodec)),
           authority: PeerId(body.read('a', _peerCodec)),
           parent: hasParent ? EntityId(body.read('p', _entityCodec)) : null,
+          shown: shown,
         );
       case MessageKind.despawn:
         final body = WireObject(value, const {'e'});
