@@ -29,6 +29,11 @@ typedef SpawnFactory<T> = NetworkedComponent Function(SpawnContext<T> context);
 /// component, even while it is still loading. Removing a spawned component
 /// locally does not despawn its entity, and the spawner does not recreate it.
 ///
+/// On a client, an entity that leaves the client's view, as the host's
+/// [MultiplayerSession.setVisibilityFor] and related methods decide, is
+/// despawned there, which removes its component. If the entity comes into
+/// view again, the spawner creates a new component for it.
+///
 /// Removing the spawner stops it from creating components. Its components
 /// leave the tree with it; when it is added again, it removes those whose
 /// entities were despawned meanwhile and creates components for new ones.

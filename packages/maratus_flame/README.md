@@ -124,6 +124,12 @@ MultiplayerScope(
 `spawner.componentsOwnedBy(peer)` lists the components of the entities that a
 peer owns, such as its player.
 
+When the host limits what each client sees, as the core
+[visibility guide](https://pub.dev/packages/maratus#visibility) describes, a
+client's spawner removes the component of an entity that leaves its view. If the
+entity comes into view again, the spawner creates a new component, which starts
+from the entity's latest state.
+
 To show a player's own movement without waiting for the host, predict it from
 the player's inputs, as the core
 [prediction guide](https://pub.dev/packages/maratus#client-side-prediction)
