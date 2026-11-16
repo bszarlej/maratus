@@ -14,6 +14,7 @@ workspace:
   - packages/maratus_webrtc
   - examples/chat
   - examples/prediction
+  - examples/visibility
 
 dev_dependencies:
   melos: ^8.10.0
