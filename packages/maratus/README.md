@@ -312,6 +312,9 @@ teleport shows at once.
 
 The [prediction example](https://github.com/bszarlej/maratus/tree/master/examples/prediction)
 runs a host and a client side by side over a simulated network with latency.
+The [generator guide](https://pub.dev/packages/maratus_generator#predict-the-owners-state)
+shows the same prediction declared with annotations, which generated code runs
+every frame.
 
 ### Late inputs
 
