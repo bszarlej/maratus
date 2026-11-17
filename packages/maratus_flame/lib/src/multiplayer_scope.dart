@@ -10,12 +10,13 @@ part 'networked_component.dart';
 
 /// Drives one session for a subtree of Flame components.
 ///
-/// Each update applies eligible incoming spawn records and RPCs, updates
-/// gameplay, calls [NetworkedComponent.captureNetworkState], then samples
-/// synchronized properties through [MultiplayerSession.captureState]. Socket
-/// callbacks only enqueue transport events. Do not also update or capture
-/// [session] elsewhere. With [onEvent], the scope also takes the session's
-/// events after updating it, so gameplay code needs no polling loop.
+/// Each update applies eligible incoming spawn records and RPCs, calls
+/// [NetworkedComponent.updateNetworkMembers], updates gameplay, calls
+/// [NetworkedComponent.captureNetworkState], then samples synchronized
+/// properties through [MultiplayerSession.captureState]. Socket callbacks
+/// only enqueue transport events. Do not also update or capture [session]
+/// elsewhere. With [onEvent], the scope also takes the session's events after
+/// updating it, so gameplay code needs no polling loop.
 ///
 /// Networked children register their attachment at the start of `onLoad`;
 /// readiness is checked at update boundaries, without awaiting child mounting.
@@ -185,6 +186,10 @@ class MultiplayerScope extends Component {
         if (event == null) break;
         onEvent(event);
       }
+    }
+    if (_disposed || isRemoving) return;
+    for (final component in _components.toList()) {
+      if (component.isNetworkReady) component.updateNetworkMembers(dt);
     }
     if (_disposed || isRemoving) return;
     super.updateTree(dt);

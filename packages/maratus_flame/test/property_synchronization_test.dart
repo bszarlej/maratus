@@ -39,6 +39,7 @@ final class _Probe extends PositionComponent with NetworkedComponent {
   final Future<void>? loadGate;
   final attached = Completer<void>();
   final synchronizers = <MultiplayerSynchronizer>[];
+  void Function(double dt)? onMembers;
   void Function()? onUpdate;
   void Function()? onCapture;
   var samples = 0;
@@ -69,6 +70,12 @@ final class _Probe extends PositionComponent with NetworkedComponent {
       ]),
     );
     if (!attached.isCompleted) attached.complete();
+  }
+
+  @override
+  void updateNetworkMembers(double dt) {
+    super.updateNetworkMembers(dt);
+    onMembers?.call(dt);
   }
 
   @override
@@ -185,6 +192,33 @@ void main() {
     expect(client.samples, 0);
   });
 
+  test('scope updates generated members before gameplay', () async {
+    final fixture = _Fixture();
+    final hostGame = await fixture.game(fixture.host);
+    final clientGame = await fixture.game(fixture.client);
+    final host = _Probe(fixture.hostEntity, fixture.field);
+    final client = _Probe(fixture.clientEntity, fixture.field);
+    await fixture.mount(hostGame, fixture.scope(hostGame), host);
+    await fixture.mount(clientGame, fixture.scope(clientGame), client);
+    fixture.deliver(clientGame);
+    final calls = <Object>[];
+    client
+      ..onMembers = ((dt) {
+        calls.addAll(['members', dt, client.position.clone()]);
+      })
+      ..onUpdate = (() => calls.add('gameplay'))
+      ..onCapture = (() => calls.add('capture'));
+
+    host.position.setValues(3, 4);
+    fixture.clock.advance(const Duration(milliseconds: 50));
+    hostGame.update(0);
+    fixture.clock.advance(Duration.zero);
+    clientGame.update(0.25);
+
+    // The members see the state that the session applied in the same frame.
+    expect(calls, ['members', 0.25, Vector2(3, 4), 'gameplay', 'capture']);
+  });
+
   test('loading components apply the latest state after mounting', () async {
     final fixture = _Fixture();
     final hostGame = await fixture.game(fixture.host);
@@ -197,6 +231,8 @@ void main() {
       fixture.field,
       loadGate: gate.future,
     );
+    var memberUpdates = 0;
+    client.onMembers = (_) => memberUpdates++;
     final loading = fixture.scope(clientGame).add(client);
     await client.attached.future;
 
@@ -208,6 +244,7 @@ void main() {
     expect(client.applications, 0);
     expect(client.position, Vector2.zero());
     expect(client.synchronizer.snapshot(fixture.field)!.value, Vector2(7, 8));
+    expect(memberUpdates, 0);
 
     gate.complete();
     await loading;
@@ -216,6 +253,7 @@ void main() {
     expect(client.isNetworkReady, isTrue);
     expect(client.position, Vector2(7, 8));
     expect(client.applications, 1);
+    expect(memberUpdates, greaterThan(0));
   });
 
   test(
