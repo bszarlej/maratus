@@ -133,8 +133,9 @@ from the entity's latest state.
 To show a player's own movement without waiting for the host, predict it from
 the player's inputs, as the core
 [prediction guide](https://pub.dev/packages/maratus#client-side-prediction)
-describes. Predict before synchronizing, and advance the prediction in
-`update` on the owner:
+describes. Predict before synchronizing, and run the prediction in `update` on
+every peer. On the owner, `update` advances it with the input; elsewhere, it
+returns the state to present:
 
 ```dart
 @override
@@ -154,22 +155,25 @@ void update(double dt) {
   super.update(dt);
   if (!isNetworkReady) return;
   position.setFrom(
-    isNetworkOwner
-        ? _prediction.advance(
-            readDirection(),
-            Duration(microseconds: (dt * 1e6).round()),
-          )
-        : _prediction.presented,
+    _prediction.update(
+      readDirection(),
+      Duration(microseconds: (dt * 1e6).round()),
+    ),
   );
 }
 ```
 
-Code generation does not declare predictions yet, so register the predicted
-field and the input stream by hand. A component that predicts can still
-generate its spawn type and RPCs, but not `@SyncedField` members: their
-synchronizer binds before `onNetworkAttach`, and a prediction must come first.
-The [prediction example](https://github.com/bszarlej/maratus/tree/master/examples/prediction)
-combines both.
+With code generation, a component declares all of this with annotations
+instead, as the
+[generator guide](https://pub.dev/packages/maratus_generator#predict-the-owners-state)
+shows: `@Prediction` on the step names the predicted `@SyncedField` member
+and the member that holds the owner's input. The scope then runs the prediction
+before each frame's gameplay and writes the state to present to the member, so
+the component needs no `onNetworkAttach` or `update` code for it. A component
+with `@SyncedField` members cannot predict by hand: their synchronizer binds
+before `onNetworkAttach`, and a prediction must come first. The
+[prediction example](https://github.com/bszarlej/maratus/tree/master/examples/prediction)
+declares its prediction with annotations.
 
 ## Component lifecycle
 
