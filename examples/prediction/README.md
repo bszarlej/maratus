@@ -44,12 +44,12 @@ latencies.
 
 ## Explore the code
 
-- [player.dart](lib/player.dart): the player and its prediction. Its spawn type
-  and respawn RPC are generated from its annotations; the predicted position
-  and the input stream are registered by hand, since annotations do not declare
-  predictions yet. Every peer predicts the position with the same step,
-  `Player.move`. The client advances the prediction every frame, and the host
-  sets its state to respawn the player.
+- [player.dart](lib/player.dart): the player, whose spawn type, respawn RPC,
+  and prediction are declared with annotations. `@Prediction` makes
+  `Player.move` the step that every peer predicts the position with, from the
+  client's `direction`. The generated code runs the prediction every frame and
+  moves the square, and the host sets the prediction's state to respawn the
+  player.
 - [main.dart](lib/main.dart): the host and the client, their views, and the
   host spawning a player for the client.
 

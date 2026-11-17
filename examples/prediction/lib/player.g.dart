@@ -23,11 +23,30 @@ abstract final class PlayerNet {
     caller: RpcCaller.owner,
   );
 
+  /// The synchronized field of [Player.syncedPosition].
+  static const syncedPosition = SyncField(
+    id: FieldId('prediction.player.position'),
+    codec: arenaPoint,
+  );
+
+  static const _syncedPositionInterpolator = Vector2Interpolator(
+    teleportDistance: 50,
+  );
+
+  /// The input stream whose inputs [Player.move] applies.
+  static const move = InputStream(
+    id: InputId('prediction.player.move'),
+    codec: steering,
+    tick: Duration(milliseconds: 20),
+  );
+
   /// Registers the handles of [Player] with [builder].
   static void register(ProtocolSchemaBuilder builder) {
     builder
       ..addSpawnTypeDefinition(spawnType)
-      ..addRpcDefinition(respawn);
+      ..addRpcDefinition(respawn)
+      ..addFieldDefinition(syncedPosition)
+      ..addInputDefinition(move);
   }
 }
 
@@ -51,11 +70,61 @@ final class _PlayerRespawnPayloadCodec extends ValueCodec<()> {
 
 /// Binds the annotated members of [Player].
 mixin _$Player on NetworkedComponent {
+  EntityAttachment? _$networkAttachment;
+  MultiplayerSynchronizer? _$networkSynchronizer;
+  Predictor<Vector2, Vector2>? _$networkPredictor;
+
+  /// The synchronizer of the synchronized fields of this [Player] while its
+  /// attachment is live, or `null`.
+  ///
+  /// Read the latest values from it, as in
+  /// `networkSynchronizer?.snapshot(PlayerNet.syncedPosition)`.
+  MultiplayerSynchronizer? get networkSynchronizer {
+    final attachment = _$networkAttachment;
+    return attachment == null || attachment.isDisposed
+        ? null
+        : _$networkSynchronizer;
+  }
+
+  /// The predictor of [Player.syncedPosition] while the attachment of
+  /// this [Player] is live, or `null`.
+  ///
+  /// [updateNetworkMembers] runs it every frame. To change the state outside
+  /// its step, such as to respawn, set its state on the entity's authority.
+  Predictor<Vector2, Vector2>? get networkPredictor {
+    final attachment = _$networkAttachment;
+    return attachment == null || attachment.isDisposed
+        ? null
+        : _$networkPredictor;
+  }
+
   @override
   void bindNetworkMembers(EntityAttachment attachment) {
     super.bindNetworkMembers(attachment);
     final self = this as Player;
     attachment.bindRpc(PlayerNet.respawn, (context, payload) => self.respawn());
+    _$networkAttachment = attachment;
+    final prediction = attachment.predict(
+      state: PlayerNet.syncedPosition,
+      input: PlayerNet.move,
+      initial: self.syncedPosition,
+      step: Player.move,
+      interpolator: PlayerNet._syncedPositionInterpolator,
+    );
+    _$networkPredictor = prediction;
+    _$networkSynchronizer = attachment.synchronize([prediction.property()]);
+  }
+
+  @override
+  void updateNetworkMembers(double dt) {
+    super.updateNetworkMembers(dt);
+    final prediction = networkPredictor;
+    if (prediction == null) return;
+    final self = this as Player;
+    final elapsed = Duration(
+      microseconds: (dt * Duration.microsecondsPerSecond).round(),
+    );
+    self.syncedPosition = prediction.update(self.direction, elapsed);
   }
 }
 
