@@ -40,6 +40,7 @@ to add a generated part, register the protocol, and bind entities.
 | `@Networked` | Class | Protocol handles and bindings; optional spawn type and synchronization timing. |
 | `@RpcMethod` | Method | RPC identifier, caller permissions, routing, and delivery settings. |
 | `@SyncedField` | Field or getter | Field identifier, sampling, delivery, and optional interpolation. |
+| `@Prediction` | Static method | Client-side prediction of a `@SyncedField` member: the input stream, and the step that the generated code runs every frame. |
 | `@NetworkCodec` | Class | A `ValueCodec` with an explicit descriptor. |
 | `@WireKey` | Field | A stable key in a generated data codec. |
 | `@Range` | Parameter, field, or getter | Inclusive numeric bounds. |
@@ -48,8 +49,10 @@ to add a generated part, register the protocol, and bind entities.
 
 RPCs default to any caller, the host target, no local execution, and reliable
 delivery on channel zero. Synchronized fields default to `SyncMode.onChange`
-with reliable delivery on channel zero. Set caller permissions explicitly when
-an RPC should be restricted to an entity's owner, authority, or the host.
+with reliable delivery on channel zero. The inputs of a prediction also default
+to reliable delivery on channel zero, and their tick is required. Set caller
+permissions explicitly when an RPC should be restricted to an entity's owner,
+authority, or the host.
 
 Built-in codecs cover `bool`, `int`, `double`, `String`, lists, and nullable
 types. Strings and lists default to a maximum length of 256. Other types need

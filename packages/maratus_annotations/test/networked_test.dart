@@ -77,6 +77,47 @@ void main() {
     );
   });
 
+  test('Prediction defaults to the delivery of addInput', () {
+    final input = ProtocolSchemaBuilder().addInput(
+      const InputId('arena.player.move'),
+      const IntCodec(),
+      tick: const Duration(milliseconds: 20),
+    );
+    const annotation = Prediction(
+      'arena.player.move',
+      of: 'syncedPosition',
+      input: 'direction',
+      tick: Duration(milliseconds: 20),
+    );
+
+    expect(annotation.id, 'arena.player.move');
+    expect(annotation.of, 'syncedPosition');
+    expect(annotation.input, 'direction');
+    expect(annotation.tick, input.tick);
+    expect(annotation.deliveryMode, input.deliveryMode);
+    expect(annotation.channel, input.channel);
+    expect(annotation.smoothing, isNull);
+    expect(annotation.idleInput, isNull);
+  });
+
+  test('Prediction keeps its delivery, smoothing, and idle input', () {
+    const annotation = Prediction(
+      'arena.player.move',
+      of: 'syncedPosition',
+      input: 'direction',
+      tick: Duration(milliseconds: 20),
+      deliveryMode: DeliveryMode.unreliableOrdered,
+      channel: 1,
+      smoothing: Duration(milliseconds: 50),
+      idleInput: 0,
+    );
+
+    expect(annotation.deliveryMode, DeliveryMode.unreliableOrdered);
+    expect(annotation.channel, 1);
+    expect(annotation.smoothing, const Duration(milliseconds: 50));
+    expect(annotation.idleInput, 0);
+  });
+
   test('Networked leaves unset options to the session defaults', () {
     const plain = Networked();
     const spawned = Networked(
