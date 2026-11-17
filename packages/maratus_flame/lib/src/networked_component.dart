@@ -8,7 +8,8 @@ part of 'multiplayer_scope.dart';
 /// replicated entities instead, through a factory that receives the entity.
 /// Override [onNetworkAttach] to bind RPCs and synchronize properties through
 /// the supplied attachment. Components annotated for `maratus_generator` also
-/// bind their annotated members, through [bindNetworkMembers], just before.
+/// bind their annotated members, through [bindNetworkMembers], just before,
+/// and update them every frame through [updateNetworkMembers].
 /// When overriding [onLoad], call `super.onLoad()` before any asynchronous work
 /// so RPCs can wait safely while assets load. Never await a child's mounting
 /// from an ancestor's load path.
@@ -117,6 +118,18 @@ mixin NetworkedComponent on Component {
   @protected
   @mustCallSuper
   void bindNetworkMembers(EntityAttachment attachment) {}
+
+  /// Updates the members that code generation declares for this component,
+  /// such as the state of a prediction, once per frame of [dt] seconds while
+  /// it is ready.
+  ///
+  /// The scope calls this after it updates the session and before the
+  /// gameplay updates, so gameplay sees the members' values for the frame.
+  /// The mixins that `maratus_generator` writes override it and call `super`.
+  /// Put hand-written per-frame code in [update] instead.
+  @protected
+  @mustCallSuper
+  void updateNetworkMembers(double dt) {}
 
   /// Called after this scope's gameplay updates while the attachment is ready.
   ///
