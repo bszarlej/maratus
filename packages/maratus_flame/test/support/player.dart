@@ -46,6 +46,27 @@ final class Player extends PositionComponent with NetworkedComponent, _$Player {
   @UseCodec(arenaPoint)
   Vector2 get syncedPosition => position;
 
+  /// The direction that the owner runs in along the lane: -1, 0, or 1.
+  var running = 0;
+
+  /// How far along the lane the player ran, as this peer presents it.
+  ///
+  /// The host computes the progress from the owner's inputs, and the owner
+  /// predicts it with [run]. The generated prediction writes it every frame.
+  @SyncedField('test.player.progress')
+  @Range(min: 0, max: 100)
+  double progress = 0;
+
+  /// Runs one unit in [direction] for each tick, along the lane.
+  @Prediction(
+    'test.player.run',
+    of: 'progress',
+    input: 'running',
+    tick: Duration(milliseconds: 50),
+  )
+  static double run(double progress, @Range(min: -1, max: 1) int direction) =>
+      (progress + direction).clamp(0, 100);
+
   /// Host → everyone, the host included.
   @RpcMethod(
     'test.player.hit',

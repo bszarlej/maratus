@@ -45,6 +45,12 @@ abstract final class PlayerNet {
     codec: IntCodec(min: 0, max: 100),
   );
 
+  /// The synchronized field of [Player.progress].
+  static const progress = SyncField(
+    id: FieldId('test.player.progress'),
+    codec: DoubleCodec(min: 0, max: 100),
+  );
+
   /// The synchronized field of [Player.syncedPosition].
   static const syncedPosition = SyncField(
     id: FieldId('test.player.position'),
@@ -52,6 +58,13 @@ abstract final class PlayerNet {
   );
 
   static const _syncedPositionInterpolator = Vector2Interpolator();
+
+  /// The input stream whose inputs [Player.run] applies.
+  static const run = InputStream(
+    id: InputId('test.player.run'),
+    codec: IntCodec(min: -1, max: 1),
+    tick: Duration(milliseconds: 50),
+  );
 
   /// Registers the handles of [Player] with [builder].
   static void register(ProtocolSchemaBuilder builder) {
@@ -61,7 +74,9 @@ abstract final class PlayerNet {
       ..addRpcDefinition(fire)
       ..addRpcDefinition(whisper)
       ..addFieldDefinition(health)
-      ..addFieldDefinition(syncedPosition);
+      ..addFieldDefinition(progress)
+      ..addFieldDefinition(syncedPosition)
+      ..addInputDefinition(run);
   }
 }
 
@@ -95,6 +110,7 @@ final class _PlayerFirePayloadCodec
 mixin _$Player on NetworkedComponent {
   EntityAttachment? _$networkAttachment;
   MultiplayerSynchronizer? _$networkSynchronizer;
+  Predictor<double, int>? _$networkPredictor;
 
   /// The synchronizer of the synchronized fields of this [Player] while its
   /// attachment is live, or `null`.
@@ -106,6 +122,18 @@ mixin _$Player on NetworkedComponent {
     return attachment == null || attachment.isDisposed
         ? null
         : _$networkSynchronizer;
+  }
+
+  /// The predictor of [Player.progress] while the attachment of
+  /// this [Player] is live, or `null`.
+  ///
+  /// [updateNetworkMembers] runs it every frame. To change the state outside
+  /// its step, such as to respawn, set its state on the entity's authority.
+  Predictor<double, int>? get networkPredictor {
+    final attachment = _$networkAttachment;
+    return attachment == null || attachment.isDisposed
+        ? null
+        : _$networkPredictor;
   }
 
   @override
@@ -123,16 +151,36 @@ mixin _$Player on NetworkedComponent {
         (context, payload) => self.whisper(payload, context),
       );
     _$networkAttachment = attachment;
+    final prediction = attachment.predict(
+      state: PlayerNet.progress,
+      input: PlayerNet.run,
+      initial: self.progress,
+      step: Player.run,
+    );
+    _$networkPredictor = prediction;
     _$networkSynchronizer = attachment.synchronize([
       PlayerNet.health.property(
         get: () => self.health,
         set: (value) => self.health = value,
       ),
+      prediction.property(),
       PlayerNet.syncedPosition.property(
         get: () => self.syncedPosition,
         interpolator: PlayerNet._syncedPositionInterpolator,
       ),
     ]);
+  }
+
+  @override
+  void updateNetworkMembers(double dt) {
+    super.updateNetworkMembers(dt);
+    final prediction = networkPredictor;
+    if (prediction == null) return;
+    final self = this as Player;
+    final elapsed = Duration(
+      microseconds: (dt * Duration.microsecondsPerSecond).round(),
+    );
+    self.progress = prediction.update(self.running, elapsed);
   }
 }
 

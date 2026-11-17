@@ -137,13 +137,39 @@ void main() {
     expect(shown?.value, Vector2(100, 200));
   });
 
-  test('releases the synchronizer when the component is removed', () async {
+  test('runs the generated prediction every frame', () async {
+    final owned = client.player.networkPredictor!;
+    final hosted = host.player.networkPredictor!;
+    expect(owned.field, same(PlayerNet.progress));
+    expect(owned.input, same(PlayerNet.run));
+
+    client.player.running = 1;
+    await world.pump(1);
+
+    // The owner shows its input at once, before the host applies it.
+    expect(owned.state, 1);
+    expect(hosted.state, 0);
+    expect(client.player.progress, owned.presented);
+
+    await world.pump(3);
+    client.player.running = 0;
+    await world.pump(8);
+
+    expect(hosted.state, 4);
+    expect(owned.state, 4);
+    expect(host.player.progress, 4);
+    expect(client.player.progress, 4);
+  });
+
+  test('releases the synchronizer and prediction on removal', () async {
     final player = client.player;
     expect(player.networkSynchronizer, isNotNull);
+    expect(player.networkPredictor, isNotNull);
 
     player.removeFromParent();
     await world.pump(1);
 
     expect(player.networkSynchronizer, isNull);
+    expect(player.networkPredictor, isNull);
   });
 }
