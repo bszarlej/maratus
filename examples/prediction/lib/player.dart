@@ -84,7 +84,7 @@ class Player extends PositionComponent
   final Vector2 spawnPoint;
 
   final _direction = Vector2.zero();
-  late Prediction<Vector2, Vector2> _prediction;
+  late Predictor<Vector2, Vector2> _prediction;
   late MultiplayerSynchronizer _synchronizer;
 
   /// Moves [position] one tick in [direction], within the arena.

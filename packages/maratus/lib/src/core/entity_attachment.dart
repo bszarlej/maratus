@@ -33,7 +33,7 @@ final class EntityAttachment {
   final bool Function() _isValid;
   final _bindings = <RpcBinding>{};
   MultiplayerSynchronizer? _synchronizer;
-  Prediction<Object?, Object?>? _prediction;
+  Predictor<Object?, Object?>? _prediction;
   var _disposed = false;
 
   /// The exact registry entity whose lifecycle this handle owns.
@@ -100,12 +100,12 @@ final class EntityAttachment {
   /// owner's [input] stream, advancing it with [step] one tick at a time.
   ///
   /// Call this on every peer, before [synchronize], and include the
-  /// returned prediction's [Prediction.property] in the synchronizer's
+  /// returned predictor's [Predictor.property] in the synchronizer's
   /// properties. The prediction starts from [initial]; peers that do not
   /// compute the state continue from the authority's state as it arrives.
   /// The [interpolator], if any, blends the owner's presented state between
   /// ticks and out of a correction over [smoothing], and interpolates the
-  /// state for every other peer. See [Prediction] for how the owner and the
+  /// state for every other peer. See [Predictor] for how the owner and the
   /// host exchange inputs and state.
   ///
   /// By default, the host waits for the owner's inputs however late they
@@ -129,7 +129,7 @@ final class EntityAttachment {
   /// [idleInput] cannot be encoded, or [smoothing] is negative. Throws a
   /// [StateError] if this attachment is no longer live, its entity already
   /// has a live prediction, or it already has a live synchronizer.
-  Prediction<S, I> predict<S, I>({
+  Predictor<S, I> predict<S, I>({
     required SyncField<S> state,
     required InputStream<I> input,
     required S initial,

@@ -69,7 +69,7 @@ final class _Mover {
   final NetworkEntity entity;
   final _Harness harness;
   late EntityAttachment attachment;
-  late Prediction<double, int> prediction;
+  late Predictor<double, int> prediction;
   late MultiplayerSynchronizer synchronizer;
 
   /// The input that the owner applies each frame while it [drives].
@@ -1198,7 +1198,7 @@ void main() {
       );
 
       final attachment = attach();
-      Prediction<double, int> predict({
+      Predictor<double, int> predict({
         SyncField<double>? state,
         InputStream<int>? input,
         double initial = 0,

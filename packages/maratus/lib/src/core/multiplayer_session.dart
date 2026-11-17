@@ -545,7 +545,7 @@ final class MultiplayerSession {
   /// are handled. A host then applies the admission decisions completed
   /// since the previous update. Ready synchronizers then receive the latest
   /// values of the fields this peer does not write, and owners reconcile
-  /// their [Prediction]s with them. The host then applies the inputs it
+  /// their [Predictor]s with them. The host then applies the inputs it
   /// received to the predictions it computes, before queued RPCs for
   /// attached entities run. A joining client then reports ready if every
   /// entity of its baseline is ready, and pings that are due are sent.
@@ -598,7 +598,7 @@ final class MultiplayerSession {
   /// Samples the synchronized properties that this peer writes, and sends
   /// the fields that are due: the authority-written fields of the entities
   /// it is the authority of, and the owner-written fields of the entities
-  /// it owns. A client first sends the inputs that its [Prediction]s
+  /// it owns. A client first sends the inputs that its [Predictor]s
   /// recorded since it last sent.
   ///
   /// Call this after gameplay has updated those properties, as

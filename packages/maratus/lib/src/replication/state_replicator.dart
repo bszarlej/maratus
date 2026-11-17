@@ -34,7 +34,7 @@ final class SyncProperty<T> {
   }) : _prediction = null;
 
   /// The property of [prediction]'s field, which its state backs.
-  SyncProperty._predicted(Prediction<T, Object?> prediction, this.mode)
+  SyncProperty._predicted(Predictor<T, Object?> prediction, this.mode)
     : field = prediction.field,
       get = (() => prediction.state),
       set = null,
@@ -75,7 +75,7 @@ final class SyncProperty<T> {
   /// The prediction whose state this property replicates, if any. The
   /// owner reconciles the prediction with the values it receives, and
   /// every other peer that does not write the field passes them to it.
-  final Prediction<T, Object?>? _prediction;
+  final Predictor<T, Object?>? _prediction;
 
   // Callers hold properties as SyncProperty<Object?>, where reading [set]
   // directly would fail Dart's covariance check. These members read the
@@ -238,8 +238,8 @@ final class MultiplayerSynchronizer {
   /// the new authority's first sample arrives, the latest value holds.
   ///
   /// Returns `null` on the peer that writes [field], which presents its own
-  /// state, on the owner of an entity whose [Prediction] of [field] it
-  /// predicts, which presents the prediction, before any value of [field]
+  /// state, on the owner of an entity that predicts [field] with a
+  /// [Predictor], which presents the prediction, before any value of [field]
   /// was received, and once this synchronizer is disposed. The value is a
   /// copy that the caller may change. Throws an [ArgumentError] for a
   /// foreign [field] handle, or a field without an interpolator in this
