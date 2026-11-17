@@ -145,6 +145,43 @@ final class _Spawn {
   final CodecSource codec;
 }
 
+final class _Prediction {
+  _Prediction({
+    required this.method,
+    required this.id,
+    required this.state,
+    required this.input,
+    required this.inputType,
+    required this.codec,
+    required this.tick,
+    required this.deliveryMode,
+    required this.channel,
+    required this.smoothing,
+    required this.idleInput,
+  });
+
+  /// The step, which also names the handle of the input stream.
+  final MethodElement method;
+  final String id;
+
+  /// The synchronized member whose state the step advances.
+  final _Field state;
+
+  /// The name of the member that holds the owner's current input.
+  final String input;
+
+  /// The type of the inputs.
+  final DartType inputType;
+  final CodecSource codec;
+  final CopiedExpression tick;
+  final String deliveryMode;
+  final int channel;
+  final CopiedExpression? smoothing;
+  final CopiedExpression? idleInput;
+
+  String get name => method.name!;
+}
+
 final class _NetworkedClass {
   _NetworkedClass(this.element, this.library, this.sources, this.codecs);
 
@@ -175,6 +212,9 @@ final class _NetworkedClass {
     final spawn = spawnId == null ? null : await _spawn(spawnId);
     final rpcs = await _rpcs();
     final fields = await _fields();
+    // A prediction's state is one of the fields, so a class that declares
+    // only a prediction fails here with the reason.
+    final prediction = await _prediction(fields);
     if (spawn == null && rpcs.isEmpty && fields.isEmpty) {
       throw InvalidGenerationSourceError(
         '@Networked class $name declares nothing to generate.',
@@ -221,6 +261,7 @@ final class _NetworkedClass {
       spawn,
       rpcs,
       fields,
+      prediction,
       topLevel,
       syncInterval: syncInterval,
       interpolationDelay: interpolationDelay,
@@ -228,7 +269,7 @@ final class _NetworkedClass {
     return [
       net.source,
       net.payloadCodecs.join('\n\n'),
-      if (mentionsMixin) _mixin(component, rpcs, fields, net),
+      if (mentionsMixin) _mixin(component, rpcs, fields, prediction, net),
       if (component != null && rpcs.isNotEmpty) _senders(rpcs),
       topLevel.declarations,
     ].where((part) => part.isNotEmpty).join('\n\n');
@@ -501,6 +542,213 @@ final class _NetworkedClass {
         (supertype) => supertype.element.getSetter(member) != null,
       );
 
+  /// Reads the prediction of the class, whose state is one of [fields], or
+  /// returns `null` if it declares none.
+  Future<_Prediction?> _prediction(List<_Field> fields) async {
+    _Prediction? prediction;
+    for (final method in element.methods) {
+      final annotation = predictionChecker.firstAnnotationOf(method);
+      if (annotation == null) continue;
+      final description = '$name.${method.name}';
+      if (prediction != null) {
+        throw InvalidGenerationSourceError(
+          '$name declares the predictions ${prediction.name} and '
+          '${method.name}, but an entity has at most one prediction.',
+          element: method,
+        );
+      }
+      if (!method.isStatic) {
+        throw InvalidGenerationSourceError(
+          '@Prediction applies only to static methods, unlike $description: '
+          'the host and the owner run the same step, which sees only the '
+          'state and one input.',
+          todo: 'Make $description static.',
+          element: method,
+        );
+      }
+      if (method.typeParameters.isNotEmpty) {
+        throw InvalidGenerationSourceError(
+          '@Prediction does not support methods with type parameters, such as '
+          '$description.',
+          element: method,
+        );
+      }
+      final parameters = method.formalParameters;
+      if (parameters.length != 2 ||
+          parameters.any((parameter) => !parameter.isRequiredPositional)) {
+        throw InvalidGenerationSourceError(
+          '$description must take the state and one input, as two required '
+          'positional parameters.',
+          element: method,
+        );
+      }
+      final reader = ConstantReader(annotation);
+      final id = reader.read('id').stringValue;
+      _checkIdentifier(id, 'input stream', method);
+
+      final stateName = reader.read('of').stringValue;
+      final state = fields
+          .where((field) => field.name == stateName)
+          .firstOrNull;
+      if (state == null) {
+        throw InvalidGenerationSourceError(
+          'The state of the prediction $description is $stateName, which is '
+          'not a @SyncedField member of $name.',
+          todo: 'Name a member of $name that is annotated with @SyncedField.',
+          element: method,
+        );
+      }
+      final stateDescription = '$name.$stateName';
+      if (state.writer != 'authority') {
+        throw InvalidGenerationSourceError(
+          'The state of the prediction $description is $stateDescription, '
+          "which the entity's owner writes, but the entity's authority writes "
+          'the state of a prediction.',
+          todo: 'Remove the writer of $stateDescription.',
+          element: method,
+        );
+      }
+      final stateType = state.type.getDisplayString();
+      if (!library.sameType(method.returnType, state.type)) {
+        throw InvalidGenerationSourceError(
+          '$description returns ${method.returnType.getDisplayString()}, but '
+          'its state $stateDescription is $stateType.',
+          todo: 'Return $stateType.',
+          element: method,
+        );
+      }
+      final [stateParameter, inputParameter] = parameters;
+      if (!library.sameType(stateParameter.type, state.type)) {
+        throw InvalidGenerationSourceError(
+          'Parameter ${stateParameter.name} of $description is '
+          '${stateParameter.type.getDisplayString()}, but its state '
+          '$stateDescription is $stateType.',
+          todo: 'Take $stateType.',
+          element: method,
+        );
+      }
+      if (hasCodecAnnotation(stateParameter)) {
+        throw InvalidGenerationSourceError(
+          'Parameter ${stateParameter.name} of $description has a codec '
+          'annotation, but the state takes its codec from $stateDescription.',
+          todo: 'Annotate $stateDescription instead.',
+          element: method,
+        );
+      }
+
+      final inputType = inputParameter.type;
+      final codec = await codecs.resolve(
+        inputParameter,
+        inputType,
+        'parameter ${inputParameter.name} of $description',
+      );
+      final inputName = reader.read('input').stringValue;
+      final input = _instanceValue(inputName);
+      if (input == null) {
+        throw InvalidGenerationSourceError(
+          'The input of the prediction $description is $inputName, which is '
+          'not an instance field or getter of $name.',
+          todo:
+              "Name the field or getter of $name that holds the owner's "
+              'current input.',
+          element: method,
+        );
+      }
+      final inputDescription = '$name.$inputName';
+      if (!library.typeSystem.isAssignableTo(input.type, inputType)) {
+        throw InvalidGenerationSourceError(
+          '$inputDescription, the input of the prediction $description, is '
+          '${input.type.getDisplayString()}, but $description takes '
+          '${inputType.getDisplayString()}.',
+          element: method,
+        );
+      }
+      if (!syncedFieldChecker.hasAnnotationOf(input.element) &&
+          hasCodecAnnotation(input.element)) {
+        throw InvalidGenerationSourceError(
+          '$inputDescription has a codec annotation, but the inputs of '
+          '$description take their codec from parameter '
+          '${inputParameter.name}.',
+          todo: 'Annotate parameter ${inputParameter.name} instead.',
+          element: method,
+        );
+      }
+      final tick = _microseconds(reader.read('tick').objectValue);
+      if (tick != null && tick <= 0) {
+        throw InvalidGenerationSourceError(
+          'The tick of the prediction $description must be positive.',
+          element: method,
+        );
+      }
+      CopiedExpression? smoothing;
+      if (reader.peek('smoothing') case final value?) {
+        final microseconds = _microseconds(value.objectValue);
+        if (microseconds != null && microseconds < 0) {
+          throw InvalidGenerationSourceError(
+            'The smoothing of the prediction $description must not be '
+            'negative.',
+            element: method,
+          );
+        }
+        smoothing = await sources.argument(
+          method,
+          predictionChecker,
+          named: 'smoothing',
+        );
+      }
+      CopiedExpression? idleInput;
+      if (reader.peek('idleInput') case final value?) {
+        final type = value.objectValue.type;
+        if (type == null ||
+            !library.typeSystem.isAssignableTo(type, inputType)) {
+          throw InvalidGenerationSourceError(
+            'The idle input of the prediction $description is '
+            '${type?.getDisplayString() ?? 'of an unknown type'}, but its '
+            'inputs are ${inputType.getDisplayString()}.',
+            element: method,
+          );
+        }
+        idleInput = await sources.argument(
+          method,
+          predictionChecker,
+          named: 'idleInput',
+        );
+      }
+      prediction = _Prediction(
+        method: method,
+        id: id,
+        state: state,
+        input: inputName,
+        inputType: inputType,
+        codec: codec,
+        tick: await sources.argument(method, predictionChecker, named: 'tick'),
+        deliveryMode: _enumName(reader.read('deliveryMode').objectValue),
+        channel: _channel(reader, method),
+        smoothing: smoothing,
+        idleInput: idleInput,
+      );
+    }
+    return prediction;
+  }
+
+  /// The declaration and type of the instance field or getter [member] that
+  /// the class declares, or `null` if it declares none.
+  ({Element element, DartType type})? _instanceValue(String member) {
+    for (final field in element.fields) {
+      // Skip the fields that getters and setters imply.
+      if (field.nonSynthetic != field || field.isStatic) continue;
+      if (field.name == member) return (element: field, type: field.type);
+    }
+    for (final getter in element.getters) {
+      // Skip the getters that fields imply.
+      if (getter.nonSynthetic != getter || getter.isStatic) continue;
+      if (getter.name == member) {
+        return (element: getter, type: getter.returnType);
+      }
+    }
+    return null;
+  }
+
   void _checkIdentifier(String id, String kind, Element at) {
     if (!isValidIdentifier(id)) {
       throw InvalidGenerationSourceError(
@@ -529,6 +777,19 @@ final class _NetworkedClass {
   static String _enumName(DartObject value) =>
       value.variable?.name ?? value.getField('_name')!.toStringValue()!;
 
+  /// The length of the constant [duration] in microseconds, or `null` if it
+  /// cannot be read.
+  static int? _microseconds(DartObject duration) {
+    // Since Dart 3.13, a duration keeps its length in a public field;
+    // earlier SDKs keep it in a private one.
+    for (final field in const ['inMicroseconds', '_duration']) {
+      if (duration.getField(field)?.toIntValue() case final microseconds?) {
+        return microseconds;
+      }
+    }
+    return null;
+  }
+
   static int _channel(ConstantReader reader, Element at) {
     final channel = reader.read('channel').intValue;
     if (channel < 0) {
@@ -551,6 +812,7 @@ final class _NetworkedClass {
     _Spawn? spawn,
     List<_Rpc> rpcs,
     List<_Field> fields,
+    _Prediction? prediction,
     TopLevelConstants topLevel, {
     required CopiedExpression? syncInterval,
     required CopiedExpression? interpolationDelay,
@@ -559,6 +821,7 @@ final class _NetworkedClass {
       if (spawn != null) 'spawnType',
       for (final rpc in rpcs) rpc.name,
       for (final field in fields) field.name,
+      if (prediction != null) prediction.name,
     ];
     final scope = UniqueNames({'register', ...objectMembers});
     for (final handle in handles) {
@@ -576,6 +839,13 @@ final class _NetworkedClass {
         if (field.interpolator != null)
           field.name: scope.add('_${publicPart(field.name)}Interpolator'),
     };
+    final step = prediction == null ? null : publicPart(prediction.name);
+    final smoothingName = prediction?.smoothing == null
+        ? null
+        : scope.add('_${step}Smoothing');
+    final idleInputName = prediction?.idleInput == null
+        ? null
+        : scope.add('_${step}IdleInput');
     final syncIntervalName = syncInterval == null
         ? null
         : scope.add('_syncInterval');
@@ -649,6 +919,31 @@ static const ${field.name} = ${maratus}SyncField(
         );
       }
     }
+    if (prediction != null) {
+      final codec = prediction.codec;
+      final tick = prediction.tick;
+      members.add('''
+/// The input stream whose inputs [$self.${prediction.name}] applies.
+static const ${prediction.name} = ${maratus}InputStream(
+  id: ${maratus}InputId(${stringLiteral(prediction.id)}),
+  codec: ${constant('${step}Codec', codec.expression, codec.freeNames)},
+  tick: ${constant('${step}Tick', tick.source, tick.freeNames)},
+  ${_delivery(prediction.deliveryMode, prediction.channel).join('\n')}
+);''');
+      registrations.add('addInputDefinition(${prediction.name})');
+      if (prediction.smoothing case final smoothing?) {
+        members.add(
+          'static const $smoothingName = '
+          '${constant('${step}Smoothing', smoothing.source, smoothing.freeNames)};',
+        );
+      }
+      if (prediction.idleInput case final idleInput?) {
+        members.add(
+          'static const $idleInputName = '
+          '${constant('${step}IdleInput', idleInput.source, idleInput.freeNames)};',
+        );
+      }
+    }
     if (syncInterval != null) {
       members.add(
         'static const $syncIntervalName = '
@@ -679,6 +974,8 @@ abstract final class $netName {
       source,
       payloadCodecs,
       interpolators,
+      smoothing: smoothingName,
+      idleInput: idleInputName,
       syncInterval: syncIntervalName,
       interpolationDelay: interpolationDelayName,
     );
@@ -736,23 +1033,44 @@ final class $codecName extends ${maratus}ValueCodec<$recordType> {
     InterfaceElement? component,
     List<_Rpc> rpcs,
     List<_Field> fields,
+    _Prediction? prediction,
     _Net net,
   ) {
     final body = <String>[];
+    final predictionType = prediction == null
+        ? null
+        : '${maratus}Predictor<'
+              '${library.typeSource(prediction.state.type, prediction.method)}, '
+              '${library.typeSource(prediction.inputType, prediction.method)}>';
     if (fields.isNotEmpty) {
       body.add('''
 ${maratus}EntityAttachment? _\$networkAttachment;
 ${maratus}MultiplayerSynchronizer? _\$networkSynchronizer;
+${predictionType == null ? '' : '$predictionType? _\$networkPredictor;'}
 
 /// The synchronizer of the synchronized fields of this [$self] while its
 /// attachment is live, or `null`.
 ///
-/// ${_synchronizerUse(fields)}
+/// ${_synchronizerUse(fields, prediction)}
 ${maratus}MultiplayerSynchronizer? get networkSynchronizer {
   final attachment = _\$networkAttachment;
   return attachment == null || attachment.isDisposed
       ? null
       : _\$networkSynchronizer;
+}''');
+    }
+    if (prediction != null) {
+      body.add('''
+/// The predictor of [$self.${prediction.state.name}] while the attachment of
+/// this [$self] is live, or `null`.
+///
+/// [updateNetworkMembers] runs it every frame. To change the state outside
+/// its step, such as to respawn, set its state on the entity's authority.
+$predictionType? get networkPredictor {
+  final attachment = _\$networkAttachment;
+  return attachment == null || attachment.isDisposed
+      ? null
+      : _\$networkPredictor;
 }''');
     }
     if (rpcs.isNotEmpty || fields.isNotEmpty) {
@@ -763,8 +1081,15 @@ ${maratus}MultiplayerSynchronizer? get networkSynchronizer {
           '${_calls('attachment', [for (final rpc in rpcs) 'bindRpc($netName.${rpc.name}, (context, payload) => self.${rpc.name}(${_handlerArguments(rpc)}))'])};',
         if (fields.isNotEmpty) ...[
           r'_$networkAttachment = attachment;',
+          // The synchronizer binds the prediction's property, so the
+          // prediction comes first.
+          if (prediction != null) ...[
+            'final prediction = attachment.predict('
+                '${_predictArguments(prediction, net)});',
+            r'_$networkPredictor = prediction;',
+          ],
           '_\$networkSynchronizer = attachment.synchronize(['
-              '${fields.map((field) => _property(field, net)).join(', ')},'
+              '${fields.map((field) => _property(field, prediction, net)).join(', ')},'
               ']${net.syncInterval == null ? '' : ', interval: $netName.${net.syncInterval}'}'
               '${net.interpolationDelay == null ? '' : ', interpolationDelay: $netName.${net.interpolationDelay}'});',
         ],
@@ -773,7 +1098,7 @@ ${maratus}MultiplayerSynchronizer? get networkSynchronizer {
         component == null
             ? '''
 /// Binds the annotated RPC handlers and synchronized fields of this [$self]
-/// through [attachment].
+/// through [attachment]${prediction == null ? '' : ', and predicts [$self.${prediction.state.name}]'}.
 ///
 /// Call it once for each attachment of the object's entity, such as the one
 /// that [${maratus}MultiplayerSession.attachEntity] returns.
@@ -787,6 +1112,7 @@ void bindNetworkMembers(${maratus}EntityAttachment attachment) {
 }''',
       );
     }
+    if (prediction != null) body.add(_update(component, prediction));
     final on = component == null
         ? ''
         : ' on ${library.reference(component, element)}';
@@ -797,10 +1123,55 @@ mixin $mixinName$on {
 }''';
   }
 
+  /// The method that runs [prediction] every frame: an override of the hook
+  /// of a Flame [component], or a method that other classes call.
+  String _update(InterfaceElement? component, _Prediction prediction) {
+    final state = prediction.state;
+    final input = prediction.input;
+    final update = 'prediction.update(self.$input, elapsed)';
+    final statements = [
+      if (component != null) 'super.updateNetworkMembers(dt);',
+      'final prediction = networkPredictor;',
+      'if (prediction == null) return;',
+      'final self = this as $self;',
+      if (component != null)
+        'final elapsed = Duration('
+            'microseconds: (dt * Duration.microsecondsPerSecond).round());',
+      // A member without a setter leaves presenting the state to the game.
+      if (state.isWritable) 'self.${state.name} = $update;' else '$update;',
+    ];
+    if (component != null) {
+      return '''
+@override
+void updateNetworkMembers(double dt) {
+  ${statements.join('\n')}
+}''';
+    }
+    final presents = state.isWritable
+        ? ', and every peer\n'
+              '/// writes the state to present to [$self.${state.name}].'
+        : '. [$self.${state.name}] has no\n'
+              '/// setter, so present the state of [networkPredictor].';
+    return '''
+/// Runs the prediction of [$self.${state.name}] for one frame of [elapsed].
+///
+/// The entity's owner advances it with [$self.$input]$presents
+///
+/// Call it once per frame, after [${maratus}MultiplayerSession.update] and
+/// before [${maratus}MultiplayerSession.captureState].
+void updateNetworkMembers(Duration elapsed) {
+  ${statements.join('\n')}
+}''';
+  }
+
   /// How to read the values of [fields] from their synchronizer, for its
   /// documentation.
-  String _synchronizerUse(List<_Field> fields) {
-    final interpolated = fields.where((field) => field.interpolator != null);
+  String _synchronizerUse(List<_Field> fields, _Prediction? prediction) {
+    // The prediction presents its own state.
+    final interpolated = fields.where(
+      (field) =>
+          field.interpolator != null && !identical(field, prediction?.state),
+    );
     return interpolated.isEmpty
         ? 'Read the latest values from it, as in\n'
               '/// `networkSynchronizer?.snapshot($netName.${fields.first.name})`.'
@@ -823,7 +1194,28 @@ mixin $mixinName$on {
               : 'payload'}',
   ].join(', ');
 
-  String _property(_Field field, _Net net) {
+  /// The arguments of the call that creates [prediction].
+  String _predictArguments(_Prediction prediction, _Net net) {
+    final state = prediction.state;
+    return [
+      'state: $netName.${state.name}',
+      'input: $netName.${prediction.name}',
+      'initial: self.${state.name}',
+      'step: $self.${prediction.name}',
+      if (net.interpolators[state.name] case final interpolator?)
+        'interpolator: $netName.$interpolator',
+      if (net.smoothing case final smoothing?) 'smoothing: $netName.$smoothing',
+      if (net.idleInput case final idleInput?) 'idleInput: $netName.$idleInput',
+    ].join(', ');
+  }
+
+  String _property(_Field field, _Prediction? prediction, _Net net) {
+    // The prediction backs the property of its state, with the member's
+    // interpolator.
+    if (identical(field, prediction?.state)) {
+      return 'prediction.property('
+          '${field.mode == 'onChange' ? '' : 'mode: ${maratus}SyncMode.${field.mode}'})';
+    }
     final arguments = [
       'get: () => self.${field.name}',
       if (field.isWritable) 'set: (value) => self.${field.name} = value',
@@ -900,6 +1292,8 @@ final class _Net {
     this.source,
     this.payloadCodecs,
     this.interpolators, {
+    required this.smoothing,
+    required this.idleInput,
     required this.syncInterval,
     required this.interpolationDelay,
   });
@@ -909,6 +1303,10 @@ final class _Net {
 
   /// The names of the interpolator constants, by field.
   final Map<String, String> interpolators;
+
+  /// The names of the constants of the prediction's options.
+  final String? smoothing;
+  final String? idleInput;
 
   final String? syncInterval;
   final String? interpolationDelay;

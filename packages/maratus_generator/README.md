@@ -13,7 +13,7 @@
 # maratus_generator
 
 Generates [maratus](https://pub.dev/packages/maratus) protocol handles, entity
-bindings, and value codecs from
+bindings, client-side predictions, and value codecs from
 [`maratus_annotations`](https://pub.dev/packages/maratus_annotations). Works
 with pure Dart and Flame; Flame components also receive typed RPC senders.
 Generated and hand-written handles can share a protocol schema.
@@ -156,6 +156,58 @@ The owner then samples the member, and the host and other clients write the
 received values to it. See the core guide on
 [replicated state](https://pub.dev/packages/maratus#replicated-entities-and-state).
 
+## Predict the owner's state
+
+To show a player's input at once instead of after a round trip, annotate a
+static step method with `@Prediction`. The step applies one input for one tick.
+`of` names the `@SyncedField` member whose value it advances, and `input` names
+the member that holds the owner's current input:
+
+```dart
+/// Set from the arrow keys on the owner.
+final direction = Vector2.zero();
+
+@SyncedField(
+  'arena.player.position',
+  interpolator: Vector2Interpolator(teleportDistance: 50),
+)
+@UseCodec(arenaPoint)
+Vector2 get syncedPosition => position;
+set syncedPosition(Vector2 value) => position.setFrom(value);
+
+@Prediction(
+  'arena.player.move',
+  of: 'syncedPosition',
+  input: 'direction',
+  tick: Duration(milliseconds: 20),
+)
+static Vector2 move(Vector2 position, @UseCodec(steering) Vector2 direction) =>
+    position + direction * 4;
+```
+
+This generates `PlayerNet.move`, the input stream, whose codec comes from the
+step's input parameter as for an RPC parameter. The generated binding predicts
+the state from the member's value before it synchronizes the fields, with the
+member's interpolator, and synchronizes the prediction in place of the member.
+
+It also runs the prediction every frame, so the component needs no `update`
+code for it: before each frame's gameplay, the owner advances the prediction
+with the value of `direction`, and every peer writes the position to present
+through the `syncedPosition` setter. Without a setter, present
+`networkPredictor?.presented` yourself. Outside Flame, call the generated
+`updateNetworkMembers(elapsed)` once per frame, between the session's `update`
+and `captureState`.
+
+The prediction holds the state, so writing the member does not change it. To
+change the state outside the step, set it on the entity's authority, such as
+`networkPredictor?.state = spawnPoint` to respawn the player. `@Prediction` also
+takes the `deliveryMode` and `channel` of the inputs, and the prediction's
+`smoothing` and `idleInput`. See the core
+[prediction guide](https://pub.dev/packages/maratus#client-side-prediction)
+for how the owner and the host exchange inputs and state, and the
+[prediction example](https://github.com/bszarlej/maratus/tree/master/examples/prediction)
+for a complete game.
+
 ## Declaration rules
 
 - Use stable, explicit identifiers such as `arena.player.emote`. Renaming the
@@ -178,14 +230,17 @@ received values to it. See the core guide on
   (default 1) when their meaning or order changes without changing their codecs.
 - `RpcTarget.peer` adds a required `to:` argument to the Flame sender.
 - All annotated fields on a class share one synchronizer. Do not also call
-  `synchronize` in `onNetworkAttach`. Received values use the field's setter,
-  when available. Annotate a getter to synchronize an inherited property;
-  provide a matching setter to apply incoming values. Read interpolated values
-  through `networkSynchronizer`.
-- Predictions are not generated yet. Bind a prediction and its property by
-  hand, in a class without `@SyncedField` members, whose synchronizer would
-  bind first. Its spawn type and RPCs can still be generated, as in the
-  [prediction example](https://github.com/bszarlej/maratus/tree/master/examples/prediction).
+  `synchronize` or `predict` in `onNetworkAttach`. Received values use the
+  field's setter, when available. Annotate a getter to synchronize an inherited
+  property; provide a matching setter to apply incoming values. Read
+  interpolated values through `networkSynchronizer`.
+- A class declares at most one `@Prediction` method. It is static, takes the
+  state and one input as two required positional parameters, and returns the
+  next state. `of` names an authority-written `@SyncedField` member of the same
+  class, whose type the step takes and returns and whose annotations select the
+  state's codec. `input` names an instance field or getter of the
+  same class, of the step's input type; the step's input parameter selects the
+  codec. The tick must be positive.
 
 ## Data codecs
 

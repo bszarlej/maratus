@@ -18,9 +18,43 @@ mixin NetworkedComponent {
   NetworkEntity get networkEntity;
   MultiplayerSession get multiplayerSession => throw UnimplementedError();
   void bindNetworkMembers(EntityAttachment attachment) {}
+  void updateNetworkMembers(double dt) {}
 }
 ''',
 };
+
+/// A class whose static step `walk` predicts its synchronized member [x]
+/// from its member [steering], with any other [members].
+///
+/// The other arguments replace parts of the prediction, and an empty [x] or
+/// [steering] leaves that member out.
+String _predicting({
+  String id = 'test.avatar.walk',
+  String of = 'x',
+  String input = 'steering',
+  String tick = 'Duration(milliseconds: 20)',
+  String options = '',
+  String step = 'static double walk(double x, int direction) => x + direction;',
+  String x = "@SyncedField('test.avatar.x') double x = 0;",
+  String steering = 'int steering = 0;',
+  String members = '',
+}) =>
+    '''
+@Networked()
+final class Avatar with _\$Avatar {
+  $x
+  $steering
+  $members
+
+  @Prediction(
+    '$id',
+    of: '$of',
+    input: '$input',
+    tick: $tick,
+    $options
+  )
+  $step
+}''';
 
 void main() {
   test('writes handles, their registration, and a binding mixin', () async {
@@ -193,6 +227,150 @@ final class Mover with _\$Mover {
       expect('writer:'.allMatches(output), hasLength(1));
     },
   );
+
+  test('writes the input stream of a prediction and binds it first', () async {
+    final generation = await generate('''
+$_imports
+@Networked()
+final class Mover with _\$Mover {
+  @SyncedField('test.mover.health')
+  int health = 100;
+
+  @SyncedField(
+    'test.mover.x',
+    interpolator: DoubleInterpolator(),
+    mode: SyncMode.always,
+    deliveryMode: DeliveryMode.unreliable,
+  )
+  double x = 0;
+
+  int steering = 0;
+
+  @Prediction(
+    'test.mover.walk',
+    of: 'x',
+    input: 'steering',
+    tick: Duration(milliseconds: 20),
+  )
+  static double walk(double x, @Range(min: -1, max: 1) int direction) =>
+      x + direction;
+}
+''');
+
+    expect(generation.errors, isEmpty);
+    final output = generation.output!;
+    expect(output, contains('static const walk = InputStream('));
+    expect(output, contains("id: InputId('test.mover.walk'),"));
+    expect(output, contains('codec: IntCodec(min: -1, max: 1),'));
+    expect(output, contains('tick: Duration(milliseconds: 20),'));
+    expect(output, contains('..addInputDefinition(walk);'));
+    expect(output, contains('Predictor<double, int>? get networkPredictor'));
+    final predict = output.indexOf('final prediction = attachment.predict(');
+    expect(predict, isNonNegative);
+    expect(predict, lessThan(output.indexOf('attachment.synchronize(')));
+    expect(output, contains('state: MoverNet.x'));
+    expect(output, contains('input: MoverNet.walk'));
+    expect(output, contains('initial: self.x'));
+    expect(output, contains('step: Mover.walk'));
+    expect(output, contains('interpolator: MoverNet._xInterpolator'));
+    expect(output, isNot(contains('smoothing:')));
+    expect(output, isNot(contains('idleInput:')));
+    // The prediction's property replaces the member's.
+    expect(output, contains('prediction.property(mode: SyncMode.always)'));
+    expect(output, isNot(contains('MoverNet.x.property(')));
+    expect(output, contains('MoverNet.health.property('));
+    // Each frame runs the prediction and presents its state.
+    expect(output, contains('void updateNetworkMembers(Duration elapsed) {'));
+    expect(
+      output,
+      contains('self.x = prediction.update(self.steering, elapsed);'),
+    );
+  });
+
+  test('runs the prediction of a component in its frame hook', () async {
+    final generation = await generate('''
+import 'package:maratus_annotations/maratus_annotations.dart';
+import 'package:maratus_flame/maratus_flame.dart';
+
+@Networked()
+final class Player with NetworkedComponent, _\$Player {
+  Player(this.networkEntity);
+
+  @override
+  final NetworkEntity networkEntity;
+
+  @SyncedField('test.player.x')
+  double get x => 0;
+
+  int get steering => 1;
+
+  @Prediction(
+    'test.player.run',
+    of: 'x',
+    input: 'steering',
+    tick: Duration(milliseconds: 50),
+  )
+  static double run(double x, int direction) => x + direction;
+}
+''', assets: _flame);
+
+    expect(generation.errors, isEmpty);
+    final output = generation.output!;
+    expect(output, contains('void updateNetworkMembers(double dt) {'));
+    expect(output, contains('super.updateNetworkMembers(dt);'));
+    expect(output, contains('(dt * Duration.microsecondsPerSecond).round()'));
+    // Without a setter, the member keeps its value, and the prediction
+    // still advances on the owner.
+    expect(output, contains('    prediction.update(self.steering, elapsed);'));
+    expect(output, isNot(contains('self.x =')));
+  });
+
+  test('copies the delivery and options of a prediction', () async {
+    final generation = await generate('''
+import 'package:maratus/maratus.dart' as m;
+import 'package:maratus_annotations/maratus_annotations.dart';
+
+@Networked()
+final class Mover with _\$Mover {
+  static const _tick = Duration(milliseconds: 20);
+
+  @SyncedField('test.mover.x')
+  double get x => 0;
+
+  int steering = 0;
+
+  @Prediction(
+    'test.mover.walk',
+    of: 'x',
+    input: 'steering',
+    tick: _tick,
+    deliveryMode: m.DeliveryMode.unreliableOrdered,
+    channel: 1,
+    smoothing: Duration(milliseconds: 50),
+    idleInput: 0,
+  )
+  static double walk(double x, int direction) => x + direction;
+}
+''');
+
+    expect(generation.errors, isEmpty);
+    final output = generation.output!;
+    expect(output, contains('static const walk = m.InputStream('));
+    expect(output, contains('codec: m.IntCodec(),'));
+    expect(output, contains('tick: Mover._tick,'));
+    expect(output, contains('deliveryMode: m.DeliveryMode.unreliableOrdered,'));
+    expect(output, contains('channel: 1,'));
+    expect(
+      output,
+      contains('static const _walkSmoothing = Duration(milliseconds: 50);'),
+    );
+    expect(output, contains('static const _walkIdleInput = 0;'));
+    expect(output, contains('smoothing: MoverNet._walkSmoothing'));
+    expect(output, contains('idleInput: MoverNet._walkIdleInput'));
+    expect(output, isNot(contains('interpolator:')));
+    expect(output, contains('m.Predictor<double, int>? get networkPredictor'));
+    expect(output, contains('synchronize([prediction.property()])'));
+  });
 
   group('rejects', () {
     for (final mode in ['unreliable', 'unreliableOrdered']) {
@@ -371,6 +549,120 @@ final class Avatar<T> with _\$Avatar {
   @RpcMethod('test.avatar.jump') void jump() {}
 }''',
         'does not support generic classes',
+      ),
+      (
+        'prediction steps that are not static',
+        _predicting(
+          step: 'double walk(double x, int direction) => x + direction;',
+        ),
+        '@Prediction applies only to static methods, unlike Avatar.walk',
+      ),
+      (
+        'prediction steps that return another type than the state',
+        _predicting(step: 'static int walk(double x, int direction) => 0;'),
+        'Avatar.walk returns int, but its state Avatar.x is double',
+      ),
+      (
+        'prediction steps that take another type than the state',
+        _predicting(step: 'static double walk(num x, int direction) => 0;'),
+        'Parameter x of Avatar.walk is num, but its state Avatar.x is double',
+      ),
+      (
+        'prediction steps without exactly a state and an input',
+        _predicting(
+          step: 'static double walk(double x, [int direction = 0]) => x;',
+        ),
+        'Avatar.walk must take the state and one input',
+      ),
+      (
+        'prediction states that are not synchronized',
+        _predicting(members: 'double y = 0;', of: 'y'),
+        'is y, which is not a @SyncedField member of Avatar',
+      ),
+      (
+        'predictions without synchronized members',
+        _predicting(x: ''),
+        'is x, which is not a @SyncedField member of Avatar',
+      ),
+      (
+        'prediction states that the owner writes',
+        _predicting(
+          x:
+              "@SyncedField('test.avatar.x', writer: FieldWriter.owner) "
+              'double x = 0;',
+        ),
+        "which the entity's owner writes",
+      ),
+      (
+        'codec annotations on the state of a prediction',
+        _predicting(
+          step: 'static double walk(@Range(min: 0) double x, int d) => x;',
+        ),
+        'the state takes its codec from Avatar.x',
+      ),
+      (
+        'prediction inputs that are not members',
+        _predicting(input: 'aim'),
+        'The input of the prediction Avatar.walk is aim, which is not an '
+            'instance field or getter of Avatar',
+      ),
+      (
+        'prediction inputs that are static',
+        _predicting(steering: 'static int steering = 0;'),
+        'is steering, which is not an instance field or getter of Avatar',
+      ),
+      (
+        'prediction inputs of another type',
+        _predicting(steering: "String steering = '';"),
+        'Avatar.steering, the input of the prediction Avatar.walk, is String, '
+            'but Avatar.walk takes int',
+      ),
+      (
+        'codec annotations on the input of a prediction',
+        _predicting(steering: '@Range(min: -1, max: 1) int steering = 0;'),
+        'the inputs of Avatar.walk take their codec from parameter direction',
+      ),
+      (
+        'several predictions',
+        _predicting(
+          members: '''
+@SyncedField('test.avatar.y') double y = 0;
+
+  @Prediction(
+    'test.avatar.climb',
+    of: 'y',
+    input: 'steering',
+    tick: Duration(milliseconds: 20),
+  )
+  static double climb(double y, int direction) => y + direction;''',
+        ),
+        'an entity has at most one prediction',
+      ),
+      (
+        'invalid input stream identifiers',
+        _predicting(id: 'Walk'),
+        '"Walk" is not a valid input stream identifier',
+      ),
+      (
+        'ticks that are not positive',
+        _predicting(tick: 'Duration.zero'),
+        'The tick of the prediction Avatar.walk must be positive',
+      ),
+      (
+        'negative input channels',
+        _predicting(options: 'channel: -1,'),
+        'channel must be nonnegative',
+      ),
+      (
+        'negative smoothing',
+        _predicting(options: 'smoothing: Duration(milliseconds: -1),'),
+        'The smoothing of the prediction Avatar.walk must not be negative',
+      ),
+      (
+        'idle inputs of another type',
+        _predicting(options: "idleInput: 'stop',"),
+        'The idle input of the prediction Avatar.walk is String, but its '
+            'inputs are int',
       ),
     ]) {
       test(description, () => expectError('$_imports\n$declaration', message));

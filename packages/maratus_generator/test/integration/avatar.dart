@@ -45,6 +45,40 @@ final class Avatar with _$Avatar {
   @MaxLength(40)
   String get label => 'Avatar of $name';
 
+  /// The altitude to present, which starts on the ground.
+  ///
+  /// The host computes the altitude from the owner's inputs, and the owner
+  /// predicts it with [fly]. The generated prediction writes it every frame.
+  @SyncedField(
+    'test.avatar.altitude',
+    interpolator: DoubleInterpolator(),
+    mode: SyncMode.always,
+    deliveryMode: DeliveryMode.unreliable,
+    channel: 1,
+  )
+  @Range(min: 0, max: bound)
+  double altitude = 0;
+
+  /// Whether the owner fires the avatar's thrusters, the input of [fly].
+  bool thrusting = false;
+
+  /// Rises one unit for each tick while [thrust] is on, and sinks one unit
+  /// while it is off, down to the ground.
+  ///
+  /// While the owner's inputs are late, the host lets the avatar sink.
+  @Prediction(
+    'test.avatar.fly',
+    of: 'altitude',
+    input: 'thrusting',
+    tick: Duration(milliseconds: 20),
+    deliveryMode: DeliveryMode.unreliableOrdered,
+    channel: 2,
+    smoothing: Duration(milliseconds: 40),
+    idleInput: false,
+  )
+  static double fly(double altitude, bool thrust) =>
+      (altitude + (thrust ? 1 : -1)).clamp(0, bound);
+
   /// Steers the avatar in [direction].
   @RpcMethod(
     'test.avatar.steer',

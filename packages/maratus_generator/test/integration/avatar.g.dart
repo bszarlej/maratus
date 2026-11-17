@@ -55,11 +55,34 @@ abstract final class AvatarNet {
     channel: 2,
   );
 
+  /// The synchronized field of [Avatar.altitude].
+  static const altitude = SyncField(
+    id: FieldId('test.avatar.altitude'),
+    codec: DoubleCodec(min: 0, max: 100.0),
+    deliveryMode: DeliveryMode.unreliable,
+    channel: 1,
+  );
+
+  static const _altitudeInterpolator = DoubleInterpolator();
+
   /// The synchronized field of [Avatar.label].
   static const label = SyncField(
     id: FieldId('test.avatar.label'),
     codec: StringCodec(maxLength: 40),
   );
+
+  /// The input stream whose inputs [Avatar.fly] applies.
+  static const fly = InputStream(
+    id: InputId('test.avatar.fly'),
+    codec: BoolCodec(),
+    tick: Duration(milliseconds: 20),
+    deliveryMode: DeliveryMode.unreliableOrdered,
+    channel: 2,
+  );
+
+  static const _flySmoothing = Duration(milliseconds: 40);
+
+  static const _flyIdleInput = false;
 
   static const _syncInterval = Duration(milliseconds: 20);
 
@@ -72,7 +95,9 @@ abstract final class AvatarNet {
       ..addRpcDefinition(jump)
       ..addFieldDefinition(x)
       ..addFieldDefinition(input)
-      ..addFieldDefinition(label);
+      ..addFieldDefinition(altitude)
+      ..addFieldDefinition(label)
+      ..addInputDefinition(fly);
   }
 }
 
@@ -124,6 +149,7 @@ final class _AvatarJumpPayloadCodec extends ValueCodec<()> {
 mixin _$Avatar {
   EntityAttachment? _$networkAttachment;
   MultiplayerSynchronizer? _$networkSynchronizer;
+  Predictor<double, bool>? _$networkPredictor;
 
   /// The synchronizer of the synchronized fields of this [Avatar] while its
   /// attachment is live, or `null`.
@@ -137,8 +163,20 @@ mixin _$Avatar {
         : _$networkSynchronizer;
   }
 
+  /// The predictor of [Avatar.altitude] while the attachment of
+  /// this [Avatar] is live, or `null`.
+  ///
+  /// [updateNetworkMembers] runs it every frame. To change the state outside
+  /// its step, such as to respawn, set its state on the entity's authority.
+  Predictor<double, bool>? get networkPredictor {
+    final attachment = _$networkAttachment;
+    return attachment == null || attachment.isDisposed
+        ? null
+        : _$networkPredictor;
+  }
+
   /// Binds the annotated RPC handlers and synchronized fields of this [Avatar]
-  /// through [attachment].
+  /// through [attachment], and predicts [Avatar.altitude].
   ///
   /// Call it once for each attachment of the object's entity, such as the one
   /// that [MultiplayerSession.attachEntity] returns.
@@ -153,6 +191,16 @@ mixin _$Avatar {
       )
       ..bindRpc(AvatarNet.jump, (context, payload) => self.jump(context));
     _$networkAttachment = attachment;
+    final prediction = attachment.predict(
+      state: AvatarNet.altitude,
+      input: AvatarNet.fly,
+      initial: self.altitude,
+      step: Avatar.fly,
+      interpolator: AvatarNet._altitudeInterpolator,
+      smoothing: AvatarNet._flySmoothing,
+      idleInput: AvatarNet._flyIdleInput,
+    );
+    _$networkPredictor = prediction;
     _$networkSynchronizer = attachment.synchronize([
       AvatarNet.x.property(
         get: () => self.x,
@@ -164,7 +212,22 @@ mixin _$Avatar {
         set: (value) => self.input = value,
         mode: SyncMode.always,
       ),
+      prediction.property(mode: SyncMode.always),
       AvatarNet.label.property(get: () => self.label),
     ], interval: AvatarNet._syncInterval);
+  }
+
+  /// Runs the prediction of [Avatar.altitude] for one frame of [elapsed].
+  ///
+  /// The entity's owner advances it with [Avatar.thrusting], and every peer
+  /// writes the state to present to [Avatar.altitude].
+  ///
+  /// Call it once per frame, after [MultiplayerSession.update] and
+  /// before [MultiplayerSession.captureState].
+  void updateNetworkMembers(Duration elapsed) {
+    final prediction = networkPredictor;
+    if (prediction == null) return;
+    final self = this as Avatar;
+    self.altitude = prediction.update(self.thrusting, elapsed);
   }
 }

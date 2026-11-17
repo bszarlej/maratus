@@ -80,6 +80,19 @@ void _registerByHand(ProtocolSchemaBuilder builder) => builder
   ..addField(
     const FieldId('test.avatar.label'),
     const StringCodec(maxLength: 40),
+  )
+  ..addField(
+    const FieldId('test.avatar.altitude'),
+    const DoubleCodec(min: 0, max: 100),
+    deliveryMode: DeliveryMode.unreliable,
+    channel: 1,
+  )
+  ..addInput(
+    const InputId('test.avatar.fly'),
+    const BoolCodec(),
+    tick: const Duration(milliseconds: 20),
+    deliveryMode: DeliveryMode.unreliableOrdered,
+    channel: 2,
   );
 
 ProtocolSchema _schema(Iterable<void Function(ProtocolSchemaBuilder)> steps) {
@@ -138,6 +151,10 @@ void main() {
     expect(schema.rpcDefinition(AvatarNet.jump.id), same(AvatarNet.jump));
     expect(schema.fieldDefinition(AvatarNet.x.id), same(AvatarNet.x));
     expect(schema.fieldDefinition(AvatarNet.label.id), same(AvatarNet.label));
+    expect(schema.inputDefinition(AvatarNet.fly.id), same(AvatarNet.fly));
+    expect(AvatarNet.fly.tick, const Duration(milliseconds: 20));
+    expect(AvatarNet.fly.deliveryMode, DeliveryMode.unreliableOrdered);
+    expect(AvatarNet.fly.channel, 2);
     expect(AvatarNet.steer.caller, RpcCaller.owner);
     expect(AvatarNet.steer.deliveryMode, DeliveryMode.unreliableOrdered);
     expect(AvatarNet.steer.channel, 1);
@@ -283,19 +300,120 @@ void main() {
         client.avatar.networkSynchronizer!.properties.map(
           (property) => property.field,
         ),
-        [AvatarNet.x, AvatarNet.input, AvatarNet.label],
+        [AvatarNet.x, AvatarNet.input, AvatarNet.altitude, AvatarNet.label],
       );
     });
 
-    test('release the synchronizer when the entity despawns', () {
-      final avatar = client.avatar;
-      expect(avatar.networkSynchronizer, isNotNull);
+    group('prediction', () {
+      late Predictor<double, bool> owned;
+      late Predictor<double, bool> hosted;
 
-      host.session.despawn(host.entity);
-      run();
+      /// Runs [count] frames of one tick each, as a game loop does: every
+      /// peer updates its avatar's members, except the owner while it
+      /// [stalls], which then sends no inputs.
+      void frames(int count, {bool stalls = false}) {
+        const tick = Duration(milliseconds: 20);
+        for (var i = 0; i < count; i++) {
+          clock.advance(tick);
+          host.session.update();
+          client.session.update();
+          host.avatar.updateNetworkMembers(tick);
+          if (!stalls) client.avatar.updateNetworkMembers(tick);
+          host.session.captureState();
+          client.session.captureState();
+        }
+      }
 
-      expect(client.avatars, isEmpty);
-      expect(avatar.networkSynchronizer, isNull);
+      setUp(() {
+        owned = client.avatar.networkPredictor!;
+        hosted = host.avatar.networkPredictor!;
+      });
+
+      test('is configured by the annotations', () {
+        expect(owned.field, same(AvatarNet.altitude));
+        expect(owned.input, same(AvatarNet.fly));
+        expect(owned.interpolator, isA<DoubleInterpolator>());
+        expect(owned.smoothing, const Duration(milliseconds: 40));
+        expect(owned.state, 0);
+        expect(
+          client.avatar.networkSynchronizer!.properties
+              .singleWhere((property) => property.field == AvatarNet.altitude)
+              .interpolator,
+          same(owned.interpolator),
+        );
+      });
+
+      test("shows the owner's input at once and converges with the host", () {
+        client.avatar.thrusting = true;
+        frames(1);
+
+        expect(owned.state, 1);
+        expect(owned.pendingInputs, 1);
+        expect(hosted.state, 0);
+
+        frames(4);
+        expect(owned.state, 5);
+        // Without new inputs, the host catches up with the owner's.
+        frames(8, stalls: true);
+
+        expect(hosted.state, 5);
+        expect(owned.state, 5);
+        expect(owned.pendingInputs, 0);
+        expect(
+          client.avatar.networkSynchronizer!
+              .snapshot(AvatarNet.altitude)
+              ?.value,
+          5,
+        );
+      });
+
+      test('writes the state to present to the member every frame', () {
+        client.avatar.thrusting = true;
+        for (var i = 0; i < 6; i++) {
+          frames(1);
+
+          expect(client.avatar.altitude, owned.presented);
+          expect(host.avatar.altitude, hosted.presented);
+        }
+        expect(owned.state, 6);
+
+        // Letting go, the owner predicts that the avatar sinks.
+        client.avatar.thrusting = false;
+        frames(3);
+        expect(owned.state, 3);
+        expect(client.avatar.altitude, owned.presented);
+      });
+
+      test("applies the idle input while the owner's inputs are late", () {
+        client.avatar.thrusting = true;
+        frames(5);
+        frames(8, stalls: true);
+        expect(hosted.state, 5);
+
+        // The host waits a quarter of a second for the owner's inputs, then
+        // lets the avatar sink one unit for each tick.
+        frames(15, stalls: true);
+
+        expect(hosted.state, lessThan(5));
+        expect(host.avatar.altitude, hosted.state);
+        expect(owned.state, hosted.state);
+      });
     });
+
+    test(
+      'release the synchronizer and prediction when the entity despawns',
+      () {
+        final avatar = client.avatar;
+        expect(avatar.networkSynchronizer, isNotNull);
+        expect(avatar.networkPredictor, isNotNull);
+
+        host.session.despawn(host.entity);
+        run();
+
+        expect(client.avatars, isEmpty);
+        expect(avatar.networkSynchronizer, isNull);
+        expect(avatar.networkPredictor, isNull);
+      },
+    );
   });
 }
