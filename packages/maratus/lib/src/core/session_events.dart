@@ -329,7 +329,7 @@ final class InputRejected extends SessionEvent {
 }
 
 /// A synchronized property could not be sampled, encoded, or applied, or the
-/// step of a `Prediction` failed, reported for its state field.
+/// step of a `Predictor` failed, reported for its state field.
 ///
 /// The other properties of the entity are still synchronized. A step that
 /// fails while the host applies an input leaves the state unchanged; one

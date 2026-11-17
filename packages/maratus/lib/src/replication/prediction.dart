@@ -53,8 +53,8 @@ typedef PredictionStep<S, I> = S Function(S state, I input);
 ///
 /// Every other peer follows the authority's state, and [presented] shows it
 /// interpolated when the synchronizer interpolates [field].
-final class Prediction<S, I> {
-  Prediction._(
+final class Predictor<S, I> {
+  Predictor._(
     this._inputs,
     this._attachment,
     this.field,
@@ -503,14 +503,14 @@ final class _InputReplicator {
   _InputReplicator(this.session);
 
   final MultiplayerSession session;
-  final _predictions = <EntityId, Prediction<Object?, Object?>>{};
+  final _predictions = <EntityId, Predictor<Object?, Object?>>{};
 
   /// The inputs of each entity, which outlive its predictions, so a
   /// replacement prediction continues their numbering.
   final _logs = <NetworkEntity, _InputLog>{};
   var _lifetime = 0;
 
-  /// The most time that one call to [Prediction.advance] covers, and that
+  /// The most time that one call to [Predictor.advance] covers, and that
   /// the host's credit for applying inputs accumulates.
   static const _catchUp = Duration(milliseconds: 250);
 
@@ -542,7 +542,7 @@ final class _InputReplicator {
     _logs.removeWhere((entity, _) => gone(entity));
   }
 
-  Prediction<S, I> predict<S, I>(
+  Predictor<S, I> predict<S, I>(
     EntityAttachment attachment, {
     required SyncField<S> state,
     required InputStream<I> input,
@@ -590,7 +590,7 @@ final class _InputReplicator {
         'can bind the prediction.',
       );
     }
-    final prediction = Prediction<S, I>._(
+    final prediction = Predictor<S, I>._(
       this,
       attachment,
       state,
@@ -606,12 +606,12 @@ final class _InputReplicator {
     return prediction;
   }
 
-  void _unbind(Prediction<Object?, Object?> prediction) {
+  void _unbind(Predictor<Object?, Object?> prediction) {
     final id = prediction.entity.id;
     if (identical(_predictions[id], prediction)) _predictions.remove(id);
   }
 
-  bool _isLive(Prediction<Object?, Object?> prediction) {
+  bool _isLive(Predictor<Object?, Object?> prediction) {
     if (!prediction.isDisposed &&
         identical(_predictions[prediction.entity.id], prediction) &&
         identical(
@@ -626,7 +626,7 @@ final class _InputReplicator {
   }
 
   /// The live prediction of [attachment], if any.
-  Prediction<Object?, Object?>? forAttachment(EntityAttachment attachment) {
+  Predictor<Object?, Object?>? forAttachment(EntityAttachment attachment) {
     final prediction = attachment._prediction;
     return prediction != null && _isLive(prediction) ? prediction : null;
   }
@@ -635,7 +635,7 @@ final class _InputReplicator {
   int get count =>
       _predictions.values.where((prediction) => !prediction.isDisposed).length;
 
-  _InputLog _log(Prediction<Object?, Object?> prediction) {
+  _InputLog _log(Predictor<Object?, Object?> prediction) {
     final entity = prediction.entity;
     final log = _logs[entity];
     if (log != null && log.stream == prediction.input.id) return log;
@@ -648,7 +648,7 @@ final class _InputReplicator {
   /// message with it alone fits the wire limits and, for unreliable
   /// delivery, the transport's limit.
   Uint8List _encodeInput(
-    Prediction<Object?, Object?> prediction,
+    Predictor<Object?, Object?> prediction,
     Object? input,
   ) {
     final stream = prediction.input;
@@ -698,7 +698,7 @@ final class _InputReplicator {
 
   /// A fresh copy of the input of [prediction]'s stream encoded in [bytes].
   Object? _decodeInput(
-    Prediction<Object?, Object?> prediction,
+    Predictor<Object?, Object?> prediction,
     Uint8List bytes,
   ) => session._schema
       .input(prediction.input.id)!
@@ -707,7 +707,7 @@ final class _InputReplicator {
   /// Numbers the owner's [input] and keeps it until the host acknowledges
   /// it. Returns `false`, recording nothing, once the numbers are
   /// exhausted.
-  bool _record(Prediction<Object?, Object?> prediction, Uint8List input) {
+  bool _record(Predictor<Object?, Object?> prediction, Uint8List input) {
     final log = _log(prediction);
     if (log.next > IntCodec.maxSafe) return false;
     log.history.add((sequence: log.next++, bytes: input));
@@ -721,7 +721,7 @@ final class _InputReplicator {
   /// Drops the owner's inputs up to [applied], which the host applied, and
   /// returns the ones that remain.
   Iterable<({int sequence, Uint8List bytes})> _acknowledge(
-    Prediction<Object?, Object?> prediction,
+    Predictor<Object?, Object?> prediction,
     int applied,
   ) {
     final log = _log(prediction);
@@ -731,7 +731,7 @@ final class _InputReplicator {
     return log.history;
   }
 
-  void _forgetHistory(Prediction<Object?, Object?> prediction) {
+  void _forgetHistory(Predictor<Object?, Object?> prediction) {
     final log = _log(prediction);
     log.history.clear();
     log.sent = log.next - 1;
@@ -796,7 +796,7 @@ final class _InputReplicator {
   /// Messages that carry [inputs], consecutive and oldest first, each
   /// within the wire limits.
   List<InputMessage> _messages(
-    Prediction<Object?, Object?> prediction,
+    Predictor<Object?, Object?> prediction,
     List<({int sequence, Uint8List bytes})> inputs,
   ) {
     final messages = <InputMessage>[];
@@ -817,7 +817,7 @@ final class _InputReplicator {
   /// A message that carries as many of the newest [inputs] as fit, so that
   /// a lost message is repaired by the next one.
   InputMessage _newest(
-    Prediction<Object?, Object?> prediction,
+    Predictor<Object?, Object?> prediction,
     List<({int sequence, Uint8List bytes})> inputs,
   ) {
     var count = min(_maxInputsPerMessage, inputs.length);
@@ -830,7 +830,7 @@ final class _InputReplicator {
   }
 
   InputMessage _message(
-    Prediction<Object?, Object?> prediction,
+    Predictor<Object?, Object?> prediction,
     List<({int sequence, Uint8List bytes})> inputs,
   ) => InputMessage(
     entity: prediction.entity.id,
@@ -841,7 +841,7 @@ final class _InputReplicator {
 
   /// Whether [message] fits the wire limits and, for unreliable delivery,
   /// the transport's limit.
-  bool _fits(Prediction<Object?, Object?> prediction, InputMessage message) {
+  bool _fits(Predictor<Object?, Object?> prediction, InputMessage message) {
     final Uint8List bytes;
     try {
       bytes = session._codec.encode(
