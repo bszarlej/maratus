@@ -621,6 +621,31 @@ void main() {
       );
     });
 
+    test('runs the frames of every peer with update', () {
+      final harness = _Harness();
+      final owner = harness.join();
+      final observer = harness.join();
+      final entity = harness.spawn(owner.localPeer!);
+      final mine = harness.mover(owner, entity).prediction;
+      final hosted = harness.mover(harness.host, entity).prediction;
+      final seen = harness.mover(observer, entity).prediction;
+
+      expect(mine.update(1, _tick), 1);
+      expect(mine.pendingInputs, 1);
+      // Every other peer presents the state and ignores the input.
+      expect(hosted.update(-1, _tick), 0);
+      expect(seen.update(-1, _tick), 0);
+      expect(hosted.pendingInputs, 0);
+
+      harness.until(() => seen.state == 1);
+      expect(hosted.state, 1);
+      expect(seen.update(-1, _tick), 1);
+      expect(
+        () => seen.update(1, const Duration(microseconds: -1)),
+        throwsArgumentError,
+      );
+    });
+
     test('has no effect once disposed', () {
       final harness = _Harness();
       final owner = harness.join();

@@ -276,15 +276,14 @@ final prediction = attachment.predict(
 );
 attachment.synchronize([prediction.property()]);
 
-// Every frame, after session.update():
-final shown = entity.owner == session.localPeer
-    ? prediction.advance(readMove(), elapsed)
-    : prediction.presented;
+// Every frame on every peer, after session.update():
+final shown = prediction.update(readMove(), elapsed);
 ```
 
-- The owner calls `advance` every frame, also without input. Each whole tick
-  numbers the input, applies `step`, and keeps the input until the host
-  acknowledges it. `captureState` sends the inputs.
+- On the owner, `prediction.update` advances the prediction every frame, also
+  without input, as `advance` does. Each whole tick numbers the input, applies
+  `step`, and keeps the input until the host acknowledges it. `captureState`
+  sends the inputs. Elsewhere, it ignores the input and returns `presented`.
 - The host applies each input once and in order during `update`, and reports
   the latest input it applied with the state it sends. It applies at most one
   tick of inputs per tick of its own clock after a short burst.

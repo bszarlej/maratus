@@ -214,6 +214,8 @@ final class Predictor<S, I> {
   /// state that its field cannot encode, and rethrows what the step throws.
   /// A failed tick changes nothing and is not sent, and the elapsed time
   /// that it would have covered is dropped.
+  ///
+  /// To run a frame on every peer with the same call, use [update].
   S advance(I input, Duration elapsed) {
     if (elapsed.isNegative) {
       throw ArgumentError.value(elapsed, 'elapsed', 'must not be negative');
@@ -242,6 +244,25 @@ final class Predictor<S, I> {
     }
     _finishCorrection();
     return presented;
+  }
+
+  /// Runs one frame of [elapsed] on this peer, and returns the state to
+  /// present, as [presented] does.
+  ///
+  /// Call it once per frame on every peer, after [MultiplayerSession.update]
+  /// and before [MultiplayerSession.captureState], with the owner's input of
+  /// that frame. On the entity's owner, it [advance]s the prediction with
+  /// [input]; elsewhere, it ignores [input].
+  ///
+  /// Throws an [ArgumentError] if [elapsed] is negative, and on the owner,
+  /// what [advance] throws.
+  S update(I input, Duration elapsed) {
+    if (elapsed.isNegative) {
+      throw ArgumentError.value(elapsed, 'elapsed', 'must not be negative');
+    }
+    return _inputs.session._localPeer == entity.owner
+        ? advance(input, elapsed)
+        : presented;
   }
 
   /// Describes the synchronized property of [field], to bind in the entity's
