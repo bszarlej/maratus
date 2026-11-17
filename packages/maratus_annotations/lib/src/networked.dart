@@ -7,12 +7,15 @@ import 'package:meta/meta_meta.dart';
 /// `.g.dart` part:
 ///
 /// - `PlayerNet`, with a const handle for each [RpcMethod] and [SyncedField]
-///   member and for the [spawnType], and a static `register` function that
-///   registers them all with a [ProtocolSchemaBuilder].
+///   member, for the input stream of a [Prediction] method, and for the
+///   [spawnType], and a static `register` function that registers them all
+///   with a [ProtocolSchemaBuilder].
 /// - `_$Player`, a mixin that binds the annotated members through an
-///   [EntityAttachment]. Mix it into the class whenever it declares any. A
-///   Flame `NetworkedComponent` binds them on every attachment; other classes
-///   call the mixin's `bindNetworkMembers` with their attachment.
+///   [EntityAttachment] and runs the prediction of a [Prediction] method. Mix it
+///   into the class whenever it declares any. A Flame `NetworkedComponent`
+///   binds them on every attachment and runs the prediction every frame;
+///   other classes call the mixin's `bindNetworkMembers` with their
+///   attachment, and its `updateNetworkMembers` once per frame.
 /// - `PlayerRpc`, for Flame components with RPC methods: `player.rpc.hit(25)`
 ///   invokes the RPC over the component's session.
 ///
@@ -45,9 +48,9 @@ import 'package:meta/meta_meta.dart';
 /// Each value that crosses the network takes its codec from its declaration;
 /// see `UseCodec` for the rules. The generated handles have the same codecs,
 /// policies, and fingerprint as the equivalent registrations with
-/// [ProtocolSchemaBuilder.addSpawnType], [ProtocolSchemaBuilder.addRpc], and
-/// [ProtocolSchemaBuilder.addField], and both kinds of registration mix
-/// freely in one schema.
+/// [ProtocolSchemaBuilder.addSpawnType], [ProtocolSchemaBuilder.addRpc],
+/// [ProtocolSchemaBuilder.addField], and [ProtocolSchemaBuilder.addInput],
+/// and both kinds of registration mix freely in one schema.
 @Target({TargetKind.classType})
 final class Networked {
   /// Marks a class whose network declarations are generated.
@@ -178,4 +181,105 @@ final class SyncedField {
   ///
   /// Its type argument must be the member's type.
   final Interpolator<Object?>? interpolator;
+}
+
+/// Predicts the [SyncedField] member that [of] names on the entity's owner,
+/// from the owner's [input], with the annotated method as the step that
+/// applies one input of the input stream [id] for one [tick].
+///
+/// The method must be static. It takes the state and one input and returns
+/// the next state, as a [PredictionStep] does: the host runs it with the
+/// owner's inputs to compute the authoritative state, and the owner runs it
+/// with the same inputs to show their effect without waiting for that state.
+/// [of] names the [SyncedField] member that holds the state, which the
+/// entity's authority writes, and whose type the method takes and returns.
+/// [input] names the member that holds the owner's current input.
+///
+/// ```dart
+/// final direction = Vector2.zero();
+///
+/// @SyncedField('arena.player.position', interpolator: Vector2Interpolator())
+/// @UseCodec(arenaPoint)
+/// Vector2 get syncedPosition => position;
+/// set syncedPosition(Vector2 value) => position.setFrom(value);
+///
+/// @Prediction(
+///   'arena.player.move',
+///   of: 'syncedPosition',
+///   input: 'direction',
+///   tick: Duration(milliseconds: 20),
+/// )
+/// static Vector2 move(Vector2 position, @UseCodec(steering) Vector2 input) =>
+///     position + input * 4;
+/// ```
+///
+/// The generated handle of the input stream, named after the method, has the
+/// same codec, tick, and fingerprint as a call to
+/// [ProtocolSchemaBuilder.addInput] with the same arguments. Its codec is the
+/// one that the method's input parameter selects, as for an RPC parameter.
+///
+/// The generated mixin calls [EntityAttachment.predict] before it
+/// synchronizes the class's members. The prediction starts from the value of
+/// the member that [of] names, blends with that member's interpolator, and
+/// replaces the member in the synchronizer. The mixin's `updateNetworkMembers`
+/// then runs it every frame with [Predictor.update]: the entity's owner
+/// advances it with the value of the [input] member, and every peer writes
+/// the state to present to the predicted member, if it can be written. A Flame
+/// `NetworkedComponent` updates its members before each frame's gameplay;
+/// other classes call `updateNetworkMembers` once per frame.
+///
+/// The prediction holds the state, so writing the member does not change
+/// it. To change the state outside the step, such as to respawn a player,
+/// set [Predictor.state] on the entity's authority, through the mixin's
+/// `networkPredictor`. A class declares at most one prediction.
+@Target({TargetKind.method})
+final class Prediction {
+  /// Declares the input stream [id], whose inputs advance the member that
+  /// [of] names one [tick] at a time.
+  const Prediction(
+    this.id, {
+    required this.of,
+    required this.input,
+    required this.tick,
+    this.deliveryMode = DeliveryMode.reliable,
+    this.channel = 0,
+    this.smoothing,
+    this.idleInput,
+  });
+
+  /// The stable identifier of the input stream, which renaming the method
+  /// does not change.
+  final String id;
+
+  /// The name of the [SyncedField] member of the same class that holds the
+  /// predicted state.
+  final String of;
+
+  /// The name of the field or getter of the same class that holds the
+  /// owner's current input, which the generated code reads once per frame on
+  /// the entity's owner.
+  ///
+  /// Its type must be the type of the method's input.
+  final String input;
+
+  /// The fixed time step that each input covers, which must be positive.
+  final Duration tick;
+
+  /// How inputs are delivered to the entity's authority.
+  final DeliveryMode deliveryMode;
+
+  /// The transport channel for inputs, numbered from zero.
+  ///
+  /// The transport must support [deliveryMode] on this channel.
+  final int channel;
+
+  /// How long a correction of the owner's prediction takes to blend out, or
+  /// `null` for the default of [EntityAttachment.predict].
+  final Duration? smoothing;
+
+  /// The input that the host applies while the owner's inputs are late, or
+  /// `null` if it waits for them, as [EntityAttachment.predict] describes.
+  ///
+  /// Its type must be the type of the method's input.
+  final Object? idleInput;
 }
