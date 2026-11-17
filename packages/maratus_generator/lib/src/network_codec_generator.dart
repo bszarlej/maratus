@@ -143,7 +143,7 @@ final class $codecName extends ${maratus}ValueCodec<$self> {
       if (field.nonSynthetic != field) continue;
       final key = wireKeyChecker.firstAnnotationOf(field);
       if (key == null) {
-        if (!field.isStatic && _hasCodecAnnotation(field)) {
+        if (!field.isStatic && hasCodecAnnotation(field)) {
           throw InvalidGenerationSourceError(
             'Field ${field.name} of $name has a codec annotation but no '
             '@WireKey, so it is not sent.',
@@ -176,11 +176,6 @@ final class $codecName extends ${maratus}ValueCodec<$self> {
     }
     return fields;
   }
-
-  static bool _hasCodecAnnotation(Element element) =>
-      useCodecChecker.hasAnnotationOf(element) ||
-      rangeChecker.hasAnnotationOf(element) ||
-      maxLengthChecker.hasAnnotationOf(element);
 
   /// The arguments that construct a decoded value from the wire object, which
   /// reads each field with the codec in the static constant [staticNames]

@@ -1,3 +1,4 @@
+import 'package:analyzer/dart/element/element.dart';
 import 'package:analyzer/dart/element/type.dart';
 import 'package:maratus_annotations/maratus_annotations.dart';
 import 'package:source_gen/source_gen.dart';
@@ -19,6 +20,12 @@ const rpcMethodChecker = TypeChecker.typeNamed(
 /// Matches [SyncedField] annotations.
 const syncedFieldChecker = TypeChecker.typeNamed(
   SyncedField,
+  inPackage: 'maratus_annotations',
+);
+
+/// Matches [Prediction] annotations.
+const predictionChecker = TypeChecker.typeNamed(
+  Prediction,
   inPackage: 'maratus_annotations',
 );
 
@@ -51,6 +58,13 @@ const useCodecChecker = TypeChecker.typeNamed(
   UseCodec,
   inPackage: 'maratus_annotations',
 );
+
+/// Whether [element] has an annotation that selects the codec of its value:
+/// [UseCodec], [Range], or [MaxLength].
+bool hasCodecAnnotation(Element element) =>
+    useCodecChecker.hasAnnotationOf(element) ||
+    rangeChecker.hasAnnotationOf(element) ||
+    maxLengthChecker.hasAnnotationOf(element);
 
 /// The type of the values that a `ValueCodec` of [type] encodes, or `null`
 /// if [type] is not a codec type.
