@@ -123,6 +123,14 @@ final class CodecResolver {
       limits.allow(maxLength: true);
       return '${codec('StringCodec')}(${_maxLengthArgument(limits)})';
     }
+    if (type is InterfaceType && type.element is EnumElement) {
+      limits.allow();
+
+      final reference = library.reference(type.element, declaration);
+      names.add(reference.split('.').first);
+
+      return '${codec('EnumCodec')}($reference.values)';
+    }
     if (type is InterfaceType && type.isDartCoreList) {
       limits.allow(maxLength: true);
       final element = _infer(

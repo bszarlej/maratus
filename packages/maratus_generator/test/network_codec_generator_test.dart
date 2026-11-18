@@ -8,6 +8,77 @@ import 'package:maratus_annotations/maratus_annotations.dart';
 ''';
 
 void main() {
+  group('enum inference', () {
+    test('infers enum, nullable enum, and enum list codecs', () async {
+      final generation = await generate('''
+$_imports
+enum Direction { up, down, left, right }
+
+@NetworkCodec('test.movement@1')
+final class Movement {
+  const Movement(this.direction, this.optional, this.history);
+  @WireKey('direction') final Direction direction;
+  @WireKey('optional') final Direction? optional;
+  @WireKey('history') final List<Direction> history;
+}
+''');
+
+      expect(generation.errors, isEmpty);
+      expect(
+        generation.output,
+        contains('static const _direction = EnumCodec(Direction.values);'),
+      );
+      expect(
+        generation.output,
+        contains(
+          'static const _optional = NullableCodec(EnumCodec(Direction.values));',
+        ),
+      );
+      expect(
+        generation.output,
+        contains(
+          'static const _history = ListCodec(EnumCodec(Direction.values));',
+        ),
+      );
+    });
+
+    test('uses enum and codec import prefixes', () async {
+      final generation = await generate(
+        '''
+import 'package:maratus/maratus.dart' as m;
+import 'package:maratus_annotations/maratus_annotations.dart';
+import 'directions.dart' as directions;
+
+@NetworkCodec('test.movement@1')
+final class Movement {
+  const Movement(this.direction);
+  @WireKey('direction') final directions.Direction direction;
+}
+''',
+        assets: {
+          'pkg|lib/directions.dart': 'enum Direction { up, down, left, right }',
+        },
+      );
+
+      expect(generation.errors, isEmpty);
+      expect(
+        generation.output,
+        contains('m.EnumCodec(directions.Direction.values)'),
+      );
+    });
+
+    test('rejects the base Enum type without a concrete values list', () async {
+      await expectError('''
+$_imports
+@NetworkCodec('test.movement@1')
+final class Movement {
+  const Movement(this.direction);
+  @WireKey('direction') final Enum direction;
+}
+''', 'No codec is known for Enum');
+    });
+  });
+
   test('writes a codec that reads each field under its wire key', () async {
     final generation = await generate('''
 $_imports
