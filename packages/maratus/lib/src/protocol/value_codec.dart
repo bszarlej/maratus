@@ -406,6 +406,36 @@ final class NullableCodec<T extends Object> extends ValueCodec<T?> {
   T? decode(Object? wire) => wire == null ? null : inner.decode(wire);
 }
 
+/// A codec for enum values represented by their case names as strings.
+class EnumCodec<T extends Enum> extends ValueCodec<T> {
+  /// Creates a codec using the enum's complete `values` list.
+  const EnumCodec(this._values);
+
+  final List<T> _values;
+  static const _string = StringCodec();
+
+  @override
+  String get descriptor {
+    final names = _values.map((value) => value.name).toList()..sort();
+    return 'enum.names(${names.join(',')})';
+  }
+
+  @override
+  T decode(Object? wire) {
+    final name = _string.decode(wire);
+    for (final value in _values) {
+      if (value.name == name) return value;
+    }
+    throw ProtocolException(
+      ProtocolErrorCode.invalidValue,
+      'unknown enum name: $name',
+    );
+  }
+
+  @override
+  Object? encode(T value) => _string.encode(value.name);
+}
+
 /// Reads an object-shaped wire value with a fixed set of keys.
 ///
 /// Use it in [ValueCodec.decode] to reject missing and unexpected keys and

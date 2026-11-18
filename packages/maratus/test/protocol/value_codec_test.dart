@@ -3,7 +3,40 @@ import 'package:test/test.dart';
 
 import 'protocol_test_utils.dart';
 
+enum _Facing { down, up }
+
 void main() {
+  group('EnumCodec', () {
+    const codec = EnumCodec<_Facing>(_Facing.values);
+
+    test('encodes case names and round-trips every value', () {
+      expect(codec.encode(_Facing.down), 'down');
+      expect(codec.encode(_Facing.up), 'up');
+      for (final value in _Facing.values) {
+        expect(codec.decode(codec.encode(value)), value);
+      }
+    });
+
+    test('rejects unknown names and non-string values', () {
+      for (final wire in <Object?>['left', 'Down', '', null, 0, true, []]) {
+        expect(
+          () => codec.decode(wire),
+          throwsProtocolException(ProtocolErrorCode.invalidValue),
+          reason: '$wire',
+        );
+      }
+    });
+
+    test('descriptor ignores order but includes accepted names', () {
+      const reversed = EnumCodec<_Facing>([_Facing.up, _Facing.down]);
+      const subset = EnumCodec<_Facing>([_Facing.down]);
+
+      expect(codec.descriptor, reversed.descriptor);
+      expect(codec.descriptor, isNot(subset.descriptor));
+      expect(reversed.decode('down'), _Facing.down);
+    });
+  });
+
   group('BoolCodec', () {
     const codec = BoolCodec();
 
