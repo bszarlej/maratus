@@ -65,8 +65,6 @@ for configuration and platform requirements.
 
 ## Examples
 
-- [WebSocket chat](examples/chat): Windows or standalone Dart hosting, browser
-  clients, replicated avatars, and simulated connection problems.
 - [Prediction](examples/prediction): client-side prediction under simulated
   latency, with a host and a client side by side.
 - [RPC](examples/rpc): who may call an RPC and where it runs, with a host

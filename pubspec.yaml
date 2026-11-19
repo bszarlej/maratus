@@ -12,7 +12,6 @@ workspace:
   - packages/maratus_flame
   - packages/maratus_generator
   - packages/maratus_webrtc
-  - examples/chat
   - examples/prediction
   - examples/rpc
   - examples/visibility

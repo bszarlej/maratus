@@ -1,5 +1,0 @@
-analyzer:
-  exclude:
-    - web/**
-    - windows/**
-include: ../../packages/maratus_flame/analysis_options.yaml

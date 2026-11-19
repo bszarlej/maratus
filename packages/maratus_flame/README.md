@@ -205,8 +205,6 @@ for reliable and unreliable modes and transport requirements.
 - [Host/client game](example/main.dart): replicated avatars, owner-only input
   RPCs, and position smoothing with `Vector2Codec` and `Vector2Interpolator`.
   It runs two sessions over an in-memory network in one game.
-- [WebSocket chat](https://github.com/bszarlej/maratus/tree/master/examples/chat): a runnable desktop and browser
-  app with replicated avatars, network simulation, and diagnostics.
 - [Prediction](https://github.com/bszarlej/maratus/tree/master/examples/prediction):
   a host and a client side by side, where the client's square moves at once
   despite the latency and converges with the host's state.
