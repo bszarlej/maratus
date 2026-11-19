@@ -39,10 +39,20 @@ Future<Generation> generate(
     },
   );
   final output = AssetId('pkg', input.replaceFirst('.dart', '.maratus.g.part'));
-  return Generation._(
+  final generation = Generation._(
     sources.testing.exists(output) ? sources.testing.readString(output) : null,
     errors,
   );
+  // The sources are shared between calls, so remove this call's libraries to
+  // keep later builds from building them and reporting their errors again.
+  for (final id in [
+    AssetId('pkg', input),
+    output,
+    ...assets.keys.map(AssetId.parse),
+  ]) {
+    if (sources.testing.exists(id)) sources.testing.delete(id);
+  }
+  return generation;
 }
 
 Future<TestReaderWriter> _loadSources() async {
