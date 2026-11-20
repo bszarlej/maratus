@@ -99,6 +99,19 @@ reports, is separate: assigning a client as `owner` allows owner-restricted RPCs
 and lets it write fields registered with `writer: FieldWriter.owner`, such as its
 input, but does not transfer authority over the other synchronized state.
 
+To smooth a position that arrives a few times a second, give its property a
+`Vector2Interpolator`. On the peers that do not write the position, the scope
+then passes positions blended between the received samples to the setter,
+before each frame's gameplay:
+
+```dart
+positionField.property(
+  get: () => position,
+  set: (value) => position.setFrom(value),
+  interpolator: const Vector2Interpolator(teleportDistance: 200),
+),
+```
+
 Call `session.spawn` and `session.despawn` on the host to create and remove
 replicated entities. A spawner creates components for existing entities too,
 including those received while joining. Removing a component locally does not
