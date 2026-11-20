@@ -69,6 +69,8 @@ for configuration and platform requirements.
   latency, with a host and a client side by side.
 - [RPC](examples/rpc): who may call an RPC and where it runs, with a host
   and two clients side by side.
+- [Spawning](examples/spawning): replicated spawning and despawning, with two
+  clients that join late, leave, and join again beside the host.
 - [Visibility](examples/visibility): a host that shows a client only the
   entities near its player, with both side by side.
 - [Flame](packages/maratus_flame/example/main.dart): host and client in one game,
