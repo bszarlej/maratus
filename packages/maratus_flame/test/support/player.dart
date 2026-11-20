@@ -41,10 +41,11 @@ final class Player extends PositionComponent with NetworkedComponent, _$Player {
   @Range(min: 0, max: 100)
   int health = 100;
 
-  /// The inherited position, sent for interpolation only.
+  /// The inherited position, which every other peer presents interpolated.
   @SyncedField('test.player.position', interpolator: Vector2Interpolator())
   @UseCodec(arenaPoint)
   Vector2 get syncedPosition => position;
+  set syncedPosition(Vector2 value) => position.setFrom(value);
 
   /// The direction that the owner runs in along the lane: -1, 0, or 1.
   var running = 0;
