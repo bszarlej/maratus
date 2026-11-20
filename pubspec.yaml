@@ -12,6 +12,7 @@ workspace:
   - packages/maratus_flame
   - packages/maratus_generator
   - packages/maratus_webrtc
+  - examples/interpolation
   - examples/prediction
   - examples/rpc
   - examples/spawning
