@@ -1,3 +1,27 @@
+## 0.4.0
+
+> Note: This release has breaking changes.
+
+ - **REFACTOR**: rename Prediction to Predictor. ([7a9dd933](https://github.com/bszarlej/maratus/commit/7a9dd9335bdd0b4d645913c1ffc29f05cbba184e))
+ - **FEAT**: run a prediction's frame on every peer with update. ([d6de01a2](https://github.com/bszarlej/maratus/commit/d6de01a251bfadeef21a4c8daac647fce59058cf))
+ - **FEAT**: add name-based enum codec. ([0d2b4e28](https://github.com/bszarlej/maratus/commit/0d2b4e281385c2b63e4fa7c856f4c0bd4c66b6d8))
+ - **FEAT**: keep predicted entities moving while inputs are late. ([972aa08d](https://github.com/bszarlej/maratus/commit/972aa08d7eb2409dbae0905e93275c1ad9b5c957))
+ - **FEAT**: let the authority set the state of a prediction. ([24e53d41](https://github.com/bszarlej/maratus/commit/24e53d41b66ba15874e1370b2536d32d3caae22a))
+ - **FEAT**: predict owner-controlled entities. ([46e0a568](https://github.com/bszarlej/maratus/commit/46e0a568429ff33b795f86b73299a68506f1e356))
+ - **FEAT**: add input streams to the schema. ([b1184b44](https://github.com/bszarlej/maratus/commit/b1184b44a8bac397cbd90308dc64bfd58c4838c8))
+ - **DOCS**: point Flame games to proximity visibility. ([eb116c55](https://github.com/bszarlej/maratus/commit/eb116c555187b9330b05c254c18467c22b4710b3))
+ - **DOCS**: describe setters of interpolated properties. ([a600108c](https://github.com/bszarlej/maratus/commit/a600108cec87de2414d72916748f2d0e335049b1))
+ - **DOCS**: link predictions declared with annotations. ([a8480b25](https://github.com/bszarlej/maratus/commit/a8480b25ee255517af1d3c43e6573a467e0a7d92))
+ - **DOCS**: describe entity visibility. ([56dccde4](https://github.com/bszarlej/maratus/commit/56dccde43252b31c970f740330ee997ebeddb8e3))
+ - **DOCS**: describe client-side prediction. ([5e516a77](https://github.com/bszarlej/maratus/commit/5e516a77746f3010d10832a2b915463db6ea72ba))
+ - **DOCS**: add pub version and CI badges [skip ci]. ([585daf71](https://github.com/bszarlej/maratus/commit/585daf71f38cde4010786a4c4089a73591d4aaad))
+ - **DOCS**: correct package documentation. ([fe51ec67](https://github.com/bszarlej/maratus/commit/fe51ec67ca3e12de89bb15c2efe1dca9386b2bf3))
+ - **BREAKING** **FEAT**: pass interpolated values to setters. ([f91ad2d6](https://github.com/bszarlej/maratus/commit/f91ad2d6eb28ac0d14ac2b0ef00cd69020b05335))
+ - **BREAKING** **FEAT**: replicate entities only to the clients that see them. ([78fdcb62](https://github.com/bszarlej/maratus/commit/78fdcb62e1367ad16ab5726a0c349f3d70d1bbf2))
+ - **BREAKING** **FEAT**: add shown spawn records to the protocol. ([7cc87736](https://github.com/bszarlej/maratus/commit/7cc87736b847771ece4f4617790f2a7880c7c3df))
+ - **BREAKING** **FEAT**: add input messages and applied inputs to state. ([4eea8014](https://github.com/bszarlej/maratus/commit/4eea8014b6f0599c95bfee20b14c209bb17ec00c))
+ - **BREAKING** **FEAT**: add owner-written synchronized fields. ([e6a17e8f](https://github.com/bszarlej/maratus/commit/e6a17e8f163a36b4b2da8febec08bb420f4faffc))
+
 ## 0.3.0
 
 > Note: This release has breaking changes.
