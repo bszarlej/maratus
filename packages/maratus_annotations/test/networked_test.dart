@@ -51,9 +51,13 @@ void main() {
     expect(annotation.channel, field.channel);
     expect(annotation.writer, field.writer);
     expect(annotation.interpolator, isNull);
+    expect(
+      annotation.applyInterpolated,
+      field.property(get: () => 0).applyInterpolated,
+    );
   });
 
-  test('SyncedField keeps its mode, writer, and interpolator', () {
+  test('SyncedField keeps its mode, writer, and interpolation', () {
     const annotation = SyncedField(
       'arena.player.speed',
       mode: SyncMode.always,
@@ -61,6 +65,7 @@ void main() {
       channel: 2,
       writer: FieldWriter.owner,
       interpolator: DoubleInterpolator(teleportDistance: 50),
+      applyInterpolated: false,
     );
 
     expect(annotation.mode, SyncMode.always);
@@ -75,6 +80,7 @@ void main() {
         50,
       ),
     );
+    expect(annotation.applyInterpolated, isFalse);
   });
 
   test('Prediction defaults to the delivery of addInput', () {
