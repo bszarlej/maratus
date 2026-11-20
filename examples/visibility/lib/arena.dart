@@ -35,7 +35,14 @@ ProtocolSchema createSchema() {
 
 /// A square that the client that owns it steers with the arrow keys, inside
 /// the circle within which crates come into that client's view.
-@Networked(spawnType: 'visibility.player')
+///
+/// Its position is sampled every 20 ms, and the host presents it blended
+/// 40 ms behind the newest sample.
+@Networked(
+  spawnType: 'visibility.player',
+  syncInterval: Duration(milliseconds: 20),
+  interpolationDelay: Duration(milliseconds: 40),
+)
 class Player extends PositionComponent
     with KeyboardHandler, NetworkedComponent, _$Player {
   /// Creates the player that the host spawned at the position in [context].
@@ -64,8 +71,12 @@ class Player extends PositionComponent
   final _direction = Vector2.zero();
 
   /// The inherited position, which the client that owns the player writes,
-  /// and the host applies.
-  @SyncedField('visibility.player.position', writer: FieldWriter.owner)
+  /// and the host applies, interpolated between the received samples.
+  @SyncedField(
+    'visibility.player.position',
+    writer: FieldWriter.owner,
+    interpolator: Vector2Interpolator(),
+  )
   @UseCodec(arenaPoint)
   Vector2 get syncedPosition => position;
   set syncedPosition(Vector2 value) => position.setFrom(value);
