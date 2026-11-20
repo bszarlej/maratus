@@ -178,6 +178,48 @@ final class Mover with _\$Mover {
       contains('interpolationDelay: MoverNet._interpolationDelay'),
     );
     expect(output, contains('MoverNet.name.property(get: () => self.name)'));
+    // The setter of x receives the interpolated values.
+    expect(output, contains('set: (value) => self.x = value'));
+    expect(output, isNot(contains('applyInterpolated')));
+    expect(output, contains('`networkSynchronizer?.snapshot(MoverNet.x)`'));
+  });
+
+  test('opts out of applying interpolated values', () async {
+    final generation = await generate('''
+$_imports
+@Networked()
+final class Mover with _\$Mover {
+  @SyncedField(
+    'test.mover.x',
+    interpolator: DoubleInterpolator(),
+    applyInterpolated: false,
+  )
+  double x = 0;
+}
+''');
+
+    expect(generation.errors, isEmpty);
+    final output = generation.output!;
+    expect(output, contains('set: (value) => self.x = value'));
+    expect(output, contains('applyInterpolated: false'));
+    expect(output, contains('`networkSynchronizer?.interpolated(MoverNet.x)`'));
+  });
+
+  test('leaves the interpolated values of members without setters', () async {
+    final generation = await generate('''
+$_imports
+@Networked()
+final class Mover with _\$Mover {
+  @SyncedField('test.mover.x', interpolator: DoubleInterpolator())
+  double get x => 0;
+}
+''');
+
+    expect(generation.errors, isEmpty);
+    final output = generation.output!;
+    expect(output, isNot(contains('set:')));
+    expect(output, isNot(contains('applyInterpolated')));
+    expect(output, contains('`networkSynchronizer?.interpolated(MoverNet.x)`'));
   });
 
   test(
@@ -524,6 +566,16 @@ final class Avatar with _\$Avatar {
         'blends double, but the member is int',
       ),
       (
+        'applyInterpolated without an interpolator',
+        '''
+@Networked()
+final class Avatar with _\$Avatar {
+  @SyncedField('test.avatar.x', applyInterpolated: false) double x = 0;
+}''',
+        'applyInterpolated applies only to members with an interpolator, '
+            'unlike synchronized member Avatar.x',
+      ),
+      (
         'static members',
         '''
 @Networked()
@@ -592,6 +644,15 @@ final class Avatar<T> with _\$Avatar {
               'double x = 0;',
         ),
         "which the entity's owner writes",
+      ),
+      (
+        'applyInterpolated on the state of a prediction',
+        _predicting(
+          x:
+              "@SyncedField('test.avatar.x', interpolator: DoubleInterpolator(), "
+              'applyInterpolated: false) double x = 0;',
+        ),
+        'Avatar.x, whose applyInterpolated does not apply',
       ),
       (
         'codec annotations on the state of a prediction',
