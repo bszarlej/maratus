@@ -544,11 +544,12 @@ final class MultiplayerSession {
   /// Received spawn, despawn, and state records are applied as their events
   /// are handled. A host then applies the admission decisions completed
   /// since the previous update. Ready synchronizers then receive the latest
-  /// values of the fields this peer does not write, and owners reconcile
-  /// their [Predictor]s with them. The host then applies the inputs it
-  /// received to the predictions it computes, before queued RPCs for
-  /// attached entities run. A joining client then reports ready if every
-  /// entity of its baseline is ready, and pings that are due are sent.
+  /// values of the fields this peer does not write, or their interpolated
+  /// values, and owners reconcile their [Predictor]s with them. The host
+  /// then applies the inputs it received to the predictions it computes,
+  /// before queued RPCs for attached entities run. A joining client then
+  /// reports ready if every entity of its baseline is ready, and pings that
+  /// are due are sent.
   /// Deadlines are checked last, at this update boundary, so a queued reply,
   /// a completed decision, or a completed installation takes precedence even
   /// when this method runs after the deadline.

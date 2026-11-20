@@ -5,8 +5,8 @@ part of '../core/multiplayer_session.dart';
 /// Peers other than the writer of a synchronized field receive its values
 /// as samples, a few times a second. With an interpolator,
 /// [MultiplayerSynchronizer.interpolated] presents values between those
-/// samples, so motion looks smooth while the authoritative state that
-/// setters and snapshots receive stays exactly as sent.
+/// samples, and the property's setter receives them, so motion looks smooth
+/// while the authoritative state that snapshots hold stays exactly as sent.
 ///
 /// [DoubleInterpolator] blends numbers. Implement an interpolator for
 /// another type by extending this class:
@@ -78,13 +78,17 @@ enum InterpolationState {
 /// A value of a synchronized field to present, from
 /// [MultiplayerSynchronizer.interpolated].
 final class InterpolatedValue<T> {
-  const InterpolatedValue._(this.value, this.state);
+  const InterpolatedValue._(this.value, this.state, [this._bytes]);
 
   /// A new value, which the caller may change.
   final T value;
 
   /// How the value was produced.
   final InterpolationState state;
+
+  /// The encoding of [value] if it is a received value rather than a blend
+  /// of two, which a setter does not receive twice in a row.
+  final Uint8List? _bytes;
 
   @override
   String toString() => 'InterpolatedValue($value, ${state.name})';
@@ -166,7 +170,9 @@ final class _Samples {
   /// Samples before the one in effect at [time] are forgotten. [copy]
   /// decodes a sample into a new value. After a pause longer than twice
   /// [interval], such as an unchanged [SyncMode.onChange] field, the
-  /// earlier value holds until one interval before the next sample.
+  /// earlier value holds until one interval before the next sample. Values
+  /// that are samples rather than blends carry their encoding, including
+  /// the blends of two samples with the same encoding.
   InterpolatedValue<T> evaluate<T>(
     Duration time, {
     required Duration interval,
@@ -178,18 +184,27 @@ final class _Samples {
     }
     final from = _entries.first;
     if (_entries.length == 1 || time < from.sampledAt) {
-      return InterpolatedValue._(copy(from.bytes), InterpolationState.holding);
+      return InterpolatedValue._(
+        copy(from.bytes),
+        InterpolationState.holding,
+        from.bytes,
+      );
     }
     final to = _entries.elementAt(1);
     if (property._isTeleport(from.value, to.value)) {
-      return InterpolatedValue._(copy(from.bytes), InterpolationState.snapped);
+      return InterpolatedValue._(
+        copy(from.bytes),
+        InterpolationState.snapped,
+        from.bytes,
+      );
     }
     var start = from.sampledAt;
     if (to.sampledAt - start > interval * 2) start = to.sampledAt - interval;
-    if (time <= start) {
+    if (time <= start || _StateReplicator._sameBytes(from.bytes, to.bytes)) {
       return InterpolatedValue._(
         copy(from.bytes),
         InterpolationState.interpolating,
+        from.bytes,
       );
     }
     final t =

@@ -10,6 +10,10 @@ Matcher _shows(double value, InterpolationState state) =>
         .having((shown) => shown.value, 'value', closeTo(value, 1e-9))
         .having((shown) => shown.state, 'state', state);
 
+List<SessionEvent> _drain(MultiplayerSession session) => [
+  for (var event = session.poll(); event != null; event = session.poll()) event,
+];
+
 /// A mutable two-dimensional point, like a vector.
 final class _Point {
   _Point(this.x, this.y);
@@ -74,6 +78,8 @@ final class _Avatar {
     this.schema, {
     Interpolator<double> interpolator = const DoubleInterpolator(),
     Duration? delay,
+    SyncMode mode = SyncMode.onChange,
+    bool applyInterpolated = true,
   }) {
     attachment = session.attachEntity(
       entity,
@@ -85,10 +91,13 @@ final class _Avatar {
         schema.x.property(
           get: () => x,
           set: (value) {
+            if (rejects) throw StateError('rejected $value');
             x = value;
             applied.add(value);
           },
+          mode: mode,
           interpolator: interpolator,
+          applyInterpolated: applyInterpolated,
         ),
         schema.label.property(get: () => label, set: (value) => label = value),
       ],
@@ -103,7 +112,12 @@ final class _Avatar {
   late final MultiplayerSynchronizer synchronizer;
   var x = 0.0;
   var label = '';
+
+  /// The values that the setter of `x` received, in order.
   final applied = <double>[];
+
+  /// Whether the setter of `x` throws.
+  var rejects = false;
 
   InterpolatedValue<double>? get shown => synchronizer.interpolated(schema.x);
 }
@@ -172,6 +186,12 @@ final class _Harness {
     clock.advance(at - clock.now);
     return reader.shown;
   }
+
+  /// Moves the clock to [at] and updates [reader]'s session.
+  void updateAt(_Avatar reader, Duration at) {
+    clock.advance(at - clock.now);
+    reader.session.update();
+  }
 }
 
 void main() {
@@ -190,7 +210,6 @@ void main() {
       ..sample(writer, 20, at: _ms * 100);
 
     // Authoritative state arrives at once; presentation trails it.
-    expect(reader.applied, [0, 10, 20]);
     expect(reader.synchronizer.snapshot(harness.schema.x)!.value, 20);
     expect(reader.synchronizer.interpolationDelay, _interval * 2);
     for (final (at, value, state) in [
@@ -207,7 +226,122 @@ void main() {
         reason: '$at ms',
       );
     }
-    expect(reader.x, 20);
+  });
+
+  group('setters', () {
+    /// A host that writes an avatar and a client that reads it, with
+    /// samples of 0, 10, and 20 delivered.
+    (_Harness, _Avatar writer, _Avatar reader) sampled({
+      bool applyInterpolated = true,
+    }) {
+      final harness = _Harness();
+      final (client, _) = harness.join();
+      harness.settle();
+      final [onHost, onClient] = harness.register(1);
+      final writer = _Avatar(harness.host, onHost, harness.schema);
+      final reader = _Avatar(
+        client,
+        onClient,
+        harness.schema,
+        applyInterpolated: applyInterpolated,
+      );
+      harness
+        ..sample(writer, 0, at: Duration.zero)
+        ..sample(writer, 10, at: _ms * 50)
+        ..sample(writer, 20, at: _ms * 100);
+      return (harness, writer, reader);
+    }
+
+    test('receive the presented values at each update', () {
+      final (harness, writer, reader) = sampled();
+      // Presentation trails the newest sample, so the first one shows.
+      expect(reader.applied, [0]);
+
+      for (final at in [125, 150, 175, 200]) {
+        harness.updateAt(reader, _ms * at);
+        expect(reader.x, reader.shown!.value, reason: '$at ms');
+      }
+      expect(reader.applied, [0, 5, 10, 15, 20]);
+      expect(writer.applied, isEmpty);
+    });
+
+    test('receive a held value once', () {
+      final (harness, _, reader) = sampled();
+      for (var at = 125; at <= 400; at += 25) {
+        harness.updateAt(reader, _ms * at);
+      }
+      expect(reader.shown, _shows(20, InterpolationState.holding));
+      expect(reader.applied, [0, 5, 10, 15, 20]);
+
+      // A replacement synchronizer receives the held value again.
+      reader.attachment.dispose();
+      final replacement = _Avatar(
+        reader.session,
+        reader.attachment.entity,
+        harness.schema,
+      );
+      harness.updateAt(replacement, _ms * 425);
+      expect(replacement.applied, [20]);
+    });
+
+    test('receive the same value once while unchanged samples arrive', () {
+      final harness = _Harness();
+      final (client, _) = harness.join();
+      harness.settle();
+      final [onHost, onClient] = harness.register(1);
+      final writer = _Avatar(
+        harness.host,
+        onHost,
+        harness.schema,
+        mode: SyncMode.always,
+      );
+      final reader = _Avatar(client, onClient, harness.schema);
+
+      for (var at = 0; at <= 300; at += 50) {
+        harness.sample(writer, 5, at: _ms * at);
+        harness.updateAt(reader, _ms * (at + 25));
+      }
+      expect(reader.applied, [5]);
+
+      harness
+        ..sample(writer, 15, at: _ms * 350)
+        ..updateAt(reader, _ms * 425);
+      expect(reader.applied, [5, 10]);
+    });
+
+    test('receive each value as it arrives without applyInterpolated', () {
+      final (harness, _, reader) = sampled(applyInterpolated: false);
+      expect(reader.applied, [0, 10, 20]);
+
+      for (final at in [125, 150, 175, 200]) {
+        harness.updateAt(reader, _ms * at);
+      }
+      expect(reader.applied, [0, 10, 20]);
+      expect(reader.x, 20);
+      expect(reader.shown, _shows(20, InterpolationState.holding));
+    });
+
+    test('that fail wait for the next value', () {
+      final (harness, writer, reader) = sampled();
+      final client = reader.session;
+      reader.rejects = true;
+
+      for (final at in [125, 150, 175]) {
+        harness.updateAt(reader, _ms * at);
+      }
+      final failure = _drain(client).whereType<PropertySyncFailed>().single;
+      expect(failure.field, harness.schema.x.id);
+      expect(failure.error, isA<StateError>());
+
+      reader.rejects = false;
+      harness.updateAt(reader, _ms * 190);
+      expect(reader.applied, [0]);
+      expect(_drain(client), isEmpty);
+
+      harness.sample(writer, 30, at: _ms * 200);
+      expect(reader.applied, [0, 20]);
+      expect(_drain(client), isEmpty);
+    });
   });
 
   test('holds the newest value, then resumes over one interval', () {
@@ -380,6 +514,7 @@ void main() {
     expect(reader.shown, _shows(7, InterpolationState.holding));
 
     harness.sample(writer, 9, at: _ms * 250);
+    expect(reader.applied, [7]);
     expect(
       harness.showAt(reader, _ms * 250),
       _shows(7, InterpolationState.interpolating),
@@ -394,6 +529,8 @@ void main() {
     expect(reader.shown, isNull);
     final replacement = _Avatar(client, onClient, harness.schema);
     expect(replacement.shown, _shows(9, InterpolationState.holding));
+    harness.settle();
+    expect(replacement.applied, [9]);
   });
 
   test("relayed state follows its client authority's samples", () {

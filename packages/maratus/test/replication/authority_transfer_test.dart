@@ -66,8 +66,8 @@ final class _OffsetClock implements MonotonicClock {
 }
 
 /// One peer's copy of an entity, whose synchronizer writes [x], [label],
-/// and [position] on the entity's authority and applies [x] and [label]
-/// elsewhere. Other peers present [position] only through interpolation.
+/// and [position] on the entity's authority and applies them elsewhere,
+/// [position] as interpolation presents it.
 final class _Model {
   _Model(MultiplayerSession session, NetworkEntity entity, _Schema schema) {
     attachment = session.attachEntity(
@@ -86,6 +86,7 @@ final class _Model {
       schema.label.property(get: () => label, set: (value) => label = value),
       schema.position.property(
         get: () => position,
+        set: (value) => position = value,
         interpolator: const DoubleInterpolator(),
       ),
     ], interval: _interval);
@@ -919,6 +920,32 @@ void main() {
       }
       for (final session in [harness.host, observer]) {
         expect(shown(session)!.value, 30);
+      }
+    });
+
+    test('a new authority continues from the latest value, not the '
+        'interpolated one', () {
+      final harness = _Harness();
+      final first = harness.join();
+      final ball = harness.host.spawn(harness.schema.ball, true);
+      harness.run();
+      for (final position in [10.0, 20.0, 30.0]) {
+        harness.model(harness.host, ball).position = position;
+        harness.tick();
+      }
+      // Presentation trails the newest sample by two intervals.
+      expect(harness.model(first, ball).position, 10);
+
+      harness.host.transferAuthority(ball, first.localPeer!);
+      harness.run();
+      expect(harness.model(first, ball).position, 30);
+
+      harness.model(first, ball).position += 5;
+      harness.tick();
+      // The new authority's first sample holds until the next one.
+      expect(harness.model(harness.host, ball).position, 35);
+      for (final session in harness.sessions) {
+        expect(_drain(session).whereType<PropertySyncFailed>(), isEmpty);
       }
     });
   });
