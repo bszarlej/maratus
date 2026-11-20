@@ -156,6 +156,30 @@ The owner then samples the member, and the host and other clients write the
 received values to it. See the core guide on
 [replicated state](https://pub.dev/packages/maratus#replicated-entities-and-state).
 
+## Smooth received values
+
+Values arrive a few times a second. Give a field an interpolator to blend
+between them on the peers that do not write it. The session then writes the
+blended values to the member in each `update`, which a Flame scope runs before
+each frame's gameplay:
+
+```dart
+@SyncedField(
+  'arena.player.position',
+  interpolator: Vector2Interpolator(teleportDistance: 50),
+)
+@UseCodec(arenaPoint)
+Vector2 get syncedPosition => position;
+set syncedPosition(Vector2 value) => position.setFrom(value);
+```
+
+The getter and the setter synchronize the inherited `position` of a Flame
+component. Add `applyInterpolated: false` when code on those peers needs each
+value as it arrives, such as gameplay on the host that reads an owner-written
+field, and read the blended values where they are shown, through
+`networkSynchronizer?.interpolated(PlayerNet.syncedPosition)`. Read them there
+too for a member without a setter, which keeps its value.
+
 ## Predict the owner's state
 
 To show a player's input at once instead of after a round trip, annotate a
@@ -231,9 +255,11 @@ for a complete game.
 - `RpcTarget.peer` adds a required `to:` argument to the Flame sender.
 - All annotated fields on a class share one synchronizer. Do not also call
   `synchronize` or `predict` in `onNetworkAttach`. Received values use the
-  field's setter, when available. Annotate a getter to synchronize an inherited
-  property; provide a matching setter to apply incoming values. Read
-  interpolated values through `networkSynchronizer`.
+  field's setter, when available, and with an interpolator, so do the blended
+  values. Annotate a getter to synchronize an inherited property; provide a
+  matching setter to apply incoming values. `applyInterpolated: false` requires
+  an interpolator and does not apply to the state of a prediction. Read
+  interpolated values that no setter receives through `networkSynchronizer`.
 - A class declares at most one `@Prediction` method. It is static, takes the
   state and one input as two required positional parameters, and returns the
   next state. `of` names an authority-written `@SyncedField` member of the same
