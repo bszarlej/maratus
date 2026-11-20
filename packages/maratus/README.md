@@ -90,9 +90,6 @@ result. `caller` controls permission; `target` selects recipients; `local`
 controls whether a caller that is also a recipient executes the RPC.
 The host validates callers using their connections, not an identity in the payload.
 
-For a runnable application, see the
-[WebSocket chat example](https://github.com/bszarlej/maratus/tree/master/examples/chat).
-
 ## Session lifecycle
 
 Drive a Dart session from the game loop in this order:
