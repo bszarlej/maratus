@@ -58,10 +58,14 @@ final class Vector2Codec extends ValueCodec<Vector2> {
 
 /// Blends [Vector2] values linearly, for example to smooth positions.
 ///
+/// The setter of the property receives the blended positions on the peers
+/// that do not write it:
+///
 /// ```dart
 /// attachment.synchronize([
 ///   positionField.property(
 ///     get: () => position,
+///     set: (value) => position.setFrom(value),
 ///     interpolator: const Vector2Interpolator(teleportDistance: 200),
 ///   ),
 /// ]);

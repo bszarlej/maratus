@@ -250,14 +250,16 @@ class Avatar extends PositionComponent with NetworkedComponent {
   /// The lane the avatar moves along, from its construction data.
   final int lane;
 
-  MultiplayerSynchronizer? _synchronizer;
   var _direction = 1;
 
   @override
   void onNetworkAttach(EntityAttachment attachment) {
-    _synchronizer = attachment.synchronize([
+    attachment.synchronize([
+      // The other peers receive positions blended between the authority's
+      // samples.
       protocol.position.property(
         get: () => position,
+        set: (value) => position.setFrom(value),
         interpolator: const Vector2Interpolator(teleportDistance: 100),
       ),
     ]);
@@ -273,17 +275,12 @@ class Avatar extends PositionComponent with NetworkedComponent {
 
   @override
   void update(double dt) {
-    if (!isNetworkReady) return;
-    if (isNetworkAuthority) {
-      // Bounce between the arena's sides.
-      position.x += _direction * _speed * dt;
-      if (position.x < size.x || position.x > ArenaProtocol.width - size.x) {
-        position.x = position.x.clamp(size.x, ArenaProtocol.width - size.x);
-        _direction = -_direction;
-      }
-    } else if (_synchronizer?.interpolated(protocol.position)
-        case final shown?) {
-      position.setFrom(shown.value);
+    if (!isNetworkReady || !isNetworkAuthority) return;
+    // Bounce between the arena's sides.
+    position.x += _direction * _speed * dt;
+    if (position.x < size.x || position.x > ArenaProtocol.width - size.x) {
+      position.x = position.x.clamp(size.x, ArenaProtocol.width - size.x);
+      _direction = -_direction;
     }
   }
 
