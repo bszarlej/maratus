@@ -115,8 +115,8 @@ mixin _$Player on NetworkedComponent {
   /// The synchronizer of the synchronized fields of this [Player] while its
   /// attachment is live, or `null`.
   ///
-  /// Read interpolated values from it, as in
-  /// `networkSynchronizer?.interpolated(PlayerNet.syncedPosition)`.
+  /// Read the latest values from it, as in
+  /// `networkSynchronizer?.snapshot(PlayerNet.health)`.
   MultiplayerSynchronizer? get networkSynchronizer {
     final attachment = _$networkAttachment;
     return attachment == null || attachment.isDisposed
@@ -166,6 +166,7 @@ mixin _$Player on NetworkedComponent {
       prediction.property(),
       PlayerNet.syncedPosition.property(
         get: () => self.syncedPosition,
+        set: (value) => self.syncedPosition = value,
         interpolator: PlayerNet._syncedPositionInterpolator,
       ),
     ]);

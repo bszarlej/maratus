@@ -123,18 +123,21 @@ void main() {
     expect(client.player.hits, isEmpty);
   });
 
-  test('synchronizes annotated fields and inherited getters', () async {
+  test('synchronizes annotated fields and inherited members', () async {
     host.player
       ..health = 40
       ..position.setValues(100, 200);
-    await world.pump(12);
+    for (var round = 0; round < 12; round++) {
+      await world.pump(1);
+      // The setter of the inherited position receives interpolated values.
+      final shown = client.player.networkSynchronizer!.interpolated(
+        PlayerNet.syncedPosition,
+      )!;
+      expect(client.player.position, shown.value, reason: 'round $round');
+    }
 
     expect(client.player.health, 40);
-    expect(client.player.position, Vector2.zero());
-    final shown = client.player.networkSynchronizer?.interpolated(
-      PlayerNet.syncedPosition,
-    );
-    expect(shown?.value, Vector2(100, 200));
+    expect(client.player.position, Vector2(100, 200));
   });
 
   test('runs the generated prediction every frame', () async {
