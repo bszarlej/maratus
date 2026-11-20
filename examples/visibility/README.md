@@ -8,9 +8,9 @@
 
 A host and a client run side by side in one Flame game, joined by an in-memory
 network. The host spawns a grid of crates and a player for the client, which
-steers it with the arrow keys. A visibility filter on the host shows the client
-only the crates near its player, so the client receives the other crates
-neither when it joins nor afterwards.
+steers it with the arrow keys. A `ProximityVisibility` component on the host
+shows the client only the crates near its player, so the client receives the
+other crates neither when it joins nor afterwards.
 
 Requires Dart `>=3.11.0 <4.0.0` and Flutter `>=3.41.0`. Use Chrome for the web
 runner or install Flutter's Windows build tools for the desktop runner.
@@ -44,10 +44,10 @@ runner first with `flutter create --platforms=macos .` or
   schema. The host applies the position interpolated, 40 ms behind the newest
   sample, so the player moves smoothly in its view, and its visibility rules
   see the position that it shows.
-- [main.dart](lib/main.dart): the host and the client, their views, and the
-  host's `ProximityRules`. They spawn the crates and the player, add the
-  visibility filter, and run it again with `updateVisibility` five times a
-  second, as the player moves.
+- [main.dart](lib/main.dart): the host and the client, their views, the host's
+  `ArenaRules`, which spawn the crates and the player, and its
+  `ProximityVisibility`. That component adds a visibility filter to the host's
+  session and runs it again five times a second, as the player moves.
 
 After changing the annotations, regenerate `arena.g.dart`:
 
@@ -56,9 +56,12 @@ dart run build_runner build
 ```
 
 Visibility is the host's decision at runtime, not part of the schema, so it
-has no annotations. The filter shows a crate inside `showRange` of the client's player and hides it
-again only beyond `hideRange`, so crates at the edge do not keep leaving and
-returning. The client always sees its own player, which it owns.
+has no annotations. `ProximityVisibility` shows a crate inside `showRange` of
+the client's player, which it finds as the positioned entity that the client
+owns, and hides it again only beyond `hideRange`, so crates at the edge do not
+keep leaving and returning. The client always sees its own player, which it
+owns.
 
 See the core [visibility guide](../../packages/maratus/README.md#visibility) for
-how the host decides what each client sees.
+how the host decides what each client sees, and add your own filters next to
+`ProximityVisibility` with `session.addVisibilityFilter`.

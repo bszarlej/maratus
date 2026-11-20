@@ -37,16 +37,24 @@ class VisibilityGame extends FlameGame with HasKeyboardHandlerComponents {
       ..host(network.host());
     client = MultiplayerSession(schema: schema, clock: clock)
       ..join(network.connect());
-    final hostSpawner = spawner();
 
     // Each scope drives its session and closes it when the game is removed.
     await addAll([
       PeerView(
         'Host: every crate',
         host,
-        hostSpawner,
+        spawner(),
         position: Vector2(20, 40),
-        extra: [ProximityRules(host, hostSpawner)],
+        extra: [
+          ArenaRules(host),
+          // Shows the client the crates near the player that it owns, and
+          // runs again five times a second, as the player moves.
+          ProximityVisibility(
+            showRange: showRange,
+            hideRange: hideRange,
+            interval: 0.2,
+          ),
+        ],
       ),
       PeerView(
         'Client: the crates near its player',
@@ -72,24 +80,14 @@ MultiplayerSpawner spawner() => MultiplayerSpawner()
   ..register(PlayerNet.spawnType, Player.new)
   ..register(CrateNet.spawnType, Crate.new);
 
-/// The host's rules: a grid of crates, a player for each client that joins,
-/// and a filter that shows each client the crates near its player.
-class ProximityRules extends Component {
-  /// Creates the rules of the hosting [session], whose [spawner] holds the
-  /// host's components.
-  ProximityRules(this.session, this.spawner);
-
-  /// How often the host runs the filter again, as the players move.
-  static const updateInterval = 0.2;
+/// The host's rules: a grid of crates and a player for each client that
+/// joins.
+class ArenaRules extends Component {
+  /// Creates the rules of the hosting [session].
+  ArenaRules(this.session);
 
   /// The hosting session.
   final MultiplayerSession session;
-
-  /// The spawner of the host's players and crates.
-  final MultiplayerSpawner spawner;
-
-  final _players = <PeerId, Player>{};
-  var _sinceUpdate = 0.0;
 
   @override
   void onLoad() {
@@ -98,50 +96,21 @@ class ProximityRules extends Component {
         session.spawn(CrateNet.spawnType, Vector2(x, y));
       }
     }
-    session.addVisibilityFilter(_isNear);
-  }
-
-  /// Whether [peer] sees [entity]: every player, but only the crates near
-  /// its own player.
-  ///
-  /// The filter runs before the host creates the component of a new entity,
-  /// so it hides an entity that it does not know yet until the next update.
-  bool _isNear(NetworkEntity entity, PeerId peer) {
-    final target = spawner.spawnedComponents[entity];
-    if (target is Player) return true;
-    final viewer = _players[peer];
-    if (target is! Crate || viewer == null) return false;
-    // A crate in view leaves it only once it is beyond the larger range.
-    final range = session.isVisibleTo(entity, peer) ? hideRange : showRange;
-    return target.position.distanceToSquared(viewer.position) <= range * range;
   }
 
   @override
   void update(double dt) {
     // The scope has updated the session before this runs.
     for (var event = session.poll(); event != null; event = session.poll()) {
-      switch (event) {
-        case PeerJoined(:final peer):
-          final entity = session.spawn(
-            PlayerNet.spawnType,
-            Vector2.all(arenaSize / 2),
-            owner: peer,
-            onOwnerLeft: OwnerLeftPolicy.despawn,
-          );
-          _players[peer] = spawner.spawnedComponents[entity]! as Player;
-        case PeerLeft(:final peer):
-          _players.remove(peer);
-        default:
-          break;
+      if (event case PeerJoined(:final peer)) {
+        session.spawn(
+          PlayerNet.spawnType,
+          Vector2.all(arenaSize / 2),
+          owner: peer,
+          onOwnerLeft: OwnerLeftPolicy.despawn,
+        );
       }
     }
-    _sinceUpdate += dt;
-    if (_sinceUpdate < updateInterval ||
-        session.state != SessionState.hosting) {
-      return;
-    }
-    _sinceUpdate = 0;
-    session.updateVisibility();
   }
 }
 
