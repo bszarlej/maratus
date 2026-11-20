@@ -41,7 +41,9 @@ runner first with `flutter create --platforms=macos .` or
 - [arena.dart](lib/arena.dart): the player and the crates. Their spawn types
   and the player's position, an owner-written field that the client that owns
   the player writes, are generated from their annotations into the shared
-  schema.
+  schema. The host applies the position interpolated, 40 ms behind the newest
+  sample, so the player moves smoothly in its view, and its visibility rules
+  see the position that it shows.
 - [main.dart](lib/main.dart): the host and the client, their views, and the
   host's `ProximityRules`. They spawn the crates and the player, add the
   visibility filter, and run it again with `updateVisibility` five times a

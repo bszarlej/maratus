@@ -24,6 +24,12 @@ abstract final class PlayerNet {
     writer: FieldWriter.owner,
   );
 
+  static const _syncedPositionInterpolator = Vector2Interpolator();
+
+  static const _syncInterval = Duration(milliseconds: 20);
+
+  static const _interpolationDelay = Duration(milliseconds: 40);
+
   /// Registers the handles of [Player] with [builder].
   static void register(ProtocolSchemaBuilder builder) {
     builder
@@ -54,12 +60,17 @@ mixin _$Player on NetworkedComponent {
     super.bindNetworkMembers(attachment);
     final self = this as Player;
     _$networkAttachment = attachment;
-    _$networkSynchronizer = attachment.synchronize([
-      PlayerNet.syncedPosition.property(
-        get: () => self.syncedPosition,
-        set: (value) => self.syncedPosition = value,
-      ),
-    ]);
+    _$networkSynchronizer = attachment.synchronize(
+      [
+        PlayerNet.syncedPosition.property(
+          get: () => self.syncedPosition,
+          set: (value) => self.syncedPosition = value,
+          interpolator: PlayerNet._syncedPositionInterpolator,
+        ),
+      ],
+      interval: PlayerNet._syncInterval,
+      interpolationDelay: PlayerNet._interpolationDelay,
+    );
   }
 }
 
