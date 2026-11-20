@@ -199,7 +199,9 @@ mixin NetworkedComponent on Component {
       isValid: () => _hasValidAttachment,
     );
     _networkAttachment = attachment;
-    scope._components.add(this);
+    scope
+      .._components.add(this)
+      .._componentsRevision += 1;
     try {
       bindNetworkMembers(attachment);
       onNetworkAttach(attachment);
@@ -212,7 +214,9 @@ mixin NetworkedComponent on Component {
   void _detachNetwork() {
     _networkAttachment?.dispose();
     _networkAttachment = null;
-    _networkScope?._components.remove(this);
+    if (_networkScope?._components.remove(this) ?? false) {
+      _networkScope!._componentsRevision += 1;
+    }
     _networkScope = null;
   }
 }

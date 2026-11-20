@@ -7,6 +7,7 @@ import 'package:maratus/maratus.dart';
 
 part 'multiplayer_spawner.dart';
 part 'networked_component.dart';
+part 'proximity_visibility.dart';
 
 /// Drives one session for a subtree of Flame components.
 ///
@@ -46,6 +47,9 @@ class MultiplayerScope extends Component {
 
   static final _drivers = Expando<MultiplayerScope>();
   final _components = <NetworkedComponent>{};
+
+  /// Changes whenever a component attaches to or detaches from this scope.
+  var _componentsRevision = 0;
   final _spawners = <MultiplayerSpawner>{};
   Component? _watchedGame;
   var _disposed = false;
