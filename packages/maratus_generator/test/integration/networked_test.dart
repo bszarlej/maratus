@@ -304,6 +304,24 @@ void main() {
       );
     });
 
+    test('write interpolated values to the annotated fields', () {
+      host.avatar.x = 42;
+      final shown = <double>[];
+      for (var i = 0; i < 8; i++) {
+        run(1);
+        final presented = client.avatar.networkSynchronizer!.interpolated(
+          AvatarNet.x,
+        )!;
+        expect(client.avatar.x, presented.value, reason: 'frame $i');
+        shown.add(client.avatar.x);
+      }
+
+      expect(shown, orderedEquals([...shown]..sort()));
+      expect(shown.where((x) => x > 0 && x < 42), isNotEmpty);
+      expect(shown.last, 42);
+      expect(host.avatar.x, 42);
+    });
+
     group('prediction', () {
       late Predictor<double, bool> owned;
       late Predictor<double, bool> hosted;

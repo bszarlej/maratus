@@ -120,6 +120,7 @@ final class _Field {
     required this.channel,
     required this.writer,
     required this.interpolator,
+    required this.applyInterpolated,
     required this.isWritable,
     required this.codec,
   });
@@ -132,6 +133,9 @@ final class _Field {
   final int channel;
   final String writer;
   final CopiedExpression? interpolator;
+
+  /// Whether the setter receives the values that [interpolator] blends.
+  final bool applyInterpolated;
   final bool isWritable;
   final CodecSource codec;
 
@@ -491,6 +495,15 @@ final class _NetworkedClass {
           named: 'interpolator',
         );
       }
+      final applyInterpolated = reader.read('applyInterpolated').boolValue;
+      if (!applyInterpolated && interpolator == null) {
+        throw InvalidGenerationSourceError(
+          'applyInterpolated applies only to members with an interpolator, '
+          'unlike $description.',
+          todo: 'Remove applyInterpolated, or give the member an interpolator.',
+          element: member,
+        );
+      }
       fields.add(
         _Field(
           member: member,
@@ -501,6 +514,7 @@ final class _NetworkedClass {
           channel: _channel(reader, member),
           writer: _enumName(reader.read('writer').objectValue),
           interpolator: interpolator,
+          applyInterpolated: applyInterpolated,
           isWritable: isWritable,
           codec: await codecs.resolve(member, type, description),
         ),
@@ -605,6 +619,15 @@ final class _NetworkedClass {
           "which the entity's owner writes, but the entity's authority writes "
           'the state of a prediction.',
           todo: 'Remove the writer of $stateDescription.',
+          element: method,
+        );
+      }
+      if (!state.applyInterpolated) {
+        throw InvalidGenerationSourceError(
+          'The state of the prediction $description is $stateDescription, '
+          'whose applyInterpolated does not apply: the prediction presents '
+          'its state.',
+          todo: 'Remove applyInterpolated from $stateDescription.',
           element: method,
         );
       }
@@ -1167,10 +1190,13 @@ void updateNetworkMembers(Duration elapsed) {
   /// How to read the values of [fields] from their synchronizer, for its
   /// documentation.
   String _synchronizerUse(List<_Field> fields, _Prediction? prediction) {
-    // The prediction presents its own state.
+    // The prediction presents its own state, and the members whose setters
+    // receive their interpolated values hold them.
     final interpolated = fields.where(
       (field) =>
-          field.interpolator != null && !identical(field, prediction?.state),
+          field.interpolator != null &&
+          !identical(field, prediction?.state) &&
+          !(field.isWritable && field.applyInterpolated),
     );
     return interpolated.isEmpty
         ? 'Read the latest values from it, as in\n'
@@ -1222,6 +1248,7 @@ void updateNetworkMembers(Duration elapsed) {
       if (field.mode != 'onChange') 'mode: ${maratus}SyncMode.${field.mode}',
       if (field.interpolator != null)
         'interpolator: $netName.${net.interpolators[field.name]}',
+      if (!field.applyInterpolated) 'applyInterpolated: false',
     ];
     return '$netName.${field.name}.property(${arguments.join(', ')})';
   }
