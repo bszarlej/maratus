@@ -21,16 +21,10 @@ final class _Mover extends PositionComponent with NetworkedComponent {
     synchronizer = attachment.synchronize([
       field.property(
         get: () => position,
+        set: (value) => position.setFrom(value),
         interpolator: const Vector2Interpolator(),
       ),
     ]);
-  }
-
-  @override
-  void update(double dt) {
-    if (synchronizer.interpolated(field) case final shown?) {
-      position.setFrom(shown.value);
-    }
   }
 }
 
@@ -151,7 +145,7 @@ void main() {
     });
   });
 
-  test('components present interpolated positions', () async {
+  test('components receive interpolated positions through setters', () async {
     final fixture = _Fixture();
     final host = _Mover(fixture.hostEntity, fixture.field);
     final client = _Mover(fixture.clientEntity, fixture.field);
