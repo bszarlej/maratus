@@ -1,0 +1,21 @@
+name: maratus_interpolation
+description: Smoothing synchronized positions with interpolation in maratus.
+publish_to: 'none'
+version: 0.1.0+1
+
+environment:
+  sdk: ^3.11.0
+  flutter: '>=3.41.0'
+
+resolution: workspace
+
+dependencies:
+  flame: ^1.38.2
+  flutter:
+    sdk: flutter
+  maratus_flame: ^0.1.5
+
+dev_dependencies:
+  flutter_lints: ^6.0.0
+  flutter_test:
+    sdk: flutter

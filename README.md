@@ -65,6 +65,8 @@ for configuration and platform requirements.
 
 ## Examples
 
+- [Interpolation](examples/interpolation): raw and interpolated positions side
+  by side, with sliders for latency, send rate, and interpolation delay.
 - [Prediction](examples/prediction): client-side prediction under simulated
   latency, with a host and a client side by side.
 - [RPC](examples/rpc): who may call an RPC and where it runs, with a host
