@@ -143,6 +143,31 @@ client's spawner removes the component of an entity that leaves its view. If the
 entity comes into view again, the spawner creates a new component, which starts
 from the entity's latest state.
 
+The most common limit is distance. Add a `ProximityVisibility` inside the scope
+to show each client the entities whose components are `PositionComponent`s near
+the ones it owns, such as its player:
+
+```dart
+MultiplayerScope(
+  session: session,
+  children: [
+    spawner,
+    // Show within 80, hide beyond 95, and update five times a second.
+    ProximityVisibility(showRange: 80, hideRange: 95, interval: 0.2),
+  ],
+);
+```
+
+An entity in a client's view leaves it only beyond `hideRange`, so entities at
+the edge do not keep leaving and returning. The host measures distances in the
+scope's coordinates and runs `updateVisibility` every `interval` seconds, and at
+once when a new entity's component attaches, so an entity that spawns out of
+range never reaches the client. Pass `viewersOf` to choose the components that a
+client sees from instead, such as a spectator's camera. Entities without a
+position are left to the other rules, and filters added with
+`session.addVisibilityFilter` keep working next to it: a client sees an entity
+only if every filter accepts it.
+
 To show a player's own movement without waiting for the host, predict it from
 the player's inputs, as the core
 [prediction guide](https://pub.dev/packages/maratus#client-side-prediction)
