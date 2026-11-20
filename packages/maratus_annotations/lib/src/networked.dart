@@ -138,10 +138,20 @@ final class RpcMethod {
 /// [EntityAttachment.synchronize] call: the field's [writer], the entity's
 /// authority or its owner, reads the member, and other peers write received
 /// values to it, if it can be written. A getter is written through a setter
-/// of the same name.
+/// of the same name. With an [interpolator], those peers write the values
+/// that it blends between the received ones instead, unless
+/// [applyInterpolated] is `false`.
 ///
 /// To synchronize an inherited value, such as a Flame component's `position`,
-/// annotate a getter that returns it.
+/// annotate a getter that returns it, and write received values through a
+/// setter of the same name:
+///
+/// ```dart
+/// @SyncedField('arena.player.position', interpolator: Vector2Interpolator())
+/// @UseCodec(arenaPoint)
+/// Vector2 get syncedPosition => position;
+/// set syncedPosition(Vector2 value) => position.setFrom(value);
+/// ```
 @Target({TargetKind.field, TargetKind.getter})
 final class SyncedField {
   /// Declares the synchronized field [id].
@@ -152,6 +162,7 @@ final class SyncedField {
     this.channel = 0,
     this.writer = FieldWriter.authority,
     this.interpolator,
+    this.applyInterpolated = true,
   });
 
   /// The stable identifier of the field, which renaming the member does not
@@ -181,6 +192,17 @@ final class SyncedField {
   ///
   /// Its type argument must be the member's type.
   final Interpolator<Object?>? interpolator;
+
+  /// Whether peers other than the [writer] write the values that the
+  /// [interpolator] blends to the member, rather than each value as it
+  /// arrives, as for [SyncProperty.applyInterpolated].
+  ///
+  /// Turn it off when code on those peers needs the latest values, such as
+  /// gameplay on the host that reads an owner-written member, and read the
+  /// blended values from the generated `networkSynchronizer` where they are
+  /// shown. It applies only to members with an [interpolator], other than
+  /// the state of a [Prediction], which presents its own state.
+  final bool applyInterpolated;
 }
 
 /// Predicts the [SyncedField] member that [of] names on the entity's owner,
