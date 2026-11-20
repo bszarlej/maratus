@@ -152,8 +152,27 @@ Each entity has two separate roles:
 Bind registered `SyncField<T>` handles through `attachment.synchronize`, with
 getters for sampling and setters for received values. Fields support initial-only,
 changed-value, and periodic updates. Sampling defaults to a 50 ms interval,
-independent of render frequency. Interpolation provides presentation values
-without replacing authoritative state.
+independent of render frequency.
+
+Give a property an interpolator to smooth values that arrive a few times a
+second. Its setter then receives values blended between the received samples,
+a short delay behind the newest, in each `update` in which they change:
+
+```dart
+attachment.synchronize([
+  xField.property(
+    get: () => x,
+    set: (value) => x = value,
+    interpolator: const DoubleInterpolator(teleportDistance: 200),
+  ),
+]);
+```
+
+Snapshots keep the authoritative values as they arrive. Pass
+`applyInterpolated: false` when code on the peers that receive the field needs
+the latest values, such as gameplay on the host that reads an owner-written
+field, and read the blended values from `synchronizer.interpolated(xField)`
+where they are shown.
 
 Register a field with `writer: FieldWriter.owner` to let the entity's owner
 write it, such as a player's movement input:
