@@ -78,7 +78,9 @@ final class EntityAttachment {
   ///
   /// Properties with an interpolator present smoothed values through
   /// [MultiplayerSynchronizer.interpolated], [interpolationDelay] behind the
-  /// newest sample; it defaults to twice [interval].
+  /// newest sample; it defaults to twice [interval]. Their setters receive
+  /// those values instead of the latest ones, unless
+  /// [SyncProperty.applyInterpolated] is `false`.
   ///
   /// Throws an [ArgumentError] if [properties] is empty, binds a field twice,
   /// or uses a field handle of another schema, or if [interval] or

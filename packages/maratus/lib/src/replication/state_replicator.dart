@@ -14,11 +14,12 @@ enum SyncMode {
 ///
 /// The field's writer, the entity's authority or its owner as
 /// [SyncField.writer] selects, samples [get] and sends the field as [mode]
-/// describes; every other peer receives it and passes a copy to [set]. A
-/// sample is the field codec's encoding of the value, so sampling copies
-/// mutable values such as vectors, and a value is unchanged while its encoding
-/// is unchanged. Fields with unreliable delivery require [SyncMode.always],
-/// so the next sample repairs a lost update even if its value is unchanged.
+/// describes; every other peer receives it and passes a copy to [set], or
+/// with an [interpolator], the values it presents. A sample is the field
+/// codec's encoding of the value, so sampling copies mutable values such as
+/// vectors, and a value is unchanged while its encoding is unchanged. Fields
+/// with unreliable delivery require [SyncMode.always], so the next sample
+/// repairs a lost update even if its value is unchanged.
 final class SyncProperty<T> {
   /// Describes how [field] is read with [get] and written with [set].
   ///
@@ -31,6 +32,7 @@ final class SyncProperty<T> {
     this.set,
     this.mode = SyncMode.onChange,
     this.interpolator,
+    this.applyInterpolated = true,
   }) : _prediction = null;
 
   /// The property of [prediction]'s field, which its state backs.
@@ -39,6 +41,7 @@ final class SyncProperty<T> {
       get = (() => prediction.state),
       set = null,
       interpolator = prediction.interpolator,
+      applyInterpolated = false,
       _prediction = prediction;
 
   /// The registered field that this property replicates.
@@ -50,16 +53,22 @@ final class SyncProperty<T> {
   /// Writes a received value. Peers other than the field's writer call it,
   /// so the owner of an entity never receives its own owner-written values.
   ///
+  /// With an [interpolator] and [applyInterpolated], it receives the values
+  /// that [MultiplayerSynchronizer.interpolated] presents instead, at every
+  /// [MultiplayerSession.update] in which the presented value changes.
+  /// Otherwise, it receives each value as it arrives.
+  ///
   /// For an authority-written field, a peer that becomes the entity's
-  /// authority also calls it, with the values it received before, ahead of
-  /// its first sample. A peer that stops being the authority calls it with
-  /// the latest values that the host accepted, which replace any local
-  /// changes since then.
+  /// authority also calls it, with the latest values it received before,
+  /// ahead of its first sample. A peer that stops being the authority calls
+  /// it with the latest values that the host accepted, which replace any
+  /// local changes since then.
   ///
   /// A thrown error produces [PropertySyncFailed]. The same encoded value
   /// is not applied again until it changes, a replacement synchronizer is
   /// attached, or this peer stops being the authority, avoiding repeated
-  /// failures on every update.
+  /// failures on every update. After an interpolated value fails, the next
+  /// one is applied once a new value arrives.
   final void Function(T value)? set;
 
   /// When the field's writer sends this property.
@@ -68,9 +77,21 @@ final class SyncProperty<T> {
   /// Blends received values for [MultiplayerSynchronizer.interpolated], or
   /// `null` if this property is not interpolated.
   ///
-  /// Interpolation only affects presentation: [set] and snapshots still
-  /// receive every authoritative value as it arrives.
+  /// Snapshots still hold every authoritative value as it arrives, while
+  /// [set] receives the presented values, unless [applyInterpolated] is
+  /// `false`.
   final Interpolator<T>? interpolator;
+
+  /// Whether [set] receives the values that the [interpolator] presents,
+  /// rather than each value as it arrives.
+  ///
+  /// The presented values trail the latest ones by the synchronizer's
+  /// [MultiplayerSynchronizer.interpolationDelay]. Turn this off when code
+  /// on peers that do not write the field needs the latest values, such as
+  /// gameplay on the host that reads an owner-written field, and read the
+  /// presented values from [MultiplayerSynchronizer.interpolated] where they
+  /// are shown. Has no effect without an [interpolator] or [set].
+  final bool applyInterpolated;
 
   /// The prediction whose state this property replicates, if any. The
   /// owner reconciles the prediction with the values it receives, and
@@ -88,6 +109,10 @@ final class SyncProperty<T> {
 
   bool get _interpolates => interpolator != null;
 
+  /// Whether [set] receives the values that [interpolator] presents.
+  bool get _appliesInterpolated =>
+      applyInterpolated && interpolator != null && set != null;
+
   Object? _lerp(Object? from, Object? to, double t) =>
       interpolator!.lerp(from as T, to as T, t);
 
@@ -104,18 +129,21 @@ final class SyncProperty<T> {
 /// argument.
 extension SyncFieldProperty<T> on SyncField<T> {
   /// Describes how this field is read with [get] and written with [set],
-  /// and optionally smoothed for display with [interpolator].
+  /// and optionally smoothed with [interpolator], whose presented values
+  /// [set] receives unless [applyInterpolated] is `false`.
   SyncProperty<T> property({
     required T Function() get,
     void Function(T value)? set,
     SyncMode mode = SyncMode.onChange,
     Interpolator<T>? interpolator,
+    bool applyInterpolated = true,
   }) => SyncProperty(
     this,
     get: get,
     set: set,
     mode: mode,
     interpolator: interpolator,
+    applyInterpolated: applyInterpolated,
   );
 }
 
@@ -151,6 +179,8 @@ final class SyncSnapshot<T> {
 ///
 /// Properties with a [SyncProperty.interpolator] also keep their recent
 /// samples, so [interpolated] can present smoothed values between them.
+/// [MultiplayerSession.update] passes those values to their setters instead
+/// of the latest ones, unless [SyncProperty.applyInterpolated] is `false`.
 ///
 /// When [MultiplayerSession.transferAuthority] moves the entity's
 /// authority, synchronizers switch the roles of authority-written
@@ -183,7 +213,14 @@ final class MultiplayerSynchronizer {
   final _StateReplicator _replicator;
   final EntityAttachment _attachment;
   final _writers = <FieldWriter>{};
+
+  /// The encoding of the value that each setter received last, if it was
+  /// one that arrived rather than a blend of two.
   final _applied = <FieldId, Uint8List>{};
+
+  /// The latest value of each field when applying its interpolated value
+  /// failed. Applying waits until a newer value replaces it.
+  final _failed = <FieldId, _FieldValue>{};
   final _interpolators = <FieldId, SyncProperty<Object?>>{};
   final _samples = <FieldId, _Samples>{};
   final _timelines = <FieldWriter, _Timeline>{};
@@ -241,7 +278,9 @@ final class MultiplayerSynchronizer {
   /// state, on the owner of an entity that predicts [field] with a
   /// [Predictor], which presents the prediction, before any value of [field]
   /// was received, and once this synchronizer is disposed. The value is a
-  /// copy that the caller may change. Throws an [ArgumentError] for a
+  /// copy that the caller may change. Unless the property's
+  /// [SyncProperty.applyInterpolated] is `false`, [MultiplayerSession.update]
+  /// passes these values to its setter. Throws an [ArgumentError] for a
   /// foreign [field] handle, or a field without an interpolator in this
   /// synchronizer.
   InterpolatedValue<T>? interpolated<T>(SyncField<T> field) =>
@@ -820,9 +859,10 @@ final class _StateReplicator {
     ];
   }
 
-  /// Passes the latest values of the fields that this peer does not write
-  /// to the setters of ready synchronizers, as well as the values that a new
-  /// authority received before it became the authority.
+  /// Passes the latest values of the fields that this peer does not write,
+  /// or the values that their interpolators present, to the setters of ready
+  /// synchronizers, as well as the values that a new authority received
+  /// before it became the authority.
   void apply() {
     _prune();
     final lifetime = _lifetime;
@@ -844,10 +884,11 @@ final class _StateReplicator {
   }
 
   /// Passes the retained values of [synchronizer]'s entity that it has not
-  /// applied yet to its setters, except for the fields that this peer
-  /// writes. A new authority that is catching up also applies the values of
-  /// authority-written fields that it received before. Returns whether every
-  /// property was handled while the synchronizer stayed live and ready.
+  /// applied yet to its setters, or the values that their interpolators
+  /// present, except for the fields that this peer writes. A new authority
+  /// that is catching up also applies the latest values of authority-written
+  /// fields that it received before. Returns whether every property was
+  /// handled while the synchronizer stayed live and ready.
   bool _applyValues(MultiplayerSynchronizer synchronizer, int lifetime) {
     final entity = synchronizer.entity;
     final values = _values[entity];
@@ -875,10 +916,14 @@ final class _StateReplicator {
         if (!_isLive(synchronizer)) return false;
         continue;
       }
-      if (value == null ||
-          _sameBytes(synchronizer._applied[field], value.bytes)) {
+      if (value == null) continue;
+      if (property._appliesInterpolated && _writer(entity, field) != local) {
+        if (!_applyPresented(synchronizer, property, value, lifetime)) {
+          return false;
+        }
         continue;
       }
+      if (_sameBytes(synchronizer._applied[field], value.bytes)) continue;
       synchronizer._applied[field] = value.bytes;
       if (prediction != null) {
         // An owner that becomes the authority continues from its own
@@ -931,19 +976,30 @@ final class _StateReplicator {
       );
     }
     final property = synchronizer._interpolators[field.id];
-    final samples = synchronizer._samples[field.id];
-    if (property == null || samples == null) {
+    if (property == null) {
       throw ArgumentError.value(
         field.id.value,
         'field',
         'is not interpolated by this synchronizer',
       );
     }
+    return _present<T>(synchronizer, property);
+  }
+
+  /// The value of the field of [property], one of [synchronizer]'s
+  /// interpolated properties, to present now, as
+  /// [MultiplayerSynchronizer.interpolated] describes.
+  InterpolatedValue<T>? _present<T>(
+    MultiplayerSynchronizer synchronizer,
+    SyncProperty<Object?> property,
+  ) {
+    final field = property.field;
     if (synchronizer.isDisposed ||
         _writer(synchronizer.entity, field.id) == session._localPeer ||
         (property._prediction?._predicts ?? false)) {
       return null;
     }
+    final samples = synchronizer._samples[field.id]!;
     if (samples.isEmpty) {
       // After a transfer, the latest value holds until the new authority's
       // first sample arrives.
@@ -953,6 +1009,7 @@ final class _StateReplicator {
         return InterpolatedValue._(
           _decode(field.id, latest.bytes) as T,
           InterpolationState.holding,
+          latest.bytes,
         );
       } on Object {
         return null;
@@ -968,6 +1025,41 @@ final class _StateReplicator {
       property: property,
       copy: (bytes) => _decode(field.id, bytes) as T,
     );
+  }
+
+  /// Passes the value that the interpolator of [property], one of
+  /// [synchronizer]'s properties, presents now to its setter, unless it is
+  /// the received value that the setter received last, or applying failed
+  /// since [latest], the latest value of the field, arrived. Returns whether
+  /// the synchronizer stayed live.
+  bool _applyPresented(
+    MultiplayerSynchronizer synchronizer,
+    SyncProperty<Object?> property,
+    _FieldValue latest,
+    int lifetime,
+  ) {
+    final field = property.field.id;
+    if (identical(synchronizer._failed[field], latest)) return true;
+    try {
+      final shown = _present<Object?>(synchronizer, property);
+      final bytes = shown?._bytes;
+      if (shown != null &&
+          (bytes == null || !_sameBytes(synchronizer._applied[field], bytes))) {
+        if (bytes == null) {
+          synchronizer._applied.remove(field);
+        } else {
+          synchronizer._applied[field] = bytes;
+        }
+        property._set(shown.value);
+      }
+    } on Object catch (error, stackTrace) {
+      synchronizer._failed[field] = latest;
+      if (_lifetime == lifetime) {
+        _fail(synchronizer.entity.id, field, error, stackTrace);
+      }
+    }
+    if (session._peer == null || _lifetime != lifetime) return false;
+    return _isLive(synchronizer);
   }
 
   void _retain(
