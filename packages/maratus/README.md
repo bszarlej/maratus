@@ -256,6 +256,10 @@ entity and reports `VisibilityFilterFailed`. Changes to an entity's public or
 per-client visibility take effect at once. `session.isVisibleTo(entity, peer)`
 reports what a client sees.
 
+In Flame games, the `ProximityVisibility` component of
+[`maratus_flame`](https://pub.dev/packages/maratus_flame#add-multiplayer-to-a-game)
+adds and updates a filter that shows each client the entities near its own.
+
 RPCs follow visibility: the host rejects a client's calls on entities that it
 does not show the client, and never delivers a call to a client that does not
 see the entity. Transferring an entity's authority to a client shows the entity
