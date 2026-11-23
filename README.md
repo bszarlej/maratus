@@ -67,6 +67,8 @@ for configuration and platform requirements.
 
 - [Interpolation](examples/interpolation): raw and interpolated positions side
   by side, with sliders for latency, send rate, and interpolation delay.
+- [Ownership](examples/ownership): a ball that the host hands from peer to
+  peer at runtime, with a host and two clients side by side.
 - [Prediction](examples/prediction): client-side prediction under simulated
   latency, with a host and a client side by side.
 - [RPC](examples/rpc): who may call an RPC and where it runs, with a host
