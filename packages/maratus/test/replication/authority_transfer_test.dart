@@ -829,6 +829,25 @@ void main() {
       expect(model.label, 'host');
     });
 
+    test('let a new authority replace local changes with the values it '
+        'received', () {
+      final harness = _Harness();
+      final client = harness.join();
+      final ball = harness.host.spawn(harness.schema.ball, true);
+      harness.run();
+      harness.model(harness.host, ball).x = 5;
+      harness.tick();
+      // A local change that the next replicated value would have replaced.
+      final model = harness.model(client, ball)..x = 8;
+
+      harness.host.transferAuthority(ball, client.localPeer!);
+      harness.run();
+      harness.tick();
+
+      harness.expectAgreement(ball, x: 5);
+      expect(model.applied, [5, 5]);
+    });
+
     test('apply values that arrive in the update that transfers them', () {
       final harness = _Harness();
       final client = harness.join();
