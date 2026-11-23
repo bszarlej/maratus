@@ -51,6 +51,13 @@ typedef PredictionStep<S, I> = S Function(S state, I input);
 /// [advance] records no inputs and returns the state that the authority
 /// sends, until the host or the owner is the authority again.
 ///
+/// When [MultiplayerSession.transferOwnership] moves the entity's owner,
+/// the input stream starts over: the previous owner drops the inputs that
+/// the host has not applied and follows the authority's state, and the new
+/// owner numbers its inputs from 1 and predicts from the latest
+/// authoritative state. [update] follows the change on every peer, while
+/// [advance] throws on a peer that is no longer the owner.
+///
 /// Every other peer follows the authority's state, and [presented] shows it
 /// interpolated when the synchronizer interpolates [field].
 final class Predictor<S, I> {
@@ -887,7 +894,8 @@ final class _InputReplicator {
   /// Each input is queued once, in order; inputs that an earlier message
   /// carried are skipped, and missing ones are not waited for. Inputs that
   /// arrive after the host stopped being the entity's authority are
-  /// ignored.
+  /// ignored, and so are those that a client sent before it applied a
+  /// transfer of the entity's ownership.
   void receive(PeerId sender, InputMessage message) {
     final entity = session.registry[message.entity];
     if (entity == null) {
@@ -895,6 +903,7 @@ final class _InputReplicator {
       return;
     }
     if (entity.state == EntityState.removed) return;
+    if (session._ownership.awaits(entity, sender)) return;
     if (sender != entity.owner) {
       _reject(message, sender, InputRejection.notOwner);
       return;
@@ -1019,6 +1028,24 @@ final class _InputReplicator {
         log.history.clear();
         log.sent = log.next - 1;
       }
+    }
+    final prediction = _predictions[entity.id];
+    if (prediction != null && identical(prediction.entity, entity)) {
+      prediction._transferred();
+    }
+  }
+
+  /// Restarts the input stream of [entity] after its owner moved from
+  /// [previous] on this peer.
+  ///
+  /// The new owner numbers its inputs from 1, so the host forgets the
+  /// inputs it received and applied, the previous owner drops the inputs
+  /// that the host has not acknowledged, and the new owner starts a new
+  /// stream. Their predictions continue from the authoritative state.
+  void ownerTransferred(NetworkEntity entity, PeerId previous) {
+    final local = session._localPeer;
+    if (session._isHost || previous == local || entity.owner == local) {
+      _logs.remove(entity);
     }
     final prediction = _predictions[entity.id];
     if (prediction != null && identical(prediction.entity, entity)) {

@@ -304,7 +304,9 @@ enum InputRejection {
 ///
 /// This event is local diagnostics; the sender is not told. Inputs for an
 /// entity that was already removed, or whose authority the host transferred
-/// to another peer, are ignored without an event.
+/// to another peer, are ignored without an event, and so are inputs that a
+/// previous owner sent before it applied a transfer of the entity's
+/// ownership.
 final class InputRejected extends SessionEvent {
   /// Reports that [sender]'s inputs of [input] for [entity] were ignored for
   /// [reason].
@@ -397,6 +399,46 @@ final class AuthorityChanged extends SessionEvent {
   String toString() =>
       'AuthorityChanged(${entity.value}, '
       '${previous.value} -> ${authority.value})';
+}
+
+/// The owner of [entity] moved from [previous] to [owner] on this peer.
+///
+/// Every peer reports a transfer as it applies it: the host when it
+/// transfers the entity, and each client as the transfer arrives in
+/// revision order, or in its baseline if a static entity's owner changed
+/// before it joined. A transfer that also moves the entity's authority is
+/// reported as an [AuthorityChanged] event first, then this one.
+final class OwnerChanged extends SessionEvent {
+  /// Creates an event reporting that [entity]'s owner moved from
+  /// [previous] to [owner].
+  const OwnerChanged({
+    required this.entity,
+    required this.previous,
+    required this.owner,
+  });
+
+  /// The entity whose owner changed.
+  final EntityId entity;
+
+  /// The entity's owner before the transfer.
+  final PeerId previous;
+
+  /// The entity's new owner.
+  final PeerId owner;
+
+  @override
+  bool operator ==(Object other) =>
+      other is OwnerChanged &&
+      other.entity == entity &&
+      other.previous == previous &&
+      other.owner == owner;
+
+  @override
+  int get hashCode => Object.hash(OwnerChanged, entity, previous, owner);
+
+  @override
+  String toString() =>
+      'OwnerChanged(${entity.value}, ${previous.value} -> ${owner.value})';
 }
 
 /// The session moved to [state].

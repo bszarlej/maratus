@@ -62,7 +62,8 @@ final class SyncProperty<T> {
   /// authority also calls it, with the latest values it received before,
   /// ahead of its first sample. A peer that stops being the authority calls
   /// it with the latest values that the host accepted, which replace any
-  /// local changes since then.
+  /// local changes since then. Owner-written fields behave the same way
+  /// when the entity's ownership moves.
   ///
   /// A thrown error produces [PropertySyncFailed]. The same encoded value
   /// is not applied again until it changes, a replacement synchronizer is
@@ -189,6 +190,10 @@ final class SyncSnapshot<T> {
 /// ones the host accepted, then the new authority's. The new authority
 /// applies the values it received before, then samples its local state from
 /// the next capture. Owner-written properties keep their writer.
+///
+/// [MultiplayerSession.transferOwnership] switches the roles of
+/// owner-written properties the same way, and of authority-written ones
+/// too when it moves the authority with the ownership.
 final class MultiplayerSynchronizer {
   MultiplayerSynchronizer._(
     this._replicator,
@@ -293,14 +298,14 @@ final class MultiplayerSynchronizer {
     _replicator._unbind(this);
   }
 
-  /// Forgets the samples of authority-written fields from the previous
-  /// authority, whose clock the next authority's sample times are not
+  /// Forgets the samples of the fields that [writer] writes from its
+  /// previous peer, whose clock the next peer's sample times are not
   /// comparable with.
-  void _restartPresentation() {
-    if (!_timelines.containsKey(FieldWriter.authority)) return;
-    _timelines[FieldWriter.authority] = _Timeline(interpolationDelay);
+  void _restartPresentation(FieldWriter writer) {
+    if (!_timelines.containsKey(writer)) return;
+    _timelines[writer] = _Timeline(interpolationDelay);
     for (final property in _interpolators.values) {
-      if (property.field.writer != FieldWriter.authority) continue;
+      if (property.field.writer != writer) continue;
       _samples[property.field.id] = _Samples();
     }
   }
@@ -320,10 +325,11 @@ final class _StateReplicator {
   /// are compared per field because different channels may arrive out of order.
   final _sequences = <NetworkEntity, Map<FieldId, int>>{};
 
-  /// The entities that this peer became the authority of, whose
-  /// synchronizers apply the values received before that ahead of their
-  /// first sample.
-  final _catchingUp = <NetworkEntity>{};
+  /// The entities that this peer became the authority or the owner of,
+  /// with the writers it became, whose synchronizers apply the values of
+  /// those writers' fields received before that ahead of their first
+  /// sample.
+  final _catchingUp = <NetworkEntity, Set<FieldWriter>>{};
   var _lifetime = 0;
   var _capturing = false;
 
@@ -340,21 +346,23 @@ final class _StateReplicator {
   /// Forgets the values of a despawned entity.
   void forget(EntityId entity) {
     session._authorities.forgetEntity(entity);
+    session._ownership.forgetEntity(entity);
     session._inputs.forget(entity);
     _values.removeWhere((key, _) => key.id == entity);
     _sequences.removeWhere((key, _) => key.id == entity);
-    _catchingUp.removeWhere((key) => key.id == entity);
+    _catchingUp.removeWhere((key, _) => key.id == entity);
   }
 
   void _prune() {
     session._authorities.prune();
+    session._ownership.prune();
     session._inputs.prune();
     bool gone(NetworkEntity entity) =>
         entity.state == EntityState.removed ||
         !identical(session.registry[entity.id], entity);
     _values.removeWhere((entity, _) => gone(entity));
     _sequences.removeWhere((entity, _) => gone(entity));
-    _catchingUp.removeWhere(gone);
+    _catchingUp.removeWhere((entity, _) => gone(entity));
   }
 
   /// Which peer writes [field]: the entity's authority or its owner.
@@ -366,6 +374,24 @@ final class _StateReplicator {
       writerOf(field) == FieldWriter.owner ? entity.owner : entity.authority;
 
   bool _byAuthority(FieldId field) => writerOf(field) == FieldWriter.authority;
+
+  /// Whether [entity]'s synchronizer is catching up with the values of
+  /// [writer]'s fields that this peer received before it became [writer].
+  bool _catchesUp(NetworkEntity entity, FieldWriter writer) =>
+      _catchingUp[entity]?.contains(writer) ?? false;
+
+  /// Starts or stops [entity]'s synchronizer catching up with the values
+  /// of [writer]'s fields, as this peer becomes or stops being [writer].
+  void _catchUp(NetworkEntity entity, FieldWriter writer, bool catchUp) {
+    if (catchUp) {
+      (_catchingUp[entity] ??= {}).add(writer);
+      return;
+    }
+    final writers = _catchingUp[entity];
+    if (writers == null) return;
+    writers.remove(writer);
+    if (writers.isEmpty) _catchingUp.remove(entity);
+  }
 
   /// Whether [local] writes any of [synchronizer]'s properties.
   bool _writesAny(MultiplayerSynchronizer synchronizer, PeerId local) {
@@ -403,11 +429,7 @@ final class _StateReplicator {
             : value,
       );
     }
-    if (entity.authority == local) {
-      _catchingUp.add(entity);
-    } else {
-      _catchingUp.remove(entity);
-    }
+    _catchUp(entity, FieldWriter.authority, entity.authority == local);
     session._inputs.transferred(entity, previous);
     final synchronizer = _synchronizers[entity.id];
     if (synchronizer == null || !identical(synchronizer.entity, entity)) {
@@ -420,20 +442,68 @@ final class _StateReplicator {
     if (previous == local) {
       synchronizer._applied.removeWhere((field, _) => _byAuthority(field));
     }
-    synchronizer._restartPresentation();
+    synchronizer._restartPresentation(FieldWriter.authority);
   }
 
-  /// Sends [remote], the previous authority of [entity], the values of its
-  /// authority-written fields that the host accepted from it, without
+  /// Switches the roles of [entity]'s synchronizer after its owner moved
+  /// from [previous] on this peer, and restarts the entity's input stream.
+  ///
+  /// Owner-written fields change their writer, as authority-written fields
+  /// do in [transferred]. Every value forgets the input that the host had
+  /// applied with it, as the new owner numbers its inputs from the start.
+  void ownerTransferred(NetworkEntity entity, PeerId previous) {
+    bool byOwner(FieldId field) => !_byAuthority(field);
+    _sequences[entity]?.removeWhere((field, _) => byOwner(field));
+    final local = session._localPeer;
+    final values = _values[entity];
+    if (!session._isHost && previous == local) {
+      // The host may have rejected values that this client sent, and it
+      // follows the transfer with the values it accepted. Held values
+      // would be rejected too.
+      values?.removeWhere((field, _) => byOwner(field));
+      session._peers[PeerId.host]?.held.remove((
+        entity: entity.id,
+        writer: FieldWriter.owner,
+      ));
+    }
+    // Owner-written values were sampled on the previous owner's clock.
+    values?.updateAll(
+      (field, value) => _FieldValue(
+        value.bytes,
+        value.time,
+        byOwner(field) ? null : value.sampledAt,
+      ),
+    );
+    _catchUp(entity, FieldWriter.owner, entity.owner == local);
+    session._inputs.ownerTransferred(entity, previous);
+    final synchronizer = _synchronizers[entity.id];
+    if (synchronizer == null || !identical(synchronizer.entity, entity)) {
+      return;
+    }
+    // A new owner samples at its next capture.
+    synchronizer._due = null;
+    // Values this peer sent replace the ones it applied before, so apply
+    // the replicated values again. A new owner applies the latest values
+    // once more before its first sample, replacing local changes since it
+    // applied them.
+    if (previous == local || entity.owner == local) {
+      synchronizer._applied.removeWhere((field, _) => byOwner(field));
+    }
+    synchronizer._restartPresentation(FieldWriter.owner);
+  }
+
+  /// Sends [remote], the previous authority or owner of [entity], the
+  /// values of [writer]'s fields that the host accepted from it, without
   /// sample times, to replace any values it sent after the transfer.
   /// Returns `false` if its transport refused one, which removes [remote].
-  bool resync(_Remote remote, NetworkEntity entity) {
+  bool resync(_Remote remote, NetworkEntity entity, FieldWriter writer) {
     final fields = _values[entity];
     if (fields == null) return true;
     final values = {
       for (final MapEntry(key: field, :value) in fields.entries)
-        if (_byAuthority(field)) field: value.bytes,
+        if (writerOf(field) == writer) field: value.bytes,
     };
+    if (values.isEmpty) return true;
     for (final message in _messages(
       entity,
       values,
@@ -607,9 +677,9 @@ final class _StateReplicator {
           continue;
         }
         final entity = synchronizer.entity;
-        if (_catchingUp.contains(entity)) {
+        if (_catchingUp.containsKey(entity)) {
           // Continue from the values received before this peer became the
-          // authority, rather than from older local state.
+          // authority or the owner, rather than from older local state.
           final caughtUp = _applyValues(synchronizer, lifetime);
           if (_lifetime != lifetime || session._peer == null) return;
           if (!caughtUp) continue;
@@ -699,15 +769,18 @@ final class _StateReplicator {
     }
     // A late update for a removed entity is a harmless race.
     if (entity.state == EntityState.removed) return;
-    // So is authority-written state that a client sent before applying a
-    // transfer of the entity's authority that the host has made.
+    // So is state that a client sent before applying a transfer of the
+    // entity's authority or ownership that the host has made, for the
+    // fields whose writer the transfer changed.
     final transferring =
         session._isHost && session._authorities.awaits(entity, sender);
+    final transferringOwner =
+        session._isHost && session._ownership.awaits(entity, sender);
     final local = session._localPeer;
     final fields = <FieldId>[];
     for (final field in message.values.keys) {
       final byAuthority = _byAuthority(field);
-      if (transferring && byAuthority) continue;
+      if (byAuthority ? transferring : transferringOwner) continue;
       final writer = _writer(entity, field);
       if (session._isHost ? writer != sender : writer == local) {
         _reject(
@@ -871,7 +944,7 @@ final class _StateReplicator {
       if (_lifetime != lifetime) return;
       final entity = synchronizer.entity;
       if (!_isCurrent(synchronizer, lifetime) ||
-          (!_catchingUp.contains(entity) &&
+          (!_catchingUp.containsKey(entity) &&
               synchronizer.properties.every(
                 (property) => _writer(entity, property.field.id) == local,
               ))) {
@@ -879,7 +952,7 @@ final class _StateReplicator {
       }
       final completed = _applyValues(synchronizer, lifetime);
       if (_lifetime != lifetime || session._peer == null) return;
-      if (completed && entity.authority == local) _catchingUp.remove(entity);
+      if (completed) _catchingUp.remove(entity);
     }
   }
 
@@ -894,11 +967,11 @@ final class _StateReplicator {
     final values = _values[entity];
     if (values == null) return true;
     final local = session._localPeer;
-    final catchingUp = _catchingUp.contains(entity);
+    final catchingUp = _catchesUp(entity, FieldWriter.authority);
     for (final property in synchronizer.properties) {
       final field = property.field.id;
       if (_writer(entity, field) == local &&
-          !(catchingUp && _byAuthority(field))) {
+          !_catchesUp(entity, writerOf(field))) {
         continue;
       }
       if (!_isCurrent(synchronizer, lifetime) ||
@@ -928,7 +1001,10 @@ final class _StateReplicator {
       if (prediction != null) {
         // An owner that becomes the authority continues from its own
         // prediction, which includes the inputs that the host did not apply.
-        if (!(catchingUp && entity.owner == local)) {
+        // A peer that becomes the owner too had no prediction to continue.
+        if (!(catchingUp &&
+            entity.owner == local &&
+            !_catchesUp(entity, FieldWriter.owner))) {
           prediction._receive(value.bytes);
         }
         continue;

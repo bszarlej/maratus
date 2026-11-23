@@ -177,13 +177,16 @@ final class _SessionDelivery {
 
   /// Whether [envelope], which arrived on an independent lane, is stale:
   /// authority-written state that its sender sampled before the latest
-  /// transfer of the entity's authority, or, on a client, state or an RPC
-  /// that the host sent before it showed the entity to this client again.
+  /// transfer of the entity's authority; owner-written state, state that
+  /// reports an applied input, or inputs, sent before the latest transfer
+  /// of the entity's ownership; or, on a client, state or an RPC that the
+  /// host sent before it showed the entity to this client again.
   bool _stale(MessageEnvelope envelope) {
     final EntityId entity;
     switch (envelope.message) {
       case StateMessage(entity: final id) ||
-          RpcDeliveryMessage(entity: final id):
+          RpcDeliveryMessage(entity: final id) ||
+          InputMessage(entity: final id):
         entity = id;
       default:
         return false;
@@ -198,6 +201,15 @@ final class _SessionDelivery {
       return true;
     }
     final message = envelope.message;
+    if (envelope.revision < session._ownership.lastTransfer(live)) {
+      // The input stream restarted, and the owner-written fields changed
+      // their writer.
+      if (message is InputMessage) return true;
+      if (message is StateMessage &&
+          (!_byAuthority(message) || message.inputSequence != null)) {
+        return true;
+      }
+    }
     return message is StateMessage &&
         envelope.revision < session._authorities.lastTransfer(live) &&
         _byAuthority(message);
@@ -206,13 +218,20 @@ final class _SessionDelivery {
   bool _waitsForControl(_Remote remote, MessageEnvelope envelope) {
     if (!session._isHost) return envelope.revision > session._revision;
     if (remote.state != _RemoteState.ready) return true;
-    if (envelope.message case StateMessage(:final entity) && final message) {
-      final live = session.registry[entity];
-      if (live != null &&
-          session._authorities.awaits(live, remote.peer!) &&
-          _byAuthority(message)) {
-        return true;
-      }
+    final peer = remote.peer!;
+    switch (envelope.message) {
+      case StateMessage(:final entity) && final message:
+        final live = session.registry[entity];
+        if (live != null &&
+            (_byAuthority(message)
+                ? session._authorities.awaits(live, peer)
+                : session._ownership.awaits(live, peer))) {
+          return true;
+        }
+      case InputMessage(:final entity):
+        final live = session.registry[entity];
+        if (live != null && session._ownership.awaits(live, peer)) return true;
+      default:
     }
     return false;
   }

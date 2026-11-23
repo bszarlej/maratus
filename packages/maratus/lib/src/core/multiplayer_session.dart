@@ -30,6 +30,7 @@ part 'session_delivery.dart';
 part 'state_batches.dart';
 part '../replication/authority_replicator.dart';
 part '../replication/interpolation.dart';
+part '../replication/ownership_replicator.dart';
 part '../replication/prediction.dart';
 part '../replication/spawn_replicator.dart';
 part '../replication/state_replicator.dart';
@@ -133,13 +134,14 @@ typedef SessionMessageHandler =
 /// the entity's authority, or for owner-written fields, its owner. The
 /// writer sends the field when [captureState] runs, and the host accepts it
 /// only from that writer and relays it. The host can move an entity's
-/// authority to another peer with [transferAuthority]; its owner never
-/// changes. With [EntityAttachment.predict], an entity's owner sends its
+/// authority to another peer with [transferAuthority], and its owner, with
+/// or without its authority, with [transferOwnership]. With
+/// [EntityAttachment.predict], an entity's owner sends its
 /// inputs to the host, which applies them to compute the entity's state,
 /// and predicts that state until the host's arrives. A joining client
-/// receives the live entities, their
-/// authorities, and their latest values in its baseline, and every later
-/// change after it.
+/// receives the live entities, their owners
+/// and authorities, and their latest values in its baseline, and every
+/// later change after it.
 ///
 /// The host decides which replicated entities each client sees. Every
 /// client sees every entity unless [setPublicVisibility],
@@ -229,6 +231,7 @@ final class MultiplayerSession {
   late final _membership = _SessionMembership(this);
   late final _spawns = _SpawnReplicator(this);
   late final _authorities = _AuthorityReplicator(this);
+  late final _ownership = _OwnershipReplicator(this);
   late final _states = _StateReplicator(this);
   late final _inputs = _InputReplicator(this);
   late final _visibility = _VisibilityReplicator(this);
@@ -830,6 +833,75 @@ final class MultiplayerSession {
   bool transferAuthority(NetworkEntity entity, PeerId authority) =>
       _authorities.transfer(entity, authority);
 
+  /// Transfers the ownership of the replicated or static [entity] to
+  /// [owner], on every peer, and with [withAuthority], its authority too.
+  ///
+  /// Only a hosting session transfers ownership. The host applies the
+  /// transfer at once, then replicates it to every joined client in
+  /// revision order, after the state that preceded it, as a single change
+  /// even when it moves the authority too. A joining client receives each
+  /// entity's current owner in its baseline. Every peer reports the change
+  /// as an [OwnerChanged] event while applying it, preceded by an
+  /// [AuthorityChanged] event if the authority moved with it.
+  ///
+  /// The entity keeps a single owner. A client that the transfer makes, or
+  /// stops being, the owner or the authority acknowledges the transfer as
+  /// it applies it. Until then, the host drops what such a client sent
+  /// before applying it, without reporting it: its inputs, its
+  /// owner-written state, and, if the authority moved, its
+  /// authority-written state. The previous owner stops sending inputs and
+  /// owner-written fields, and the host sends it the owner-written values
+  /// it accepted from it. Owner-only RPCs and owner-written state that the
+  /// previous owner sends after it applied the transfer are rejected, as
+  /// they are from any peer that is not the owner. From the transfer on,
+  /// the host checks [RpcCaller.owner] and selects [RpcTarget.owner] with
+  /// the new owner.
+  ///
+  /// With [EntityAttachment.predict], the entity's input stream starts
+  /// over: the previous owner drops the inputs that the host has not
+  /// applied and follows the authority's state, the host forgets the
+  /// inputs it received, and the new owner numbers its inputs from 1 and
+  /// predicts from the latest authoritative state. The new owner's
+  /// synchronizer applies the latest owner-written values it received
+  /// before it samples its own.
+  ///
+  /// Ownership and authority are separate roles: without [withAuthority],
+  /// the authority stays with its peer. The entity's owner predicts and
+  /// sends inputs only while the host or the owner itself is the
+  /// authority, so for an entity whose owner is also its authority, such
+  /// as a client-authoritative avatar, set [withAuthority] to hand both
+  /// over together. Transferring only the ownership of such an entity
+  /// leaves the previous owner its authority.
+  ///
+  /// The entity's [OwnerLeftPolicy] applies to its owner at the time it
+  /// leaves. A new owner that leaves before acknowledging the transfer
+  /// leaves as the entity's owner, so the policy applies to the entity. A
+  /// previous owner that leaves during a transfer does not affect it.
+  /// Peer IDs are never reused, so a client that reconnects can reclaim an
+  /// entity kept with [OwnerLeftPolicy.keep] only through a transfer.
+  ///
+  /// The owner of a replicated entity always sees it. The host first shows
+  /// the entity, and its ancestors, to a client [owner] that does not see
+  /// it. A previous client owner then keeps seeing the entity only as its
+  /// visibility decides; see [isVisibleTo]. The entity's descendants keep
+  /// their owners; transfer each one that should move with it.
+  ///
+  /// [owner] must be the host or a ready client. Returns `false`, changing
+  /// nothing, if it is already the entity's owner and, with
+  /// [withAuthority], its authority. If it is the owner but not the
+  /// authority, [withAuthority] transfers the authority alone, as
+  /// [transferAuthority] does.
+  ///
+  /// Throws a [StateError] unless hosting, or if called from a visibility
+  /// filter, and an [ArgumentError] for an entity that is not a live
+  /// replicated or static entity of this session, or for an [owner] that
+  /// is neither the host nor a ready client.
+  bool transferOwnership(
+    NetworkEntity entity,
+    PeerId owner, {
+    bool withAuthority = false,
+  }) => _ownership.transfer(entity, owner, withAuthority);
+
   /// Whether the replicated or static [entity] is visible to [peer]: whether
   /// [peer] has the entity.
   ///
@@ -986,7 +1058,8 @@ final class MultiplayerSession {
     }
   }
 
-  /// Sends a membership, spawn, despawn, or authority [message] with a new
+  /// Sends a membership, spawn, despawn, authority, or ownership [message]
+  /// with a new
   /// revision to every joined client except [except], or only to those
   /// among [to], then removes the clients whose transports refused it.
   /// Returns the message's revision.
@@ -1191,6 +1264,7 @@ final class MultiplayerSession {
     _membership.clear();
     _spawns.clear();
     _authorities.clear();
+    _ownership.clear();
     _states.clear();
     _inputs.clear();
     _delivery.clear();
@@ -1376,6 +1450,15 @@ final class MultiplayerSession {
         )) {
           _drop(remote, DisconnectReason.protocolViolation, notify: true);
         }
+      // A client that is still synchronizing may lose the ownership of an
+      // entity.
+      case (
+        _RemoteState.synchronizing || _RemoteState.ready,
+        OwnershipAckMessage message,
+      ):
+        if (!_ownership.acknowledge(remote.peer!, message, envelope.revision)) {
+          _drop(remote, DisconnectReason.protocolViolation, notify: true);
+        }
       default:
         _drop(remote, DisconnectReason.protocolViolation, notify: true);
     }
@@ -1507,6 +1590,7 @@ final class MultiplayerSession {
         !_membership.sendBaseline(remote) ||
         !_spawns.sendBaseline(remote) ||
         !_authorities.sendBaseline(remote) ||
+        !_ownership.sendBaseline(remote) ||
         !_states.sendBaseline(remote)) {
       return;
     }
@@ -1560,6 +1644,12 @@ final class MultiplayerSession {
         if (!_authorities.apply(message, envelope.revision)) {
           _drop(remote, DisconnectReason.protocolViolation, notify: true);
         }
+      case (_RemoteState.synchronizing, OwnershipMessage message)
+          when envelope.revision == _revision && message.authority == null:
+        // The owner of a static entity that the host transferred.
+        if (!_ownership.apply(message, envelope.revision)) {
+          _drop(remote, DisconnectReason.protocolViolation, notify: true);
+        }
       case (_RemoteState.synchronizing, StateMessage())
           when envelope.revision == _revision:
         // Baseline values of an entity.
@@ -1577,6 +1667,7 @@ final class MultiplayerSession {
             SpawnMessage() ||
             DespawnMessage() ||
             AuthorityMessage() ||
+            OwnershipMessage() ||
             StateMessage(),
       ):
         if (envelope.revision <= _revision) {
@@ -1594,6 +1685,10 @@ final class MultiplayerSession {
           ),
           DespawnMessage message => _spawns.applyDespawn(message),
           AuthorityMessage message => _authorities.apply(
+            message,
+            envelope.revision,
+          ),
+          OwnershipMessage message => _ownership.apply(
             message,
             envelope.revision,
           ),
@@ -1749,6 +1844,7 @@ final class MultiplayerSession {
       _peers.remove(peer);
       _emit(PeerLeft(peer, reason));
       _authorities.forget(peer);
+      _ownership.forget(peer);
       _visibility.left(peer);
       if (release) {
         _membership.left(peer, reason);
@@ -1774,6 +1870,7 @@ final class MultiplayerSession {
     _rpcDispatcher.clear();
     _membership.clear();
     _authorities.clear();
+    _ownership.clear();
     _states.clear();
     _inputs.clear();
     final ended = _spawns.end();

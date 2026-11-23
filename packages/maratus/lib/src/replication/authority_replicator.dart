@@ -93,15 +93,24 @@ final class _AuthorityReplicator {
     // Clients whose transports refused the transfer have left, and their
     // departure may have despawned the entity or transferred it again.
     if (entity.state == EntityState.removed) return;
+    _record(entity, revision, {previous, authority});
+    final remote = session._peers[previous];
+    if (remote != null) {
+      session._states.resync(remote, entity, FieldWriter.authority);
+    }
+    if (entity.state == EntityState.removed) return;
+    session._visibility.transferred(entity, previous);
+  }
+
+  /// Records the transfer of [entity]'s authority with [revision] on the
+  /// host, which awaits the acknowledgement of each client among [peers]:
+  /// the previous and the new authority.
+  void _record(NetworkEntity entity, int revision, Set<PeerId> peers) {
     _transfers[entity] = max(_transfers[entity] ?? 0, revision);
-    for (final peer in {previous, authority}) {
+    for (final peer in peers) {
       if (peer == PeerId.host || !session._peers.containsKey(peer)) continue;
       (_awaited[entity] ??= {})[peer] = revision;
     }
-    final remote = session._peers[previous];
-    if (remote != null) session._states.resync(remote, entity);
-    if (entity.state == EntityState.removed) return;
-    session._visibility.transferred(entity, previous);
   }
 
   /// Whether the host awaits [peer]'s acknowledgement of a transfer of
@@ -117,12 +126,19 @@ final class _AuthorityReplicator {
   /// entity despawned since, changes nothing.
   bool acknowledge(PeerId peer, AuthorityAckMessage message, int revision) {
     if (revision > session._revision) return false;
-    final entity = session.registry[message.entity];
+    _settle(peer, message.entity, revision);
+    return true;
+  }
+
+  /// Stops awaiting [peer]'s acknowledgement of the transfer of [id]'s
+  /// authority with [revision], which an authority or ownership
+  /// acknowledgement confirms.
+  void _settle(PeerId peer, EntityId id, int revision) {
+    final entity = session.registry[id];
     final awaited = entity == null ? null : _awaited[entity];
-    if (awaited == null || awaited[peer] != revision) return true;
+    if (awaited == null || awaited[peer] != revision) return;
     awaited.remove(peer);
     if (awaited.isEmpty) _awaited.remove(entity);
-    return true;
   }
 
   /// Forgets the acknowledgements awaited from [peer], which left.
