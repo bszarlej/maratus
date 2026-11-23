@@ -25,6 +25,8 @@ void main() {
         'rpcDelivery': 'rpc_delivery',
         'state': 'state',
         'input': 'input',
+        'ownership': 'ownership',
+        'ownershipAck': 'ownership_ack',
       },
     );
   });

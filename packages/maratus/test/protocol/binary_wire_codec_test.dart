@@ -191,7 +191,7 @@ void main() {
         // An input stream number that the schema does not assign.
         [77, 2, 1, 17, 0, 0, 128, 1, 99],
         // A message kind and a body key beyond the assigned ones.
-        [77, 2, 1, 18, 0, 0, 0],
+        [77, 2, 1, 20, 0, 0, 0],
         [77, 2, 1, 16, 0, 0, 128, 64],
       ]) {
         expect(

@@ -34,17 +34,18 @@ import 'wire_codec.dart';
 ///   `t`, construction data `d`, owner `o`, authority `a`, optionally a
 ///   parent entity `p`, and `s`, which is `true` in a record that shows an
 ///   existing entity; authority bodies add the new authority `a`, and
-///   authority acknowledgements hold only the entity. RPC request bodies add
-///   the RPC `m`, its payload `p`, and optionally a target peer `t`. RPC
-///   deliveries require both sender `s` and target `t`; state bodies add an
-///   object `f` of field values and, optionally, the authority's sample time
-///   `t`, in microseconds, a live-state sequence `n`, and the sequence `i` of
-///   the latest input that the authority applied. Input bodies add the input
-///   stream `m`, the sequence `n` of their first input, and a list `d` of at
-///   least one input. The session validates the origin of RPC deliveries, the
-///   consistency of membership, spawn, and authority metadata, and the
-///   presence of sample times, and decodes join requests once the schema
-///   fingerprints match.
+///   ownership bodies the new owner `o` and, optionally, the new authority
+///   `a`; authority and ownership acknowledgements hold only the entity. RPC
+///   request bodies add the RPC `m`, its payload `p`, and optionally a target
+///   peer `t`. RPC deliveries require both sender `s` and target `t`; state
+///   bodies add an object `f` of field values and, optionally, the
+///   authority's sample time `t`, in microseconds, a live-state sequence `n`,
+///   and the sequence `i` of the latest input that the authority applied.
+///   Input bodies add the input stream `m`, the sequence `n` of their first
+///   input, and a list `d` of at least one input. The session validates the
+///   origin of RPC deliveries, the consistency of membership, spawn,
+///   authority, and ownership metadata, and the presence of sample times,
+///   and decodes join requests once the schema fingerprints match.
 final class ProtocolCodec {
   /// Creates a codec for the messages of [schema].
   ProtocolCodec(
@@ -55,9 +56,9 @@ final class ProtocolCodec {
 
   /// The protocol version that this codec writes and accepts.
   ///
-  /// RPC routing, spawn metadata, pings, state sample times, authority
-  /// transfers, membership, inputs, and shown spawn records extend version
-  /// 1; the schema fingerprint includes RPC routing metadata so earlier
+  /// RPC routing, spawn metadata, pings, state sample times, authority and
+  /// ownership transfers, membership, inputs, and shown spawn records extend
+  /// version 1; the schema fingerprint includes RPC routing metadata so earlier
   /// schemas fail the session handshake.
   static const int version = 1;
 
@@ -245,7 +246,13 @@ final class ProtocolCodec {
             if (shown) 's': true,
           },
         DespawnMessage(:final entity) ||
-        AuthorityAckMessage(:final entity) => {'e': _checkEntity(entity)},
+        AuthorityAckMessage(:final entity) ||
+        OwnershipAckMessage(:final entity) => {'e': _checkEntity(entity)},
+        OwnershipMessage(:final entity, :final owner, :final authority) => {
+          'e': _checkEntity(entity),
+          'o': _peerCodec.encode(owner.value),
+          if (authority != null) 'a': _peerCodec.encode(authority.value),
+        },
         AuthorityMessage(:final entity, :final authority) => {
           'e': _checkEntity(entity),
           'a': _peerCodec.encode(authority.value),
@@ -438,6 +445,18 @@ final class ProtocolCodec {
       case MessageKind.authorityAck:
         final body = WireObject(value, const {'e'});
         return AuthorityAckMessage(entity: _readEntity(body));
+      case MessageKind.ownership:
+        final hasAuthority =
+            value is Map<String, Object?> && value.containsKey('a');
+        final body = WireObject(value, {'e', 'o', if (hasAuthority) 'a'});
+        return OwnershipMessage(
+          entity: _readEntity(body),
+          owner: PeerId(body.read('o', _peerCodec)),
+          authority: hasAuthority ? PeerId(body.read('a', _peerCodec)) : null,
+        );
+      case MessageKind.ownershipAck:
+        final body = WireObject(value, const {'e'});
+        return OwnershipAckMessage(entity: _readEntity(body));
       case MessageKind.rpc:
         final hasTarget =
             value is Map<String, Object?> && value.containsKey('t');

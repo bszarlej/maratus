@@ -46,6 +46,10 @@ const _fixtures = {
   'despawn': '{"v":1,"k":"despawn","g":0,"r":0,"b":{"e":7}}',
   'authority': '{"v":1,"k":"authority","g":5,"r":10,"b":{"e":7,"a":3}}',
   'authority ack': '{"v":1,"k":"authority_ack","g":5,"r":10,"b":{"e":7}}',
+  'ownership': '{"v":1,"k":"ownership","g":5,"r":11,"b":{"e":7,"o":3}}',
+  'ownership with authority':
+      '{"v":1,"k":"ownership","g":5,"r":11,"b":{"e":7,"o":3,"a":3}}',
+  'ownership ack': '{"v":1,"k":"ownership_ack","g":5,"r":11,"b":{"e":7}}',
   'rpc':
       '{"v":1,"k":"rpc","g":0,"r":0,'
       '"b":{"e":7,"m":"player.move","p":{"x":0.5,"y":-0.25}}}',
@@ -175,6 +179,25 @@ final _envelopes = {
     AuthorityAckMessage(entity: EntityId(7)),
     generation: 5,
     revision: 10,
+  ),
+  'ownership': const MessageEnvelope(
+    OwnershipMessage(entity: EntityId(7), owner: PeerId(3)),
+    generation: 5,
+    revision: 11,
+  ),
+  'ownership with authority': const MessageEnvelope(
+    OwnershipMessage(
+      entity: EntityId(7),
+      owner: PeerId(3),
+      authority: PeerId(3),
+    ),
+    generation: 5,
+    revision: 11,
+  ),
+  'ownership ack': const MessageEnvelope(
+    OwnershipAckMessage(entity: EntityId(7)),
+    generation: 5,
+    revision: 11,
   ),
   'rpc': const MessageEnvelope(
     RpcMessage(
@@ -613,6 +636,50 @@ final _invalidInputs = <_InvalidInput>[
   _invalid(
     'an authority acknowledgement without an entity',
     '{"v":1,"k":"authority_ack","g":5,"r":10,"b":{}}',
+    ProtocolErrorCode.invalidValue,
+    path: ['b'],
+  ),
+  _invalid(
+    'an ownership transfer without a new owner',
+    '{"v":1,"k":"ownership","g":5,"r":11,"b":{"e":7,"a":3}}',
+    ProtocolErrorCode.invalidValue,
+    path: ['b'],
+  ),
+  _invalid(
+    'an ownership transfer with an unexpected key',
+    '{"v":1,"k":"ownership","g":5,"r":11,"b":{"e":7,"o":3,"p":2}}',
+    ProtocolErrorCode.invalidValue,
+    path: ['b'],
+  ),
+  for (final (description, peer) in [
+    ('null', 'null'),
+    ('zero', '0'),
+    ('fractional', '2.5'),
+    ('string', '"2"'),
+    ('web-unsafe', '9007199254740992'),
+  ]) ...[
+    _invalid(
+      'a $description new owner',
+      '{"v":1,"k":"ownership","g":5,"r":11,"b":{"e":7,"o":$peer}}',
+      ProtocolErrorCode.invalidValue,
+      path: ['b', 'o'],
+    ),
+    _invalid(
+      'a $description new authority with an owner',
+      '{"v":1,"k":"ownership","g":5,"r":11,"b":{"e":7,"o":3,"a":$peer}}',
+      ProtocolErrorCode.invalidValue,
+      path: ['b', 'a'],
+    ),
+  ],
+  _invalid(
+    'an ownership acknowledgement that names an owner',
+    '{"v":1,"k":"ownership_ack","g":5,"r":11,"b":{"e":7,"o":3}}',
+    ProtocolErrorCode.invalidValue,
+    path: ['b'],
+  ),
+  _invalid(
+    'an ownership acknowledgement without an entity',
+    '{"v":1,"k":"ownership_ack","g":5,"r":11,"b":{}}',
     ProtocolErrorCode.invalidValue,
     path: ['b'],
   ),
@@ -1299,6 +1366,38 @@ void main() {
       expect(
         ack.message,
         isA<AuthorityAckMessage>().having(
+          (m) => m.entity,
+          'entity',
+          const EntityId(7),
+        ),
+      );
+    });
+
+    test('decodes ownership transfers and their acknowledgements', () {
+      final transfer = codec.decode(_bytes(_fixtures['ownership']!));
+      final combined = codec.decode(
+        _bytes(_fixtures['ownership with authority']!),
+      );
+      final ack = codec.decode(_bytes(_fixtures['ownership ack']!));
+
+      expect(transfer.revision, 11);
+      expect(
+        transfer.message,
+        isA<OwnershipMessage>()
+            .having((m) => m.entity, 'entity', const EntityId(7))
+            .having((m) => m.owner, 'owner', const PeerId(3))
+            .having((m) => m.authority, 'authority', isNull),
+      );
+      expect(
+        combined.message,
+        isA<OwnershipMessage>()
+            .having((m) => m.owner, 'owner', const PeerId(3))
+            .having((m) => m.authority, 'authority', const PeerId(3)),
+      );
+      expect(ack.revision, 11);
+      expect(
+        ack.message,
+        isA<OwnershipAckMessage>().having(
           (m) => m.entity,
           'entity',
           const EntityId(7),
