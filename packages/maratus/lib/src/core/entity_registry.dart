@@ -21,7 +21,7 @@ enum EntityState {
 
 /// A networked entity in an [EntityRegistry].
 final class NetworkEntity {
-  NetworkEntity._(this.id, this.owner, this._authority);
+  NetworkEntity._(this.id, this._owner, this._authority);
 
   /// The ID of this entity, unique within its session.
   final EntityId id;
@@ -29,8 +29,11 @@ final class NetworkEntity {
   /// The peer that controls this entity's input, and so may call its
   /// owner-only RPCs and writes its owner-written synchronized fields.
   ///
-  /// The owner never changes during the entity's lifetime.
-  final PeerId owner;
+  /// The host can transfer the ownership of a replicated or static entity
+  /// with `MultiplayerSession.transferOwnership`, and every peer reports
+  /// the change as an `OwnerChanged` event while applying it.
+  PeerId get owner => _owner;
+  PeerId _owner;
 
   /// The peer whose copy of this entity is the source of truth, and which
   /// writes its authority-written synchronized fields.
@@ -171,6 +174,12 @@ final class EntityRegistry {
 /// not exported.
 void changeAuthority(NetworkEntity entity, PeerId authority) =>
     entity._authority = authority;
+
+/// Makes [owner] the owner of [entity] on this peer only.
+///
+/// The session calls this while it replicates or applies a transfer; it is
+/// not exported.
+void changeOwner(NetworkEntity entity, PeerId owner) => entity._owner = owner;
 
 /// Registers a pending entity in [registry] under the [id] of a removed
 /// one, which comes into this client's view again, and returns it.

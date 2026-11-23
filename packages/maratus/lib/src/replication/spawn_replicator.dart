@@ -2,7 +2,8 @@ part of '../core/multiplayer_session.dart';
 
 /// What the host does with a spawned entity when its owner leaves.
 enum OwnerLeftPolicy {
-  /// Keep the entity for the remaining peers, with its original owner.
+  /// Keep the entity for the remaining peers, with the departed client as
+  /// its owner until the host transfers its ownership.
   ///
   /// Peer IDs are never reused within a session, so no other peer can act
   /// as the entity's owner afterward. If the owner was also the entity's
@@ -255,7 +256,8 @@ final class _SpawnReplicator {
   }
 
   /// Sends the live entities that [remote] sees, parents first, as part of
-  /// its baseline, each with its current authority. Returns `false` if its
+  /// its baseline, each with its current owner and authority. Returns
+  /// `false` if its
   /// transport refused one, which removes [remote].
   bool sendBaseline(_Remote remote) {
     for (final record in _records.values.toList()) {
@@ -272,17 +274,18 @@ final class _SpawnReplicator {
   }
 
   /// The record that shows [record]'s entity to a client that does not see
-  /// it, with its current authority.
+  /// it, with its current owner and authority.
   SpawnMessage shown(_SpawnRecord record) => _current(record, shown: true);
 
-  /// The spawn record of [record]'s entity with its current authority.
+  /// The spawn record of [record]'s entity with its current owner and
+  /// authority.
   SpawnMessage _current(_SpawnRecord record, {bool shown = false}) {
     final message = _decode(record.bytes);
     return SpawnMessage(
       entity: message.entity,
       type: message.type,
       data: message.data,
-      owner: message.owner,
+      owner: record.entity.owner,
       authority: record.entity.authority,
       parent: message.parent,
       shown: shown,
@@ -294,8 +297,9 @@ final class _SpawnReplicator {
   /// with the replicated entities, which is a protocol violation.
   ///
   /// A new entity's authority is the host or its owner, and its ID is new
-  /// to this client. The authority of an entity in the baseline, or of a
-  /// shown one, may have been transferred to any peer since it spawned. A
+  /// to this client. The owner and authority of an entity in the baseline,
+  /// or of a shown one, may have been transferred to any peer since it
+  /// spawned. A
   /// shown entity may also have been removed from this client before, when
   /// it left the client's view, and is registered again under its ID.
   bool applySpawn(
