@@ -246,6 +246,37 @@ void main() {
     expect(second.seen, {_id(secondPlayer), _id(nearFirst)});
   });
 
+  test('sees from the entities whose ownership moved to a client', () async {
+    final world = _World();
+    final host = await world.host([ProximityVisibility(showRange: 10)]);
+    final first = await world.join();
+    final second = await world.join();
+    await world.pump();
+    final session = host.session;
+    final player = session.spawn(
+      world.protocol.body,
+      Vector2(0, 0),
+      owner: first.id,
+    );
+    final near = session.spawn(world.protocol.body, Vector2(0, 5));
+    await world.pump();
+    expect(first.seen, {_id(player), _id(near)});
+    expect(second.seen, isEmpty);
+
+    session.transferOwnership(player, second.id);
+    await world.step(0.2);
+
+    expect(second.seen, {_id(player), _id(near)});
+    expect(first.seen, isEmpty);
+    expect(
+      second.spawner
+          .componentsOwnedBy(second.id)
+          .map((c) => c.networkEntity.id),
+      [player.id],
+    );
+    expect(first.spawner.componentsOwnedBy(first.id), isEmpty);
+  });
+
   test('leaves entities without a position to the other rules', () async {
     final world = _World();
     final host = await world.host([ProximityVisibility(showRange: 10)]);

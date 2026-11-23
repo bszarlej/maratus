@@ -59,7 +59,8 @@ class MultiplayerSpawner extends Component {
   /// Narrow them by type with `whereType`, as in
   /// `spawner.componentsOwnedBy(peer).whereType<Player>().single`. Like
   /// [spawnedComponents], this lists components until their entities
-  /// despawn.
+  /// despawn. It follows the entities' current owners, so a component moves
+  /// to its new owner's list when the host transfers its ownership.
   Iterable<NetworkedComponent> componentsOwnedBy(PeerId peer) => [
     for (final MapEntry(key: entity, value: component) in _spawned.entries)
       if (entity.owner == peer) component,

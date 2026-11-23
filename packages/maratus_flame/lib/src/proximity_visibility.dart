@@ -101,6 +101,7 @@ class ProximityVisibility extends Component {
 
   MultiplayerScope? _proximityScope;
   var _indexedRevision = -1;
+  var _indexedSessionRevision = -1;
   final _positioned = <NetworkEntity, PositionComponent>{};
   final _represented = <NetworkEntity>{};
   final _owned = <PeerId, List<PositionComponent>>{};
@@ -172,6 +173,7 @@ class ProximityVisibility extends Component {
     _proximityScope?.session.removeVisibilityFilter(_accepts);
     _proximityScope = null;
     _indexedRevision = -1;
+    _indexedSessionRevision = -1;
     _positioned.clear();
     _represented.clear();
     _owned.clear();
@@ -226,10 +228,16 @@ class ProximityVisibility extends Component {
   }
 
   /// Indexes the components attached to [scope], unless none attached or
-  /// detached since the last time.
+  /// detached, and the session replicated no change, such as a transfer of
+  /// an entity's ownership, since the last time.
   void _index(MultiplayerScope scope) {
-    if (_indexedRevision == scope._componentsRevision) return;
+    final revision = scope.session.revision;
+    if (_indexedRevision == scope._componentsRevision &&
+        _indexedSessionRevision == revision) {
+      return;
+    }
     _indexedRevision = scope._componentsRevision;
+    _indexedSessionRevision = revision;
     _positioned.clear();
     _represented.clear();
     _owned.clear();
