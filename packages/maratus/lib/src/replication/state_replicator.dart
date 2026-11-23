@@ -60,14 +60,17 @@ final class SyncProperty<T> {
   ///
   /// For an authority-written field, a peer that becomes the entity's
   /// authority also calls it, with the latest values it received before,
-  /// ahead of its first sample. A peer that stops being the authority calls
-  /// it with the latest values that the host accepted, which replace any
-  /// local changes since then. Owner-written fields behave the same way
-  /// when the entity's ownership moves.
+  /// ahead of its first sample, unless its local value already equals
+  /// them. Local changes since it applied those values are replaced, so it
+  /// continues from the received state. A peer that stops being the
+  /// authority calls it with the latest values that the host accepted,
+  /// which replace any local changes since then. Owner-written fields
+  /// behave the same way when the entity's ownership moves.
   ///
   /// A thrown error produces [PropertySyncFailed]. The same encoded value
   /// is not applied again until it changes, a replacement synchronizer is
-  /// attached, or this peer stops being the authority, avoiding repeated
+  /// attached, this peer stops being the authority, or this peer becomes
+  /// the field's writer while its local value differs, avoiding repeated
   /// failures on every update. After an interpolated value fails, the next
   /// one is applied once a new value arrives.
   final void Function(T value)? set;
@@ -483,10 +486,8 @@ final class _StateReplicator {
     // A new owner samples at its next capture.
     synchronizer._due = null;
     // Values this peer sent replace the ones it applied before, so apply
-    // the replicated values again. A new owner applies the latest values
-    // once more before its first sample, replacing local changes since it
-    // applied them.
-    if (previous == local || entity.owner == local) {
+    // the replicated values again.
+    if (previous == local) {
       synchronizer._applied.removeWhere((field, _) => byOwner(field));
     }
     synchronizer._restartPresentation(FieldWriter.owner);
@@ -996,7 +997,14 @@ final class _StateReplicator {
         }
         continue;
       }
-      if (_sameBytes(synchronizer._applied[field], value.bytes)) continue;
+      // A peer catching up as the field's new writer also applies a value
+      // it applied before if its local value changed since, so that it
+      // continues from the received value.
+      if (_sameBytes(synchronizer._applied[field], value.bytes) &&
+          (_writer(entity, field) != local ||
+              !_drifted(property, field, value.bytes))) {
+        continue;
+      }
       synchronizer._applied[field] = value.bytes;
       if (prediction != null) {
         // An owner that becomes the authority continues from its own
@@ -1021,6 +1029,21 @@ final class _StateReplicator {
       if (!_isLive(synchronizer)) return false;
     }
     return true;
+  }
+
+  /// Whether the local value of [property], whose field is [field],
+  /// differs from the received value encoded in [bytes]. A local value that
+  /// cannot be read or encoded differs.
+  bool _drifted(
+    SyncProperty<Object?> property,
+    FieldId field,
+    Uint8List bytes,
+  ) {
+    try {
+      return !_sameBytes(_encode(field, property._get()), bytes);
+    } on Object {
+      return true;
+    }
   }
 
   SyncSnapshot<T>? _snapshot<T>(NetworkEntity entity, SyncField<T> field) {
