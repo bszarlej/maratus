@@ -48,6 +48,8 @@ final class BinaryWireCodec implements WireCodec {
     'rpc_delivery',
     'state',
     'input',
+    'ownership',
+    'ownership_ack',
   ];
   static const _keys = [
     'e',

@@ -54,7 +54,13 @@ enum MessageKind {
   state('state'),
 
   /// An [InputMessage].
-  input('input');
+  input('input'),
+
+  /// An [OwnershipMessage].
+  ownership('ownership'),
+
+  /// An [OwnershipAckMessage].
+  ownershipAck('ownership_ack');
 
   const MessageKind(this.code);
 
@@ -82,8 +88,9 @@ final class MessageEnvelope {
   ///
   /// The host assigns increasing revisions to replicated changes within
   /// its session. Clients use them to establish the bootstrap baseline and
-  /// discard obsolete membership, spawn, despawn, authority, and state
-  /// messages, and acknowledge an authority transfer with its revision. RPCs
+  /// discard obsolete membership, spawn, despawn, authority, ownership, and
+  /// state messages, and acknowledge an authority or ownership transfer with
+  /// its revision. RPCs
   /// do not advance this counter. The protocol layer validates a
   /// non-negative integer; the session enforces ordering.
   final int revision;
@@ -340,6 +347,10 @@ final class SpawnMessage extends ProtocolMessage {
   final Object? data;
 
   /// The peer that controls the entity's input.
+  ///
+  /// In a joining client's baseline, and in a [shown] record, it is the
+  /// entity's current owner, which an [OwnershipMessage] may have
+  /// transferred to another peer since the entity spawned.
   final PeerId owner;
 
   /// The peer whose copy of the entity is the source of truth.
@@ -416,6 +427,57 @@ final class AuthorityAckMessage extends ProtocolMessage {
 
   @override
   MessageKind get kind => MessageKind.authorityAck;
+}
+
+/// Transfers the ownership of a replicated or static entity to another
+/// peer, and optionally its authority with it.
+///
+/// Only the host sends transfers, as replicated changes ordered by their
+/// revision. Each client that the transfer makes, or stops being, the
+/// entity's owner or authority acknowledges it with an
+/// [OwnershipAckMessage].
+final class OwnershipMessage extends ProtocolMessage {
+  /// Creates a message that makes [owner] the owner of [entity], and
+  /// [authority], if given, its authority.
+  const OwnershipMessage({
+    required this.entity,
+    required this.owner,
+    this.authority,
+  });
+
+  /// The entity whose ownership changes.
+  final EntityId entity;
+
+  /// The entity's new owner.
+  final PeerId owner;
+
+  /// The entity's new authority, or `null` if its authority does not
+  /// change.
+  final PeerId? authority;
+
+  @override
+  MessageKind get kind => MessageKind.ownership;
+}
+
+/// Acknowledges the ownership transfer of [entity] with the envelope's
+/// revision.
+///
+/// A client sends it once it has applied a transfer that makes it, or stops
+/// it being, the entity's owner or authority. Inputs, owner-written state,
+/// and, for a transfer that moves the authority too, authority-written
+/// state that the client sends about the entity follow the
+/// acknowledgement, so the host can tell them from those sent before the
+/// client applied the transfer.
+final class OwnershipAckMessage extends ProtocolMessage {
+  /// Creates a message that acknowledges the ownership transfer of
+  /// [entity].
+  const OwnershipAckMessage({required this.entity});
+
+  /// The entity whose transfer is acknowledged.
+  final EntityId entity;
+
+  @override
+  MessageKind get kind => MessageKind.ownershipAck;
 }
 
 /// Asks the host to route a registered RPC on an entity.
