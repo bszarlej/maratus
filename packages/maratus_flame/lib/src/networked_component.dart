@@ -81,7 +81,8 @@ mixin NetworkedComponent on Component {
   /// Whether this peer owns [networkEntity], which lets it call owner-only
   /// RPCs and write owner-written fields, such as its input.
   ///
-  /// `false` while this component has no live attachment, such as before it
+  /// The host can transfer the ownership, so this can change while the
+  /// component is attached. `false` while this component has no live attachment, such as before it
   /// loads or after it was removed.
   bool get isNetworkOwner =>
       _hasValidAttachment &&
