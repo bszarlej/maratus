@@ -97,7 +97,10 @@ Only run authoritative gameplay where `isNetworkAuthority` is true; the host can
 transfer the authority to another peer. Ownership, which `isNetworkOwner`
 reports, is separate: assigning a client as `owner` allows owner-restricted RPCs
 and lets it write fields registered with `writer: FieldWriter.owner`, such as its
-input, but does not transfer authority over the other synchronized state.
+input, but does not transfer authority over the other synchronized state. The
+host can move the ownership later with `session.transferOwnership`, optionally
+with the authority, so check `isNetworkOwner` where it matters each frame;
+`ProximityVisibility` and `componentsOwnedBy` follow the current owner.
 
 To smooth a position that arrives a few times a second, give its property a
 `Vector2Interpolator`. On the peers that do not write the position, the scope

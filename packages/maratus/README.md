@@ -141,7 +141,7 @@ Each entity has two separate roles:
 
 - **Owner:** the peer that controls the entity's input. It may call RPCs
   declared with `RpcCaller.owner`, writes owner-written fields, and sends the
-  inputs of a prediction. The owner never changes.
+  inputs of a prediction. The host can transfer the ownership at runtime.
 - **Authority:** the peer that writes the entity's other synchronized
   properties. The host is the default authority, including for client-owned
   entities.
@@ -206,6 +206,50 @@ disconnects, the host takes over surviving entities.
 Set `onOwnerLeft: OwnerLeftPolicy.despawn` when spawning entities that should be
 removed with their owner.
 
+### Transfer ownership
+
+The host can also hand an entity to another player during its lifetime, for
+example when a player enters a vehicle, passes an item, or reconnects and
+reclaims their avatar:
+
+```dart
+// A reconnecting player gets a new peer ID, so give them back the avatar that
+// was kept with OwnerLeftPolicy.keep when they left.
+session.transferOwnership(avatar, returningPeer);
+
+// Hand over an entity that its owner also simulates, such as a
+// client-authoritative vehicle, in one change.
+session.transferOwnership(vehicle, driver, withAuthority: true);
+```
+
+A transfer keeps the entity's ID, children, and state, and reaches every peer in
+revision order as an `OwnerChanged` event, preceded by `AuthorityChanged` when
+the authority moves with it. Late joiners receive the current owner. The
+guarantees match those of authority transfers:
+
+- The entity has exactly one owner. The previous owner stops sending inputs and
+  owner-written fields as soon as it applies the transfer. The host silently
+  drops what it sent before that, and rejects its owner-only RPCs, inputs, and
+  owner-written state afterwards, like those of any peer that is not the owner.
+- The new owner continues from the latest owner-written values it received
+  before it samples its own, and the previous owner falls back to the values
+  the host accepted from it.
+- With prediction, the input stream starts over: the previous owner drops its
+  pending inputs and follows the authority's state, the host forgets the inputs
+  it had not applied, and the new owner predicts from the latest authoritative
+  state.
+- A client that becomes the owner is shown the entity if it does not see it;
+  the previous owner keeps seeing it only as its visibility decides.
+- `OwnerLeftPolicy` applies to whoever owns the entity when they leave,
+  including a new owner that leaves before the transfer reaches it.
+- Children keep their owners; transfer each one that should move too. Transfer
+  to `PeerId.host` to leave an entity without a client owner.
+
+Ownership and authority stay separate roles. Without `withAuthority`, the
+authority stays where it is. The owner predicts and sends inputs only while
+the host or the owner itself is the authority, so when an entity's owner is
+also its authority, move both together.
+
 ## Visibility
 
 By default, every client sees every replicated entity. The host can limit what
@@ -259,8 +303,8 @@ adds and updates a filter that shows each client the entities near its own.
 
 RPCs follow visibility: the host rejects a client's calls on entities that it
 does not show the client, and never delivers a call to a client that does not
-see the entity. Transferring an entity's authority to a client shows the entity
-to it first.
+see the entity. Transferring an entity's authority or ownership to a client
+shows the entity to it first.
 
 ## Client-side prediction
 
@@ -372,7 +416,9 @@ ticks replaced. Either way, the owner's prediction corrects to the host's state.
 - Prediction applies while the host is the entity's authority. An owner that
   becomes the authority continues from its prediction and applies its inputs
   directly; while another client is the authority, the owner's prediction
-  pauses and follows that client's state.
+  pauses and follows that client's state. When the host transfers the
+  ownership, the new owner starts a new input stream and predicts from the
+  latest authoritative state.
 - Prediction covers the entities a player controls; other entities are not
   rolled back.
 
@@ -399,8 +445,8 @@ value even after it stops changing. Older state samples never overwrite newer
 ones. Unreliable RPCs are not retried. Use separate channels for independent
 streams: there is no global ordering across modes or channels.
 
-Session control, spawning, authority transfers, initial state, and late-join
-catch-up remain reliable on channel zero. Unreliable messages that arrive before
+Session control, spawning, authority and ownership transfers, initial state,
+and late-join catch-up remain reliable on channel zero. Unreliable messages that arrive before
 their required lifecycle changes are discarded; reliable messages wait within
 `pendingDeliveryLimits` and the initialization timeout.
 
